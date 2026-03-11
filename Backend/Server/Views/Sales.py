@@ -57,6 +57,7 @@ from io import BytesIO
 #         # Your endpoint logic here
 #         return jsonify({"message": "Success"})
 
+
 class AddSale(Resource):
     @jwt_required()
     def post(self):
@@ -255,6 +256,22 @@ class AddSale(Resource):
         total_amount_paid = sum(float(pm['amount']) for pm in payment_methods) if status != "unpaid" else 0
         sasapay_deposits = []
 
+        # Calculate total sale amount
+        total_sale_amount = sum(float(item['total_price']) for item in sold_items)
+        
+        # Check if balance is within 3% and no discount provided
+        auto_discount_applied = False
+        if balance > 0 and status == "paid":
+            balance_percentage = (balance / total_sale_amount) * 100
+            if balance_percentage <= 3.0:
+                # Check if any payment method already has a discount
+                has_discount = any(pm.get('discount', 0) > 0 for pm in payment_methods)
+                if not has_discount and len(payment_methods) == 1:
+                    # Auto-apply the balance as discount to the single payment method
+                    payment_methods[0]['discount'] = balance
+                    auto_discount_applied = True
+                    balance = 0  # Zero out the balance since it's now a discount
+
         try:
             new_sale = Sales(
                 user_id=current_user_id,
@@ -273,9 +290,6 @@ class AddSale(Resource):
 
             # ===== CREDITOR BALANCE UPDATE =====
             if creditor:
-                # Calculate total sale amount
-                total_sale_amount = sum(float(item['total_price']) for item in sold_items)
-                
                 # Update creditor balances
                 creditor.total_credit = (creditor.total_credit or 0) + total_sale_amount
                 creditor.credit_amount = (creditor.credit_amount or 0) + total_sale_amount
@@ -412,14 +426,22 @@ class AddSale(Resource):
                 'delivery': delivery
             }
 
+            # Add auto-discount notification if applied
+            if auto_discount_applied:
+                response_data['auto_discount'] = {
+                    'applied': True,
+                    'amount': balance,
+                    'reason': f'Balance of {balance} ({balance_percentage:.2f}% of total) was within 3% threshold and converted to discount'
+                }
+
             # Add creditor information to response if applicable
             if creditor:
                 response_data['creditor'] = {
                     'creditor_id': creditor.id,
                     'creditor_name': creditor.name,
-                    'previous_total_credit': creditor.total_credit - sum(float(item['total_price']) for item in sold_items),
+                    'previous_total_credit': creditor.total_credit - total_sale_amount,
                     'new_total_credit': creditor.total_credit,
-                    'previous_credit_amount': creditor.credit_amount - sum(float(item['total_price']) for item in sold_items),
+                    'previous_credit_amount': creditor.credit_amount - total_sale_amount,
                     'new_credit_amount': creditor.credit_amount
                 }
 
@@ -435,7 +457,8 @@ class AddSale(Resource):
                     'processed_payments': [pm['method'] for pm in payment_methods],
                     'sasapay_attempts': sasapay_deposits,
                     'delivery': delivery,
-                    'creditor_id': creditor_id
+                    'creditor_id': creditor_id,
+                    'auto_discount_applied': auto_discount_applied
                 }
             }, 500
 

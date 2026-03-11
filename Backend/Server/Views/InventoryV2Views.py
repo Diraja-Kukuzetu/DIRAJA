@@ -25,6 +25,7 @@ from Server.Models.Supplier import SupplierHistory , Suppliers
 from flask import current_app
 import re
 
+
 def check_role(required_role):
     def wrapper(fn):
         @wraps(fn)
@@ -1099,7 +1100,6 @@ class UpdateTransferV2(Resource):
         return make_response(jsonify({"message": "Transfer updated successfully"}), 200)
 
 
-
 class AddInventoryV2(Resource):
     @jwt_required()
     def post(self):
@@ -1108,24 +1108,32 @@ class AddInventoryV2(Resource):
 
         required_fields = [
             'itemname', 'quantity', 'metric', 'unitCost', 'amountPaid', 'unitPrice',
-            'Suppliername', 'phone_number', 'Supplier_location', 'created_at'
+            'Suppliername', 'phone_number', 'Supplier_location', 'created_at', 'payment_status'
         ]
         if not all(field in data for field in required_fields):
             return {'message': 'Missing required fields'}, 400
 
         # Extract fields
         itemname = data.get('itemname')
-        quantity = data.get('quantity')
+        quantity = float(data.get('quantity'))
         metric = data.get('metric')
-        unitCost = data.get('unitCost')
-        amountPaid = data.get('amountPaid')
-        unitPrice = data.get('unitPrice')
+        unitCost = float(data.get('unitCost'))
+        amountPaid = float(data.get('amountPaid'))
+        unitPrice = float(data.get('unitPrice'))
         Suppliername = data.get('Suppliername')
         Supplier_location = data.get('Supplier_location')
         source = data.get('source')
         paymentRef = data.get('paymentRef')
         note = data.get('note', '')
         created_at_str = data.get('created_at')
+        payment_status = data.get('payment_status', 'paid').lower()
+        email = data.get('email')
+        phone_number = data.get('phone_number')
+
+        # Validate payment status
+        valid_statuses = ['paid', 'unpaid', 'partially_paid']
+        if payment_status not in valid_statuses:
+            return {'message': f'Invalid payment status. Must be one of: {valid_statuses}'}, 400
 
         try:
             created_at = datetime.strptime(created_at_str, "%Y-%m-%d")
@@ -1134,6 +1142,19 @@ class AddInventoryV2(Resource):
 
         totalCost = unitCost * quantity
         balance = totalCost - amountPaid
+        
+        # Validate amount paid based on payment status
+        if payment_status == 'paid' and amountPaid < totalCost:
+            return {'message': 'Payment status cannot be PAID when amount paid is less than total cost'}, 400
+        elif payment_status == 'unpaid' and amountPaid > 0:
+            return {'message': 'Payment status cannot be UNPAID when amount paid is greater than 0'}, 400
+        elif payment_status == 'partially_paid' and (amountPaid <= 0 or amountPaid >= totalCost):
+            return {'message': 'PARTIALLY_PAID status requires amount paid to be between 0 and total cost'}, 400
+        
+        # Determine credit amount based on payment status
+        credit_amount = 0
+        if payment_status in ['unpaid', 'partially_paid']:
+            credit_amount = balance  # Credit amount equals the balance
 
         last_inventory = InventoryV2.query.order_by(InventoryV2.inventoryV2_id.desc()).first()
         next_batch_number = 1 if not last_inventory else last_inventory.inventoryV2_id + 1
@@ -1157,52 +1178,34 @@ class AddInventoryV2(Resource):
                     supplier_name=Suppliername,
                     supplier_location=Supplier_location,
                     total_amount_received=amountPaid,
-                    email=data.get('email'),
-                    phone_number=data.get('phone_number'),
+                    credit_amount=credit_amount,  # Set initial credit amount
+                    email=email,
+                    phone_number=phone_number,
                     items_sold=json.dumps([itemname])
                 )
                 db.session.add(supplier)
                 db.session.flush()
             else:
                 supplier.total_amount_received += amountPaid
-                if not supplier.items_sold:
-                    items_list = []
-                else:
+                # Update supplier credit amount
+                if payment_status in ['unpaid', 'partially_paid']:
+                    supplier.credit_amount = (supplier.credit_amount or 0) + credit_amount
+                
+                # Update items sold
+                if supplier.items_sold:
                     try:
                         items_list = json.loads(supplier.items_sold)
-                    except Exception:
-                        items_list = supplier.items_sold.split(",") if isinstance(supplier.items_sold, str) else []
+                    except:
+                        items_list = supplier.items_sold if isinstance(supplier.items_sold, list) else []
+                else:
+                    items_list = []
+                    
                 if itemname not in items_list:
                     items_list.append(itemname)
                 supplier.items_sold = json.dumps(items_list)
                 db.session.flush()
 
-            # Step 2: Add supplier history
-            supplier_history = SupplierHistory(
-                supplier_id=supplier.supplier_id,
-                amount_received=amountPaid,
-                transaction_date=datetime.utcnow(),
-                item_bought=itemname
-            )
-            db.session.add(supplier_history)
-
-            # Step 3: Handle bank transaction
-            if source not in ["Unknown", "External funding"]:
-                account = BankAccount.query.filter_by(Account_name=source).first()
-                if not account:
-                    return {'message': f'Bank account with name "{source}" not found'}, 404
-
-                account.Account_Balance -= amountPaid
-                db.session.add(account)
-
-                transaction = BankingTransaction(
-                    account_id=account.id,
-                    Transaction_type_debit=amountPaid,
-                    Transaction_type_credit=None
-                )
-                db.session.add(transaction)
-
-            # Step 4: Add inventory record
+            # Step 2: Add inventory record
             new_inventory = InventoryV2(
                 itemname=itemname,
                 initial_quantity=quantity,
@@ -1222,30 +1225,66 @@ class AddInventoryV2(Resource):
                 source=source,
                 Trasnaction_type_credit=amountPaid,
                 Transcation_type_debit=debit_account_value,
-                paymentRef=paymentRef
+                paymentRef=paymentRef,
+                payment_status=payment_status,  # Using payment_status field
+                credits_amount=credit_amount  # Using credits_amount field (note the 's' in credits_amount)
             )
-
             db.session.add(new_inventory)
-            db.session.commit()  # commit inventory first
-            from Server.Views.Services.journal_service import PurchaseJournalService
+            db.session.flush()  # Get the inventory ID
 
-            # Step 5: Try posting journal entry
+            # Step 3: Add supplier history
+            supplier_history = SupplierHistory(
+                supplier_id=supplier.supplier_id,
+                amount_received=amountPaid,
+                transaction_date=datetime.utcnow(),
+                item_bought=itemname,
+                payment_status=payment_status,
+                credit_amount=credit_amount,
+                inventory_id=new_inventory.inventoryV2_id  # Link to inventory
+            )
+            db.session.add(supplier_history)
+
+            # Step 4: Handle bank transaction (only for paid amounts)
+            if amountPaid > 0 and source not in ["Unknown", "External funding"]:
+                # Import your bank models
+                
+                account = BankAccount.query.filter_by(Account_name=source).first()
+                if not account:
+                    return {'message': f'Bank account with name "{source}" not found'}, 404
+
+                if account.Account_Balance < amountPaid:
+                    return {'message': f'Insufficient balance in account "{source}"'}, 400
+
+                account.Account_Balance -= amountPaid
+                db.session.add(account)
+
+                transaction = BankingTransaction(
+                    account_id=account.id,
+                    Transaction_type_debit=amountPaid,
+                    Transaction_type_credit=None,
+                    reference=f"Inventory Purchase: {batch_code}"
+                )
+                db.session.add(transaction)
+
+            db.session.commit()
+            
+            # Step 5: Try posting journal entry (if you have this service)
             try:
+                from Server.Views.Services.journal_service import PurchaseJournalService
                 journal_result = PurchaseJournalService.post_purchase_journal(new_inventory)
-                db.session.commit()  # commit journal
+                db.session.commit()
+            except ImportError:
+                journal_result = {"message": "Journal service not available"}
             except Exception as e:
-                db.session.rollback()  # rollback journal only
-                return {
-                    "message": "Inventory saved but journal posting failed",
-                    "error": str(e),
-                    "BatchNumber": batch_code,
-                    "SupplierID": supplier.supplier_id
-                }, 500
+                journal_result = {"message": f"Journal posting failed: {str(e)}"}
 
             return {
-                'message': 'Inventory and journal entry added successfully',
+                'message': 'Inventory added successfully',
                 'BatchNumber': batch_code,
                 'SupplierID': supplier.supplier_id,
+                'payment_status': payment_status,
+                'credit_amount': credit_amount,
+                'outstanding_balance': balance,
                 'journal_entry': journal_result
             }, 201
 
@@ -1894,3 +1933,132 @@ class ManualTransferV2(Resource):
         except Exception as e:
             db.session.rollback()
             return {'message': 'Error processing request', 'error': str(e)}, 500 
+
+
+class ProcessInventoryPayment(Resource):
+    @jwt_required()
+    def post(self):
+        data = request.get_json()
+        
+        required_fields = ['inventory_id', 'amount_paid', 'source_account', 'payment_reference']
+        if not all(field in data for field in required_fields):
+            return {'message': 'Missing required fields'}, 400
+        
+        inventory_id = data.get('inventory_id')
+        amount_paid = float(data.get('amount_paid'))
+        source_account = data.get('source_account')
+        payment_reference = data.get('payment_reference')
+        notes = data.get('notes', '')
+        
+        try:
+            # Get inventory
+            inventory = InventoryV2.query.get(inventory_id)
+            if not inventory:
+                return {'message': 'Inventory not found'}, 404
+            
+            # Check if inventory has outstanding balance
+            if inventory.ballance <= 0:
+                return {'message': 'This inventory has no outstanding balance'}, 400
+            
+            # Check payment amount
+            if amount_paid <= 0:
+                return {'message': 'Payment amount must be greater than 0'}, 400
+            
+            if amount_paid > inventory.ballance:
+                return {'message': f'Payment amount exceeds outstanding balance of {inventory.ballance}'}, 400
+            
+            # Get supplier
+            supplier = Suppliers.query.filter_by(
+                supplier_name=inventory.Suppliername,
+                supplier_location=inventory.Supplier_location
+            ).first()
+            
+            if not supplier:
+                return {'message': 'Supplier not found'}, 404
+            
+            account = BankAccount.query.filter_by(Account_name=source_account).first()
+            if not account:
+                return {'message': f'Bank account "{source_account}" not found'}, 404
+            
+            if account.Account_Balance < amount_paid:
+                return {'message': f'Insufficient balance in account "{source_account}"'}, 400
+            
+            # Process the payment
+            account.Account_Balance -= amount_paid
+            
+            # Update inventory
+            inventory.amountPaid += amount_paid
+            inventory.ballance -= amount_paid
+            
+            # UPDATE PAYMENT REFERENCE - Append new payment reference to existing one
+            if inventory.paymentRef:
+                # If there's an existing payment reference, append the new one
+                inventory.paymentRef = f"{inventory.paymentRef}, {payment_reference}"
+            else:
+                # If no existing reference, set it to the new one
+                inventory.paymentRef = payment_reference
+            
+            # UPDATE SOURCE ACCOUNT - Only update if it's a bank account (not "Unknown" or "External funding")
+            if source_account not in ["Unknown", "External funding"]:
+                # You can choose to either:
+                # Option A: Always update to the latest source account
+                inventory.source = source_account
+                
+                # Option B: Append if different (uncomment if you want this behavior)
+                # if inventory.source != source_account and inventory.source not in ["Unknown", "External funding"]:
+                #     inventory.source = f"{inventory.source}, {source_account}"
+                # else:
+                #     inventory.source = source_account
+            
+            # Update payment status and credits_amount
+            if inventory.ballance == 0:
+                inventory.payment_status = 'paid'
+                inventory.credits_amount = 0
+            else:
+                inventory.payment_status = 'partially_paid'
+                inventory.credits_amount = inventory.ballance
+            
+            # Update supplier
+            supplier.total_amount_received += amount_paid
+            if supplier.credit_amount:
+                supplier.credit_amount -= amount_paid
+            
+            # Create bank transaction
+            transaction = BankingTransaction(
+                account_id=account.id,
+                Transaction_type_debit=amount_paid,
+                Transaction_type_credit=None,
+    
+            )
+            db.session.add(transaction)
+            
+            # Create supplier history for this payment
+            supplier_history = SupplierHistory(
+                supplier_id=supplier.supplier_id,
+                amount_received=amount_paid,
+                transaction_date=datetime.utcnow(),
+                item_bought=inventory.itemname,
+                payment_status='paid',
+                credit_amount=0,
+                inventory_id=inventory_id,
+                
+            )
+            db.session.add(supplier_history)
+            
+            db.session.commit()
+            
+            return {
+                'message': 'Payment processed successfully',
+                'inventory_id': inventory_id,
+                'supplier_id': supplier.supplier_id,
+                'amount_paid': amount_paid,
+                'new_balance': inventory.ballance,
+                'payment_status': inventory.payment_status,
+                'payment_reference': payment_reference,
+                'updated_source': inventory.source,
+                'updated_payment_ref': inventory.paymentRef
+            }, 200
+            
+        except Exception as e:
+            db.session.rollback()
+            return {'message': 'Error processing payment', 'error': str(e)}, 500

@@ -117,7 +117,7 @@ from Server.Views.MeritandDemerit import (
 )
 
 from Server.Views.SupplierView import (
-    AddSupplier, GetAllSuppliers, GetSingleSupplier
+    AddSupplier, GetAllSuppliers, GetSingleSupplier,UpdateSupplier
 )
 
 from Server.Views.ShopstockviewsV2 import (
@@ -131,7 +131,7 @@ from Server.Views.ShopstockviewsV2 import (
 
 from Server.Views.InventoryV2Views import (
     GetInventoryByBatchV2, DistributeInventoryV2, DeleteShopStockV2,
-    GetTransferV2, GetTransferByIdV2, UpdateTransferV2, AddInventoryV2,
+    GetTransferV2, GetTransferByIdV2, UpdateTransferV2, AddInventoryV2,ProcessInventoryPayment,
     GetAllInventoryV2, AllInventoryV2, InventoryResourceByIdV2, StockDeletionResourceV2,
     ManualTransferV2, ReceiveTransfer, DeclineTransfer, PendingTransfers,
     ProcessInventoryV2
@@ -160,9 +160,9 @@ from Server.Views.PushSubscription import  (
 )
 
 from Server.Views.TaskManagerViews import (
-    CreateTask, TaskResource, PendingTasks, ViewTask, AcknowledgeTask, GetTasks, CompleteTask, GetUserTasks
+    # Task Management
+    CreateTask, TaskResource, GetTasks, CompleteTask, GetUserTasks,TaskProgressResource,TaskStatsResource,TaskCommentResource,CommentResource,TaskEvaluationResource
 )
-
 from Server.Views.CookedItemsView import  (
     AddCookedItems
 )
@@ -412,6 +412,8 @@ api.add_resource(GetEmployeeMeritLedger, '/employees-merit/<int:user_id>')
 api.add_resource(AddSupplier , '/creat-supplier')
 api.add_resource(GetAllSuppliers,'/all-suppliers' )
 api.add_resource(GetSingleSupplier, '/suppliers/<int:supplier_id>')
+api.add_resource(UpdateSupplier, '/suppliers/update/<int:supplier_id>')
+
 #stockv2 endpoints
 # api.add_resource(GetShopStockV2, '/shopstockv2')
 # api.add_resource(GetShopStockByShopIdV2, '/shopstockv2/shop/<int:shop_id>')  
@@ -433,6 +435,7 @@ api.add_resource(GetSingleSupplier, '/suppliers/<int:supplier_id>')
 
 # Inventory V2 endpoints
 api.add_resource(AddInventoryV2, '/v2/newinventory')
+api.add_resource(ProcessInventoryPayment, '/inventory/payment') 
 api.add_resource(GetAllInventoryV2, '/new/allinventories')
 api.add_resource(AllInventoryV2, '/v2/allinventories')
 api.add_resource(InventoryResourceByIdV2, '/v2/inventory/<int:inventoryV2_id>')
@@ -513,14 +516,18 @@ api.add_resource(ProcessCSV, '/process-csv')
 
 
 #TaskManager
+# Task Management Routes
 api.add_resource(CreateTask, "/newtask")
 api.add_resource(TaskResource, "/tasks/<int:task_id>")
 api.add_resource(GetTasks, "/alltasks")
 api.add_resource(GetUserTasks, "/mytasks/<int:user_id>")
-api.add_resource(PendingTasks, "/tasks/pending/<int:user_id>")
-api.add_resource(ViewTask, "/tasks/view/<int:task_id>")
-api.add_resource(AcknowledgeTask, "/tasks/acknowledge/<int:task_id>")
 api.add_resource(CompleteTask, '/<int:task_id>/complete')
+api.add_resource(TaskProgressResource, "/tasks/<int:task_id>/progress")
+api.add_resource(TaskStatsResource, "/tasks/stats")
+api.add_resource(TaskCommentResource, "/tasks/<int:task_id>/comments")    
+api.add_resource(CommentResource, "/comments/<int:comment_id>")           
+
+api.add_resource(TaskEvaluationResource, "/tasks/<int:task_id>/evaluation") 
 
 #creditors
 api.add_resource(CreateCreditor, '/add-creditors')

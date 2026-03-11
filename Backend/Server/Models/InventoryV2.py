@@ -21,7 +21,8 @@ class InventoryV2(db.Model):
     unitPrice = db.Column(db.Float, nullable=False)
     BatchNumber = db.Column(db.String(150), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.users_id'))
-
+    payment_status = db.Column(db.String(20), default='paid')
+    credits_amount = db.Column(db.Float, default=0.0)
     Trasnaction_type_credit = db.Column(db.Float, nullable=False)
     Transcation_type_debit = db.Column(db.Float, nullable=False)
     paymentRef = db.Column(db.String(255), nullable=False)
