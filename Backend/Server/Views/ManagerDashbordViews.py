@@ -541,6 +541,9 @@ class TotalAmountPaidPerShop(Resource):
             results = []
             overall_paid = 0
             overall_unpaid = 0
+            
+            # NEW: Track total transaction count across all shops
+            overall_transaction_count = 0
 
             overall_payment_totals = {"sasapay": 0, "cash": 0, "not_payed": 0}
 
@@ -567,6 +570,18 @@ class TotalAmountPaidPerShop(Resource):
 
                 # --- Total sales = paid + unpaid ---
                 total_sales = total_paid + total_unpaid
+
+                # --- Transaction count for the shop (number of records in salespaymentmethod table) ---
+                transaction_count = (
+                    db.session.query(func.count(SalesPaymentMethods.id))
+                    .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)
+                    .filter(Sales.shop_id == shop_id)
+                    .filter(Sales.created_at.between(start_date, end_date))
+                    .scalar() or 0
+                )
+                
+                # Add to overall transaction count
+                overall_transaction_count += transaction_count
 
                 # --- Totals by payment method ---
                 payment_totals = (
@@ -645,6 +660,7 @@ class TotalAmountPaidPerShop(Resource):
                     "total_paid": "Ksh {:,.2f}".format(total_paid),
                     "total_unpaid": "Ksh {:,.2f}".format(total_unpaid),
                     "total_sales": "Ksh {:,.2f}".format(total_sales),
+                    "transaction_count": transaction_count,  # Add transaction count per shop
                     "payment_breakdown": payment_summary,
                     "comparison": comparison_diff
                 })
@@ -661,7 +677,8 @@ class TotalAmountPaidPerShop(Resource):
                     "sasapay": "Ksh {:,.2f}".format(overall_payment_totals["sasapay"]),
                     "cash": "Ksh {:,.2f}".format(overall_payment_totals["cash"]),
                     "not_payed": "Ksh {:,.2f}".format(overall_payment_totals["not_payed"])
-                }
+                },
+                "transaction_count": overall_transaction_count  # NEW: Add overall transaction count to summary
             }
 
             return {"total_sales_per_shop": results, "summary": summary}, 200
@@ -748,6 +765,11 @@ class TotalSalesByShop(Resource):
         start_date = None
         end_date = None
 
+        # Get pagination parameters
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', 50, type=int)
+        offset = (page - 1) * limit
+
         start_date_str = request.args.get('start_date')
         end_date_str = request.args.get('end_date')
 
@@ -765,22 +787,21 @@ class TotalSalesByShop(Resource):
             period = request.args.get('period', 'today')
             if period == 'today':
                 start_date = today.replace(hour=0, minute=0, second=0, microsecond=0)
-                end_date = today
+                end_date = today.replace(hour=23, minute=59, second=59, microsecond=999999)
             elif period == 'yesterday':
-                start_date = (today - timedelta(days=1)).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                )
-                end_date = start_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                yesterday = today - timedelta(days=1)
+                start_date = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_date = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999)
             elif period == 'week':
-                start_date = (today - timedelta(days=7)).replace(
+                start_date = (today - timedelta(days=6)).replace(
                     hour=0, minute=0, second=0, microsecond=0
                 )
-                end_date = today
+                end_date = today.replace(hour=23, minute=59, second=59, microsecond=999999)
             elif period == 'month':
-                start_date = (today - timedelta(days=30)).replace(
+                start_date = (today - timedelta(days=29)).replace(
                     hour=0, minute=0, second=0, microsecond=0
                 )
-                end_date = today
+                end_date = today.replace(hour=23, minute=59, second=59, microsecond=999999)
             else:
                 return {
                     "message": "Invalid period specified. Use 'today', 'yesterday', 'week', 'month', "
@@ -844,11 +865,29 @@ class TotalSalesByShop(Resource):
                 .scalar() or 0.0
             )
 
-            # --------- Sales records ----------
+            # --------- TRANSACTION COUNT ----------
+            # Count total number of transactions (payment records) for the shop in the selected period
+            transaction_count = (
+                db.session.query(db.func.count(SalesPaymentMethods.id))
+                .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)
+                .filter(
+                    Sales.shop_id == shop_id,
+                    Sales.created_at.between(start_date, end_date)
+                )
+                .scalar() or 0
+            )
+
+            # Get total count for pagination
+            total_records = Sales.query.filter(
+                Sales.shop_id == shop_id,
+                Sales.created_at.between(start_date, end_date)
+            ).count()
+
+            # --------- Sales records with pagination ----------
             sales_records = Sales.query.filter(
                 Sales.shop_id == shop_id,
                 Sales.created_at.between(start_date, end_date)
-            ).all()
+            ).order_by(Sales.created_at.desc()).offset(offset).limit(limit).all()
 
             sales_list = []
             for sale in sales_records:
@@ -858,8 +897,8 @@ class TotalSalesByShop(Resource):
                 payment_data = [
                     {
                         "payment_method": p.payment_method,
-                        "amount_paid": p.amount_paid,
-                        "balance": p.balance,
+                        "amount_paid": float(p.amount_paid) if p.amount_paid else 0,
+                        "balance": float(p.balance) if p.balance else 0,
                         "transaction_code": p.transaction_code,
                     }
                     for p in sale.payment
@@ -870,13 +909,13 @@ class TotalSalesByShop(Resource):
                 sold_items = [
                     {
                         "item_name": it.item_name,
-                        "quantity": it.quantity,
+                        "quantity": float(it.quantity) if it.quantity else 0,
                         "metric": it.metric,
-                        "unit_price": it.unit_price,
-                        "total_price": it.total_price,
+                        "unit_price": float(it.unit_price) if it.unit_price else 0,
+                        "total_price": float(it.total_price) if it.total_price else 0,
                         "batch_number": it.BatchNumber,
                         "stockv2_id": it.stockv2_id,
-                        "cost_of_sale": it.Cost_of_sale,
+                        "cost_of_sale": float(it.Cost_of_sale) if it.Cost_of_sale else 0,
                         "purchase_account": it.Purchase_account,
                     }
                     for it in sale.items
@@ -887,15 +926,15 @@ class TotalSalesByShop(Resource):
                     "created_at": sale.created_at.strftime('%Y-%m-%d %H:%M:%S'),
                     "user_id": sale.user_id,
                     "username": username,
-                    "customer_name": sale.customer_name,
+                    "customer_name": sale.customer_name or "Walk-in Customer",
                     "status": sale.status,
                     "customer_number": sale.customer_number,
                     "items": sold_items,
-                    "total_amount_paid": total_amount_paid,
+                    "total_amount_paid": float(total_amount_paid),
                     "payment_methods": payment_data,
-                    "balance": sale.balance,
+                    "balance": float(sale.balance) if sale.balance else 0,
                     "note": sale.note,
-                    "delivery": sale.delivery,
+                    "delivery": bool(sale.delivery),
                     "promocode": sale.promocode
                 })
 
@@ -904,24 +943,27 @@ class TotalSalesByShop(Resource):
             return {
                 "shop_id": shop_id,
                 "shop_name": shop.shopname,
-
                 "total_sales_amount_paid": f"Ksh {grand_total_paid:,.2f}",
-                "total_sasapay": sasapay_total,
-                "total_cash": cash_total,
-
-                "total_credit": credit_total,
+                "total_sasapay": float(sasapay_total),
+                "total_cash": float(cash_total),
+                "total_credit": float(credit_total),
                 "total_sales": f"Ksh {total_sales:,.2f}",
-
+                "transaction_count": transaction_count,  # ADDED: Total transaction count
                 "formatted": {
                     "sasapay": f"Ksh {sasapay_total:,.2f}",
                     "cash": f"Ksh {cash_total:,.2f}",
                     "credit": f"Ksh {credit_total:,.2f}",
                     "total_sales": f"Ksh {total_sales:,.2f}",
                 },
-
                 "sales_records": sales_list,
                 "start_date": start_date.strftime('%Y-%m-%d %H:%M:%S'),
-                "end_date": end_date.strftime('%Y-%m-%d %H:%M:%S')
+                "end_date": end_date.strftime('%Y-%m-%d %H:%M:%S'),
+                "pagination": {
+                    "current_page": page,
+                    "per_page": limit,
+                    "total_records": total_records,
+                    "total_pages": (total_records + limit - 1) // limit
+                }
             }, 200
 
         except SQLAlchemyError as e:
