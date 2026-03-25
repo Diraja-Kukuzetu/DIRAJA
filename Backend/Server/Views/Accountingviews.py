@@ -123,6 +123,8 @@ from Server.Models.ItemsLists import ItemsList
         
 #chat of aacounts 
 
+
+
 class CreateChartOfAccounts(Resource):
     # POST a new chart of account entry
     @jwt_required()
@@ -133,17 +135,24 @@ class CreateChartOfAccounts(Resource):
         code = data.get('code')
         name = data.get('name')
         acc_type = data.get('type')
+        statement_type = data.get('statement_type')
+        transaction_type = data.get('transaction_type')
 
-        if not code or not name or not acc_type:
-            return make_response(jsonify({"message": "Code, name, and type are required."}), 400)
-
-        new_chart_of_account = ChartOfAccounts(
-            code=code,
-            name=name,
-            type=acc_type
-        )
+        # Validate required fields
+        if not code or not name or not acc_type or not statement_type or not transaction_type:
+            return make_response(jsonify({
+                "message": "Code, name, type, statement_type, and transaction_type are required."
+            }), 400)
 
         try:
+            new_chart_of_account = ChartOfAccounts(
+                code=code,
+                name=name,
+                type=acc_type,
+                statement_type=statement_type,
+                transaction_type=transaction_type
+            )
+
             db.session.add(new_chart_of_account)
             db.session.commit()
 
@@ -153,9 +162,15 @@ class CreateChartOfAccounts(Resource):
                     "id": new_chart_of_account.id,
                     "code": new_chart_of_account.code,
                     "name": new_chart_of_account.name,
-                    "type": new_chart_of_account.type
+                    "type": new_chart_of_account.type,
+                    "statement_type": new_chart_of_account.statement_type,
+                    "transaction_type": new_chart_of_account.transaction_type
                 }
             }), 201)
+            
+        except AssertionError as e:
+            db.session.rollback()
+            return make_response(jsonify({"message": str(e)}), 400)
         except Exception as e:
             db.session.rollback()
             return make_response(jsonify({"message": "Error creating chart of account.", "error": str(e)}), 500)
@@ -177,7 +192,9 @@ class ChartOfAccountsList(Resource):
                     "id": account.id,
                     "code": account.code,
                     "name": account.name,
-                    "type": account.type
+                    "type": account.type,
+                    "statement_type": account.statement_type,
+                    "transaction_type": account.transaction_type
                 })
 
             return make_response(jsonify({"chart_of_accounts": result}), 200)
@@ -197,7 +214,9 @@ class ChartOfAccountResource(Resource):
             "id": account.id,
             "code": account.code,
             "name": account.name,
-            "type": account.type
+            "type": account.type,
+            "statement_type": account.statement_type,
+            "transaction_type": account.transaction_type
         }), 200)
 
     @jwt_required()
@@ -206,18 +225,41 @@ class ChartOfAccountResource(Resource):
         parser.add_argument('code', type=str, required=True, help='Code is required')
         parser.add_argument('name', type=str, required=True, help='Name is required')
         parser.add_argument('type', type=str, required=True, help='Type is required')
+        parser.add_argument('statement_type', type=str, required=True, help='Statement type is required')
+        parser.add_argument('transaction_type', type=str, required=True, help='Transaction type is required')
         data = parser.parse_args()
 
         account = ChartOfAccounts.query.get(id)
         if not account:
             return make_response(jsonify({"message": "Chart of Account not found"}), 404)
 
-        account.code = data['code']
-        account.name = data['name']
-        account.type = data['type']
-        db.session.commit()
+        try:
+            account.code = data['code']
+            account.name = data['name']
+            account.type = data['type']
+            account.statement_type = data['statement_type']
+            account.transaction_type = data['transaction_type']
+            
+            db.session.commit()
 
-        return make_response(jsonify({"message": "Chart of Account updated successfully"}), 200)
+            return make_response(jsonify({
+                "message": "Chart of Account updated successfully",
+                "chart_of_account": {
+                    "id": account.id,
+                    "code": account.code,
+                    "name": account.name,
+                    "type": account.type,
+                    "statement_type": account.statement_type,
+                    "transaction_type": account.transaction_type
+                }
+            }), 200)
+            
+        except AssertionError as e:
+            db.session.rollback()
+            return make_response(jsonify({"message": str(e)}), 400)
+        except Exception as e:
+            db.session.rollback()
+            return make_response(jsonify({"message": "Error updating chart of account.", "error": str(e)}), 500)
 
     @jwt_required()
     def delete(self, id):
@@ -225,9 +267,13 @@ class ChartOfAccountResource(Resource):
         if not account:
             return make_response(jsonify({"message": "Chart of Account not found"}), 404)
 
-        db.session.delete(account)
-        db.session.commit()
-        return make_response(jsonify({"message": "Chart of Account deleted successfully"}), 200)
+        try:
+            db.session.delete(account)
+            db.session.commit()
+            return make_response(jsonify({"message": "Chart of Account deleted successfully"}), 200)
+        except Exception as e:
+            db.session.rollback()
+            return make_response(jsonify({"message": "Error deleting chart of account.", "error": str(e)}), 500)
 
 
 # class CreateItemAccount(Resource):

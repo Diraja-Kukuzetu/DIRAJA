@@ -26,7 +26,6 @@ def check_role(required_role):
         return decorator
     return wrapper
 
-
 class CreateTask(Resource):
     @jwt_required()
     def post(self):
@@ -34,46 +33,63 @@ class CreateTask(Resource):
         current_user_id = get_jwt_identity()
 
         try:
-            # Validate status
-            allowed_statuses = ["Pending", "Complete", "In Progress", "Cancelled", "Overdue"]
-            status = data.get("status", "Pending")
+            # Validate required fields
+            required_fields = ['task', 'priority', 'assignee_id']
+            for field in required_fields:
+                if field not in data or not data.get(field):
+                    return {"error": f"Missing required field: {field}"}, 400
 
+            # Validate priority
+            allowed_priorities = ['High', 'Medium', 'Low']
+            priority = data.get('priority')
+            if priority not in allowed_priorities:
+                return {
+                    "error": f"Invalid priority '{priority}'. Allowed values are: {', '.join(allowed_priorities)}"
+                }, 400
+
+            # Validate status
+            allowed_statuses = ['Pending', 'In Progress', 'Completed', 'Cancelled', 'Overdue']
+            status = data.get("status", "Pending")
             if status not in allowed_statuses:
                 return {
                     "error": f"Invalid status '{status}'. Allowed values are: {', '.join(allowed_statuses)}"
                 }, 400
 
-            # Validate category
-            allowed_categories = ["General", "Delivery", "Cleaning", "Maintenance", "Office Work", "Field Work", "Other"]
+            # Remove category validation - accept any category
             category = data.get("category", "General")
-            
-            if category not in allowed_categories:
-                return {
-                    "error": f"Invalid category '{category}'. Allowed values are: {', '.join(allowed_categories)}"
-                }, 400
+
+            # Parse due_date - handle both date-only and datetime strings
+            due_date = None
+            if data.get("due_date"):
+                due_date_str = data["due_date"]
+                try:
+                    # Try parsing with time first (YYYY-MM-DD HH:MM:SS)
+                    due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    try:
+                        # Try parsing date only (YYYY-MM-DD)
+                        due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d")
+                    except ValueError:
+                        return {"error": f"Invalid date format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS"}, 400
 
             new_task = TaskManager(
-                user_id=current_user_id,  # Use the logged-in user as assigner
+                user_id=current_user_id,  # The logged-in user is the assigner
                 assignee_id=data.get("assignee_id"),
                 task=data.get("task"),
-                priority=data.get("priority"),
+                priority=priority,
                 category=category,
                 assigned_date=datetime.datetime.utcnow(),
-                due_date=datetime.datetime.strptime(data["due_date"], "%Y-%m-%d") if data.get("due_date") else None,
+                due_date=due_date,
                 status=status,
-                estimated_hours=data.get("estimated_hours"),
-                requires_approval=data.get("requires_approval", False),
-                location=data.get("location"),
-                department=data.get("department"),
-                project_id=data.get("project_id"),
-                created_by=current_user_id
+                closing_date=None  # Always None for new tasks
             )
 
             db.session.add(new_task)
             db.session.commit()
 
             # Send push notification to the assignee
-            self.send_push_to_user(new_task.assignee_id, new_task.task, new_task.priority)
+            if new_task.assignee_id:  # Only send if there's an assignee
+                self.send_push_to_user(new_task.assignee_id, new_task.task, new_task.priority)
 
             return {
                 "message": "Task created successfully",
@@ -117,7 +133,6 @@ class CreateTask(Resource):
                 print(f"Push sent to user {user_id} subscriber {sub.id}")
             except WebPushException as e:
                 print(f"Push failed for {sub.id}: {repr(e)}")
-
 
 class GetTasks(Resource):
     @jwt_required()
@@ -221,7 +236,7 @@ class TaskResource(Resource):
     def put(self, task_id):
         task = TaskManager.query.get(task_id)
         if not task:
-            return jsonify({"error": "Task not found"}), 404
+            return {"error": "Task not found"}, 404
 
         current_user_id = get_jwt_identity()
         data = request.get_json()
@@ -234,14 +249,23 @@ class TaskResource(Resource):
                 task.assignee_id = data["assignee_id"]
             if data.get("status"):
                 task.status = data["status"]
-                if data["status"] == "Complete" and not task.closing_date:
+                # Auto-set closing date when status changes to "Completed"
+                if data["status"] == "Completed" and not task.closing_date:
                     task.closing_date = datetime.datetime.utcnow()
             if data.get("priority"):
                 task.priority = data["priority"]
             if data.get("category"):
                 task.category = data["category"]
             if data.get("due_date"):
-                task.due_date = datetime.datetime.strptime(data["due_date"], "%Y-%m-%d")
+                # Handle both date-only and datetime formats
+                due_date_str = data["due_date"]
+                try:
+                    task.due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    try:
+                        task.due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d")
+                    except ValueError:
+                        return {"error": "Invalid date format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS"}, 400
             if data.get("estimated_hours"):
                 task.estimated_hours = data["estimated_hours"]
             if data.get("actual_hours"):
@@ -253,21 +277,20 @@ class TaskResource(Resource):
             if data.get("department"):
                 task.department = data["department"]
 
-            # Update audit fields
+            # Update audit fields (removed version)
             task.last_modified_by = current_user_id
             task.last_modified_date = datetime.datetime.utcnow()
-            task.version += 1
 
             db.session.commit()
 
-            return jsonify({
+            return {
                 "message": "Task updated successfully",
                 "task": task.to_dict()
-            })
+            }, 200
 
         except Exception as e:
             db.session.rollback()
-            return jsonify({"error": str(e)}), 400
+            return {"error": str(e)}, 400
 
     @jwt_required()
     def delete(self, task_id):
@@ -427,26 +450,26 @@ class TaskEvaluationResource(Resource):
     @jwt_required()
     def post(self, task_id):
         """Add or update evaluation for a completed task"""
-        task = TaskManager.query.get(task_id)
-        if not task:
-            return jsonify({"error": "Task not found"}), 404
-
-        # Check if task is completed
-        if task.status != "Complete":
-            return jsonify({"error": "Can only evaluate completed tasks"}), 400
-
-        current_user_id = get_jwt_identity()
-        data = request.get_json()
-
-        # Validate rating if provided
-        rating = data.get("rating")
-        if rating and (rating < 1 or rating > 5):
-            return jsonify({"error": "Rating must be between 1 and 5"}), 400
-
-        if not data.get("comment"):
-            return jsonify({"error": "Evaluation comment is required"}), 400
-
         try:
+            task = TaskManager.query.get(task_id)
+            if not task:
+                return {"error": "Task not found"}, 404
+
+            # Check if task is completed
+            if task.status != "Complete":
+                return {"error": "Can only evaluate completed tasks"}, 400
+
+            current_user_id = get_jwt_identity()
+            data = request.get_json()
+
+            # Validate rating if provided
+            rating = data.get("rating")
+            if rating and (rating < 1 or rating > 5):
+                return {"error": "Rating must be between 1 and 5"}, 400
+
+            if not data.get("comment"):
+                return {"error": "Evaluation comment is required"}, 400
+
             # Check if evaluation already exists
             evaluation = TaskEvaluation.query.filter_by(task_id=task_id).first()
             
@@ -468,30 +491,34 @@ class TaskEvaluationResource(Resource):
 
             db.session.commit()
 
-            return jsonify({
+            return {
                 "message": "Evaluation saved successfully",
                 "evaluation": evaluation.to_dict()
-            }), 201 if not evaluation else 200
+            }, 201 if not evaluation else 200
 
         except Exception as e:
             db.session.rollback()
-            return jsonify({"error": str(e)}), 400
+            return {"error": str(e)}, 400
 
     @jwt_required()
     def get(self, task_id):
         """Get evaluation for a task"""
-        task = TaskManager.query.get(task_id)
-        if not task:
-            return jsonify({"error": "Task not found"}), 404
+        try:
+            task = TaskManager.query.get(task_id)
+            if not task:
+                return {"error": "Task not found"}, 404
 
-        evaluation = TaskEvaluation.query.options(
-            joinedload(TaskEvaluation.evaluator)
-        ).filter_by(task_id=task_id).first()
+            evaluation = TaskEvaluation.query.options(
+                joinedload(TaskEvaluation.evaluator)
+            ).filter_by(task_id=task_id).first()
 
-        if not evaluation:
-            return jsonify({"message": "No evaluation found for this task"}), 404
+            if not evaluation:
+                return {"message": "No evaluation found for this task"}, 404
 
-        return jsonify(evaluation.to_dict())
+            return evaluation.to_dict(), 200
+
+        except Exception as e:
+            return {"error": str(e)}, 400
 
 
 class TaskProgressResource(Resource):
