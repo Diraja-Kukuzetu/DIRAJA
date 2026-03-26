@@ -564,7 +564,7 @@ class TotalAmountPaidPerShop(Resource):
                     db.session.query(func.sum(Sales.balance))
                     .filter(Sales.shop_id == shop_id)
                     .filter(Sales.created_at.between(start_date, end_date))
-                    .filter(Sales.status.in_(["unpaid", "partially paid"]))  # ✅ Only unpaid or partially paid
+                    .filter(Sales.status.in_(["unpaid", "partially_paid"]))  # ✅ Only unpaid or partially paid
                     .scalar() or 0
                 )
 

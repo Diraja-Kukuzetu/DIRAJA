@@ -182,6 +182,14 @@ from Server.Views.LedgerViews import (
 
 
 )
+from Server.Views.Notifications import (
+    NotificationsResource,
+    NotificationDetailResource,
+    NotificationReadAllResource,
+    NotificationUnreadCountResource,
+    NotificationBulkResource,
+    NotificationTypesResource
+)
 
 from Server.Views.ClerkReportTime import (
     GetShopReports,GetShopReportStats,GetTodayShopReportStatus
@@ -572,3 +580,12 @@ api.add_resource(IncomeStatement,'/income-statement')
 
 #balance sheet
 api.add_resource(BalanceSheet,'/balance-sheet')
+
+
+# Notifications
+api.add_resource(NotificationsResource, '/notifications')
+api.add_resource(NotificationDetailResource, '/notifications/<int:notification_id>')
+api.add_resource(NotificationReadAllResource, '/notifications/read-all')
+api.add_resource(NotificationUnreadCountResource, '/notifications/unread-count')
+api.add_resource(NotificationBulkResource, '/notifications/bulk')
+api.add_resource(NotificationTypesResource, '/notifications/types')

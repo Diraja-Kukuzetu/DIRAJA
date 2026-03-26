@@ -44,13 +44,9 @@ class CreateTask(Resource):
                 }, 400
 
             # Validate category
-            allowed_categories = ["General", "Delivery", "Cleaning", "Maintenance", "Office Work", "Field Work", "Other"]
             category = data.get("category", "General")
             
-            if category not in allowed_categories:
-                return {
-                    "error": f"Invalid category '{category}'. Allowed values are: {', '.join(allowed_categories)}"
-                }, 400
+           
 
             new_task = TaskManager(
                 user_id=current_user_id,  # Use the logged-in user as assigner
@@ -61,12 +57,6 @@ class CreateTask(Resource):
                 assigned_date=datetime.datetime.utcnow(),
                 due_date=datetime.datetime.strptime(data["due_date"], "%Y-%m-%d") if data.get("due_date") else None,
                 status=status,
-                estimated_hours=data.get("estimated_hours"),
-                requires_approval=data.get("requires_approval", False),
-                location=data.get("location"),
-                department=data.get("department"),
-                project_id=data.get("project_id"),
-                created_by=current_user_id
             )
 
             db.session.add(new_task)
@@ -74,6 +64,36 @@ class CreateTask(Resource):
 
             # Send push notification to the assignee
             self.send_push_to_user(new_task.assignee_id, new_task.task, new_task.priority)
+            
+            # Send database notification to the assignee
+            from Server.Views.Services.notifications_service import NotificationService
+            
+            # Create notification data with task details
+            notification_data = {
+                'task_id': new_task.task_id,
+                'assignee_id': new_task.assignee_id,
+                'priority': new_task.priority,
+                'due_date': new_task.due_date.isoformat() if new_task.due_date else None,
+                'category': new_task.category
+            }
+            
+            NotificationService.create_notification(
+                user_id=new_task.assignee_id,
+                notification_type='task_assigned',
+                title=f'New Task Assigned: {new_task.priority} Priority',
+                message=f'Task: {new_task.task[:100]}{"..." if len(new_task.task) > 100 else ""}',
+                data=notification_data
+            )
+            
+            # Also notify the assigner that they created a task (optional)
+            if current_user_id != new_task.assignee_id:
+                NotificationService.create_notification(
+                    user_id=current_user_id,
+                    notification_type='task_created',
+                    title='Task Created',
+                    message=f'You assigned a task to user {new_task.assignee_id}: {new_task.task[:100]}',
+                    data=notification_data
+                )
 
             return {
                 "message": "Task created successfully",
@@ -213,15 +233,15 @@ class TaskResource(Resource):
         ).get(task_id)
         
         if not task:
-            return jsonify({"error": "Task not found"}), 404
+            return {"error": "Task not found"}, 404
 
-        return jsonify(task.to_dict(include_comments=True, include_evaluation=True))
+        return task.to_dict(include_comments=True, include_evaluation=True)
 
     @jwt_required()
     def put(self, task_id):
         task = TaskManager.query.get(task_id)
         if not task:
-            return jsonify({"error": "Task not found"}), 404
+            return {"error": "Task not found"}, 404
 
         current_user_id = get_jwt_identity()
         data = request.get_json()
@@ -256,32 +276,31 @@ class TaskResource(Resource):
             # Update audit fields
             task.last_modified_by = current_user_id
             task.last_modified_date = datetime.datetime.utcnow()
-            task.version += 1
 
             db.session.commit()
 
-            return jsonify({
+            return {
                 "message": "Task updated successfully",
                 "task": task.to_dict()
-            })
+            }
 
         except Exception as e:
             db.session.rollback()
-            return jsonify({"error": str(e)}), 400
+            return {"error": str(e)}, 400
 
     @jwt_required()
     def delete(self, task_id):
         task = TaskManager.query.get(task_id)
         if not task:
-            return jsonify({"error": "Task not found"}), 404
+            return {"error": "Task not found"}, 404
 
         try:
             db.session.delete(task)
             db.session.commit()
-            return jsonify({"message": "Task deleted successfully"})
+            return {"message": "Task deleted successfully"}
         except Exception as e:
             db.session.rollback()
-            return jsonify({"error": str(e)}), 400
+            return {"error": str(e)}, 400
 
 
 class TaskCommentResource(Resource):
@@ -426,38 +445,32 @@ class CommentResource(Resource):
 class TaskEvaluationResource(Resource):
     @jwt_required()
     def post(self, task_id):
-        """Add or update evaluation for a completed task"""
         task = TaskManager.query.get(task_id)
         if not task:
-            return jsonify({"error": "Task not found"}), 404
+            return {"error": "Task not found"}, 404
 
-        # Check if task is completed
-        if task.status != "Complete":
-            return jsonify({"error": "Can only evaluate completed tasks"}), 400
+        if task.status != "Completed":
+            return {"error": "Can only evaluate completed tasks"}, 400
 
         current_user_id = get_jwt_identity()
         data = request.get_json()
 
-        # Validate rating if provided
         rating = data.get("rating")
         if rating and (rating < 1 or rating > 5):
-            return jsonify({"error": "Rating must be between 1 and 5"}), 400
+            return {"error": "Rating must be between 1 and 5"}, 400
 
         if not data.get("comment"):
-            return jsonify({"error": "Evaluation comment is required"}), 400
+            return {"error": "Evaluation comment is required"}, 400
 
         try:
-            # Check if evaluation already exists
             evaluation = TaskEvaluation.query.filter_by(task_id=task_id).first()
-            
+            is_new = False
+
             if evaluation:
-                # Update existing evaluation
                 evaluation.rating = rating
                 evaluation.comment = data["comment"]
                 evaluation.evaluator_id = current_user_id
-                # created_at will stay the same, no updated_at field
             else:
-                # Create new evaluation
                 evaluation = TaskEvaluation(
                     task_id=task_id,
                     evaluator_id=current_user_id,
@@ -465,33 +478,51 @@ class TaskEvaluationResource(Resource):
                     comment=data["comment"]
                 )
                 db.session.add(evaluation)
+                is_new = True
 
             db.session.commit()
 
-            return jsonify({
+            return {
                 "message": "Evaluation saved successfully",
                 "evaluation": evaluation.to_dict()
-            }), 201 if not evaluation else 200
+            }, 201 if is_new else 200
 
         except Exception as e:
             db.session.rollback()
-            return jsonify({"error": str(e)}), 400
+            return {"error": str(e)}, 400
 
     @jwt_required()
     def get(self, task_id):
         """Get evaluation for a task"""
-        task = TaskManager.query.get(task_id)
-        if not task:
-            return jsonify({"error": "Task not found"}), 404
+        try:
+            task = TaskManager.query.get(task_id)
+            if not task:
+                return {"error": "Task not found"}, 404
 
-        evaluation = TaskEvaluation.query.options(
-            joinedload(TaskEvaluation.evaluator)
-        ).filter_by(task_id=task_id).first()
+            evaluation = TaskEvaluation.query.options(
+                joinedload(TaskEvaluation.evaluator)
+            ).filter_by(task_id=task_id).first()
 
-        if not evaluation:
-            return jsonify({"message": "No evaluation found for this task"}), 404
+            if not evaluation:
+                return {"message": "No evaluation found for this task"}, 404
 
-        return jsonify(evaluation.to_dict())
+            # Ensure we're returning a proper dictionary
+            evaluation_dict = evaluation.to_dict()
+            
+            # If evaluator is loaded, ensure it's properly serialized
+            if hasattr(evaluation, 'evaluator') and evaluation.evaluator:
+                evaluation_dict['evaluator'] = {
+                    'id': evaluation.evaluator.users_id,
+                    'username': evaluation.evaluator.username,
+                    'email': evaluation.evaluator.email
+                }
+            
+            return {"evaluation": evaluation_dict}, 200
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"error": f"Error retrieving evaluation: {str(e)}"}, 500
 
 
 class TaskProgressResource(Resource):

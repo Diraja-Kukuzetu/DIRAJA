@@ -41,12 +41,6 @@ class TaskManager(db.Model):
         assert priority in valid_priorities, f"Invalid priority. Must be one of: {', '.join(valid_priorities)}"
         return priority
     
-    @validates('category')
-    def validate_category(self, key, category):
-        valid_categories = ['General', 'Delivery', 'Cleaning', 'Maintenance', 'Office Work', 'Field Work', 'Other']
-        assert category in valid_categories, f"Invalid category. Must be one of: {', '.join(valid_categories)}"
-        return category
-    
     @validates('status')
     def validate_status(self, key, status):
         valid_statuses = ['Pending', 'In Progress', 'Completed', 'Cancelled', 'Overdue']
