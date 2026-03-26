@@ -40,17 +40,18 @@ class TaskManager(db.Model):
         valid_priorities = ['High', 'Medium', 'Low']
         assert priority in valid_priorities, f"Invalid priority. Must be one of: {', '.join(valid_priorities)}"
         return priority
+ 
     
     @validates('status')
     def validate_status(self, key, status):
-        valid_statuses = ['Pending', 'In Progress', 'Completed', 'Cancelled', 'Overdue']
+        valid_statuses = ['Pending', 'In Progress', 'Complete', 'Cancelled', 'Overdue']
         assert status in valid_statuses, f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
         return status
     
     @property
     def is_overdue(self):
         """Check if task is overdue"""
-        if self.due_date and self.status not in ['Completed', 'Cancelled']:
+        if self.due_date and self.status not in ['Complete', 'Cancelled']:
             return datetime.datetime.utcnow() > self.due_date
         return False
     
