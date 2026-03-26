@@ -8,6 +8,7 @@ from Server.Models.Shops import Shops
 from Server.Models.ShopstockV2 import ShopStockV2
 from Server.Models.InventoryV2 import InventoryV2
 from Server.Models.Shoptoshoptransfer import Shoptoshoptransfer
+from Server.Models.Employees import Employees
 from app import db
 from flask_restful import Resource
 from sqlalchemy.orm import joinedload
@@ -70,6 +71,7 @@ class ShopToShopTransfer(Resource):
 
         qty_to_transfer = quantity
         transfer_records = []
+        created_transfers = []
 
         try:
             for batch in source_batches:
@@ -96,12 +98,11 @@ class ShopToShopTransfer(Resource):
                     status="pending"
                 )
                 db.session.add(transfer)
-
-                # ❌ REMOVED: The code that immediately adds to destination stock
-                # This is what was causing the double entry
+                created_transfers.append(transfer)
 
                 # ✅ Record transfer info
                 transfer_records.append({
+                    "transfer_id": transfer.transfer_id,  # Fixed: using transfer_id instead of id
                     "batch_number": batch.BatchNumber,
                     "deducted": take_qty,
                     "metric": batch.metric
@@ -109,6 +110,111 @@ class ShopToShopTransfer(Resource):
 
                 qty_to_transfer -= take_qty
 
+            db.session.flush()  # Flush to get transfer IDs
+            
+            # ===== CREATE DATABASE NOTIFICATIONS =====
+            from Server.Views.Services.notifications_service import NotificationService
+            
+            # Get shop details
+            from_shop = Shops.query.get(from_shop_id)
+            to_shop = Shops.query.get(to_shop_id)
+            
+            from_shop_name = from_shop.shopname if from_shop and hasattr(from_shop, 'shopname') else f"Shop {from_shop_id}"
+            to_shop_name = to_shop.shopname if to_shop and hasattr(to_shop, 'shopname') else f"Shop {to_shop_id}"
+            
+            # Prepare notification data
+            notification_data = {
+                'from_shop_id': from_shop_id,
+                'from_shop_name': from_shop_name,
+                'to_shop_id': to_shop_id,
+                'to_shop_name': to_shop_name,
+                'itemname': item_name,
+                'quantity': quantity,
+                'transfers': transfer_records,
+                'initiated_by': user_id,
+                'initiated_by_name': user.username if user else str(user_id),
+                'initiated_at': datetime.utcnow().isoformat(),
+                'status': 'pending'
+            }
+            
+            notified_users = []
+            
+            # 1. NOTIFY THE USER WHO INITIATED THE TRANSFER (sender)
+            if user_id:
+                NotificationService.create_notification(
+                    user_id=user_id,
+                    notification_type='shop_to_shop_transfer_initiated',
+                    title='Transfer Initiated',
+                    message=f'You initiated a transfer of {quantity} {transfer_records[0]["metric"] if transfer_records else ""} {item_name} from your shop ({from_shop_name}) to {to_shop_name}',
+                    data=notification_data
+                )
+                notified_users.append({
+                    'user_id': user_id,
+                    'type': 'initiator',
+                    'shop': 'sending'
+                })
+                print(f"Notification sent to initiator (user: {user_id})")
+            
+            # 2. NOTIFY ALL USERS LINKED TO THE RECEIVING SHOP (to_shop)
+            # Get all active employees for the receiving shop
+            receiving_shop_employees = Employees.query.filter_by(
+                shop_id=to_shop_id,
+                account_status='active'
+            ).all()
+            
+            receiving_shop_notified = 0
+            for employee in receiving_shop_employees:
+                employee_user = Users.query.filter_by(employee_id=employee.employee_id).first()
+                
+                if employee_user:
+                    # Skip if this user is the same as the initiator
+                    if employee_user.users_id == user_id:
+                        print(f"Skipping initiator {employee_user.users_id} (already notified)")
+                        continue
+                    
+                    NotificationService.create_notification(
+                        user_id=employee_user.users_id,
+                        notification_type='shop_to_shop_transfer_pending',
+                        title='Pending Stock Transfer',
+                        message=f'{quantity} {transfer_records[0]["metric"] if transfer_records else ""} of {item_name} is pending transfer from {from_shop_name} to your shop ({to_shop_name}). Please confirm receipt.',
+                        data=notification_data
+                    )
+                    receiving_shop_notified += 1
+                    notified_users.append({
+                        'user_id': employee_user.users_id,
+                        'employee_id': employee.employee_id,
+                        'employee_name': f"{employee.first_name} {employee.surname}",
+                        'type': 'receiving_shop_staff'
+                    })
+                    print(f"Notification sent to receiving shop staff: {employee.first_name} {employee.surname} (user: {employee_user.users_id})")
+            
+            # 3. OPTIONAL: NOTIFY USERS LINKED TO THE SENDING SHOP (for awareness)
+            # Uncomment if you want to notify sending shop staff about the transfer
+            """
+            sending_shop_employees = Employees.query.filter_by(
+                shop_id=from_shop_id,
+                account_status='active'
+            ).all()
+            
+            sending_shop_notified = 0
+            for employee in sending_shop_employees:
+                employee_user = Users.query.filter_by(employee_id=employee.employee_id).first()
+                
+                if employee_user and employee_user.users_id != user_id:
+                    NotificationService.create_notification(
+                        user_id=employee_user.users_id,
+                        notification_type='shop_to_shop_transfer_awareness',
+                        title='Stock Transfer Initiated',
+                        message=f'{quantity} {transfer_records[0]["metric"] if transfer_records else ""} of {item_name} has been transferred from your shop to {to_shop_name}',
+                        data=notification_data
+                    )
+                    sending_shop_notified += 1
+                    notified_users.append({
+                        'user_id': employee_user.users_id,
+                        'type': 'sending_shop_staff'
+                    })
+            """
+            
             db.session.commit()
 
             return {
@@ -117,7 +223,12 @@ class ShopToShopTransfer(Resource):
                 "requested_quantity": quantity,
                 "deductions": transfer_records,
                 "destination_shop": to_shop_id,
-                "status": "pending"
+                "status": "pending",
+                "notifications_summary": {
+                    "initiator_notified": bool(user_id),
+                    "receiving_shop_staff_notified": receiving_shop_notified,
+                    "total_notified": len(notified_users)
+                }
             }, 201
 
         except Exception as e:
@@ -239,7 +350,7 @@ class DeclineTransfers(Resource):
             if sender_stock:
                 sender_stock.quantity += transfer.quantity
             else:
-                # If stock row doesn’t exist, create it
+                # If stock row doesn't exist, create it
                 sender_stock = ShopStockV2(
                     shop_id=transfer.from_shop_id,
                     inventoryv2_id=inv_id,
@@ -255,6 +366,173 @@ class DeclineTransfers(Resource):
             transfer.decline_note = note
             transfer.notification_ack = False  # trigger popup for sender
 
+            db.session.flush()  # Flush to ensure transfer is saved before notifications
+            
+            # ===== CREATE DATABASE NOTIFICATIONS =====
+            from Server.Views.Services.notifications_service import NotificationService
+            
+            # Get shop details
+            from_shop = Shops.query.get(transfer.from_shop_id)
+            to_shop = Shops.query.get(transfer.to_shop_id)
+            
+            from_shop_name = from_shop.shopname if from_shop and hasattr(from_shop, 'shopname') else f"Shop {transfer.from_shop_id}"
+            to_shop_name = to_shop.shopname if to_shop and hasattr(to_shop, 'shopname') else f"Shop {transfer.to_shop_id}"
+            
+            # Get the user who declined (current user)
+            declining_user = Users.query.get(user_id)
+            
+            # Get employee details for the declining user (if they are an employee)
+            declining_employee = Employees.query.filter_by(employee_id=declining_user.employee_id).first() if declining_user and declining_user.employee_id else None
+            
+            # Prepare decliner info
+            decliner_name = declining_user.username if declining_user else str(user_id)
+            if declining_employee:
+                decliner_name = f"{declining_employee.first_name} {declining_employee.surname}"
+            
+            decliner_role = declining_employee.role if declining_employee else "Staff"
+            decliner_shop = to_shop_name if transfer.to_shop_id else "the receiving shop"
+            
+            # Get the user who initiated the transfer (sender)
+            initiator_user = Users.query.get(transfer.users_id) if transfer.users_id else None
+            
+            # Get employee details for the initiator (if they are an employee)
+            initiator_employee = Employees.query.filter_by(employee_id=initiator_user.employee_id).first() if initiator_user and initiator_user.employee_id else None
+            initiator_name = initiator_user.username if initiator_user else "Unknown"
+            if initiator_employee:
+                initiator_name = f"{initiator_employee.first_name} {initiator_employee.surname}"
+            
+            # Prepare notification data
+            notification_data = {
+                'transfer_id': transfer.transfer_id,
+                'from_shop_id': transfer.from_shop_id,
+                'from_shop_name': from_shop_name,
+                'to_shop_id': transfer.to_shop_id,
+                'to_shop_name': to_shop_name,
+                'itemname': transfer.itemname,
+                'quantity': transfer.quantity,
+                'metric': transfer.metric,
+                'batch_number': batch_number,
+                'declined_by': user_id,
+                'declined_by_name': decliner_name,
+                'declined_by_role': decliner_role,
+                'declined_by_shop': decliner_shop,
+                'declined_at': datetime.utcnow().isoformat(),
+                'decline_note': note,
+                'restored_quantity': transfer.quantity,
+                'status': 'declined'
+            }
+            
+            notified_users = []
+            
+            # 1. NOTIFY THE USER WHO DECLINED THE TRANSFER
+            if user_id:
+                NotificationService.create_notification(
+                    user_id=user_id,
+                    notification_type='shop_to_shop_transfer_declined_by_you',
+                    title='Transfer Declined',
+                    message=f'You declined the transfer of {transfer.quantity} {transfer.metric} of {transfer.itemname} from {from_shop_name} to {to_shop_name}',
+                    data=notification_data
+                )
+                notified_users.append({
+                    'user_id': user_id,
+                    'type': 'decliner',
+                    'role': 'receiver',
+                    'name': decliner_name
+                })
+                print(f"Notification sent to decliner: {decliner_name} (user: {user_id})")
+            
+            # 2. NOTIFY THE USER WHO INITIATED THE TRANSFER (sender) - WITH DECLINER INFO
+            if initiator_user and initiator_user.users_id != user_id:
+                # Create a detailed message with decliner information
+                decline_message = f'{decliner_name} from {to_shop_name} declined your transfer of {transfer.quantity} {transfer.metric} of {transfer.itemname}'
+                
+                if note and note != "No reason provided":
+                    decline_message += f'. Reason: {note}'
+                
+                NotificationService.create_notification(
+                    user_id=initiator_user.users_id,
+                    notification_type='shop_to_shop_transfer_declined',
+                    title='Transfer Declined',
+                    message=decline_message,
+                    data=notification_data
+                )
+                notified_users.append({
+                    'user_id': initiator_user.users_id,
+                    'type': 'initiator',
+                    'role': 'sender',
+                    'name': initiator_name
+                })
+                print(f"Notification sent to initiator: {initiator_name} (user: {initiator_user.users_id}) - Declined by: {decliner_name}")
+            else:
+                if not initiator_user:
+                    print(f"No initiator user found for transfer {transfer_id}")
+                elif initiator_user.users_id == user_id:
+                    print(f"Initiator is the same as decliner, skipping duplicate notification")
+            
+            # 3. OPTIONAL: NOTIFY OTHER STAFF AT THE RECEIVING SHOP ABOUT THE DECLINE
+            # Uncomment if you want to notify other staff at the receiving shop
+            """
+            if transfer.to_shop_id:
+                receiving_shop_employees = Employees.query.filter_by(
+                    shop_id=transfer.to_shop_id,
+                    account_status='active'
+                ).all()
+                
+                receiving_shop_notified = 0
+                for employee in receiving_shop_employees:
+                    employee_user = Users.query.filter_by(employee_id=employee.employee_id).first()
+                    
+                    if employee_user and employee_user.users_id != user_id:
+                        if not initiator_user or employee_user.users_id != initiator_user.users_id:
+                            employee_name = f"{employee.first_name} {employee.surname}"
+                            NotificationService.create_notification(
+                                user_id=employee_user.users_id,
+                                notification_type='shop_to_shop_transfer_declined_shop_notification',
+                                title='Transfer Declined',
+                                message=f'{decliner_name} declined a transfer of {transfer.quantity} {transfer.metric} of {transfer.itemname} from {from_shop_name}',
+                                data=notification_data
+                            )
+                            receiving_shop_notified += 1
+                            notified_users.append({
+                                'user_id': employee_user.users_id,
+                                'type': 'receiving_shop_staff',
+                                'name': employee_name
+                            })
+                print(f"Notified {receiving_shop_notified} additional receiving shop staff members")
+            """
+            
+            # 4. OPTIONAL: NOTIFY STAFF AT THE SENDING SHOP ABOUT THE DECLINE
+            # Uncomment if you want to notify staff at the sending shop
+            """
+            if transfer.from_shop_id:
+                sending_shop_employees = Employees.query.filter_by(
+                    shop_id=transfer.from_shop_id,
+                    account_status='active'
+                ).all()
+                
+                sending_shop_notified = 0
+                for employee in sending_shop_employees:
+                    employee_user = Users.query.filter_by(employee_id=employee.employee_id).first()
+                    
+                    if employee_user and employee_user.users_id != user_id:
+                        if not initiator_user or employee_user.users_id != initiator_user.users_id:
+                            employee_name = f"{employee.first_name} {employee.surname}"
+                            NotificationService.create_notification(
+                                user_id=employee_user.users_id,
+                                notification_type='shop_to_shop_transfer_declined_shop_notification',
+                                title='Transfer Declined',
+                                message=f'A transfer of {transfer.quantity} {transfer.metric} of {transfer.itemname} to {to_shop_name} was declined by {decliner_name}',
+                                data=notification_data
+                            )
+                            sending_shop_notified += 1
+                            notified_users.append({
+                                'user_id': employee_user.users_id,
+                                'type': 'sending_shop_staff',
+                                'name': employee_name
+                            })
+                print(f"Notified {sending_shop_notified} additional sending shop staff members")
+            """
+            
             db.session.commit()
 
             return {
@@ -262,7 +540,18 @@ class DeclineTransfers(Resource):
                 "transfer_id": transfer_id,
                 "restored_quantity": transfer.quantity,
                 "metric": transfer.metric,
-                "sender_shop": transfer.from_shop_id
+                "sender_shop": transfer.from_shop_id,
+                "decliner": {
+                    "user_id": user_id,
+                    "name": decliner_name,
+                    "role": decliner_role,
+                    "shop": to_shop_name
+                },
+                "notifications_summary": {
+                    "decliner_notified": bool(user_id),
+                    "initiator_notified": bool(initiator_user and initiator_user.users_id != user_id),
+                    "total_notified": len(notified_users)
+                }
             }, 200
 
         except Exception as e:

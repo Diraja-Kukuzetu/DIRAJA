@@ -4,103 +4,87 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_jwt_extended import JWTManager
 from flask_cors import CORS
-from dotenv import load_dotenv
 from flask_mail import Mail
 
-load_dotenv()
 
-# ---------- Extensions ----------
+app = Flask(__name__)
+CORS(app)
 db = SQLAlchemy()
 jwt = JWTManager()
-mail = Mail()
 
-# ---------- Models Import ----------
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+app.config['MAIL_PORT'] = '465'
+app.config['MAIL_USERNAME'] = 'dirajadevelopment@gmail.com'
+app.config['MAIL_PASSWORD'] = 'sazf zull wwva ikjd'
+app.config['MAIL_USE_SSL'] = True
+app.config['MAIL_USE_TLS'] = False
+app.config['MAIL_DEFAULT_SENDER'] = 'dirajadevelopment@gmail.com'
+mail = Mail(app)
+
+
 def initialize_models():
-    """Import all models so SQLAlchemy can discover them."""
     from Server.Models.Users import Users
+    
     from Server.Models.Shops import Shops
     from Server.Models.Sales import Sales
     from Server.Models.Bank import Bank
     from Server.Models.Customers import Customers
     from Server.Models.Employees import Employees
-    from Server.Models.EmployeeLoan import EmployeeLoan
+    from Server.Models.EmployeeLoan import  EmployeeLoan
     from Server.Models.Stock import Stock
-    from Server.Models.Expenses import Expenses
+    from Server.Models.Expenses import Expenses 
     from Server.Models.Inventory import Inventory
     from Server.Models.Shopstock import ShopStock
     from Server.Models.Paymnetmethods import SalesPaymentMethods
-    from Server.Models.SoldItems import SoldItem
+    # from Server.Models.Distribution import Distribution
     from Server.Models.Transfer import Transfer
     from Server.Models.LiveStock import LiveStock
     from Server.Models.ShopTransfers import ShopTransfer
-    from Server.Models.SystemStockTransfer import SystemStockTransfer
-    from Server.Models.ChartOfAccounts import ChartOfAccounts
-    from Server.Models.BankAccounts import BankAccount, BankingTransaction
-    from Server.Models.SalesDepartment import SalesDepartment
-    from Server.Models.Supplier import Suppliers, SupplierHistory
-    from Server.Models.InventoryV2 import InventoryV2
-    from Server.Models.ShopstockV2 import ShopStockV2
-    from Server.Models.ExpenseCategory import ExpenseCategory
-    from Server.Models.StockReport import StockReport
-    from Server.Models.Permission import Permission
+    from Server.Models.SystemStockTransfer import  SystemStockTransfer
+    
+    # from Server.Models.Purchases import Purchases
 
-
-# ---------- Views Import ----------
-def initialize_views(app):
-    """Register Flask blueprints/resources."""
-    from Server.Views import api_endpoint
+def initialize_views():
+    from  Server.Views import api_endpoint
     app.register_blueprint(api_endpoint)
 
 
 def create_app(config_name):
-    app = Flask(__name__)
-    app.url_map.strict_slashes = False
-
-    # Update CORS to allow your new origin
-    CORS(app, origins=[
-        "https://beta.kulima.co.ke",
-        # you can keep localhost or other origins if needed
-        "http://localhost:3000",
-        "http://127.0.0.1:3000"
-    ])
-
-    # Load config
     app.config.from_object(config_name)
+    # app.config["SQLALCHEMY_DATABASE_URI"] = 'sqlite:///app.db'
+    app.config["SQLALCHEMY_DATABASE_URI"] = 'mysql+pymysql://root:@localhost/Diraja'
 
-    # Database config
-    app.config["SQLALCHEMY_DATABASE_URI"] = "mysql+pymysql://root:MyNewPass@localhost/Diraja"
 
-    # JWT config
+
+    # MySQL database configuration      
+    
+#     app.config["SQLALCHEMY_DATABASE_URI"] = 'mysql+pymysql://kulimaco_dirajaapp:Diraja2024@148.251.133.221/kulimaco_dirajaapp'
+
+#     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+#     'pool_recycle': 280,  # Recycle connections after 280 seconds of inactivity
+#     'pool_timeout': 30,   # Wait 30 seconds for a connection from the pool
+#     'pool_pre_ping': True  # Check connection health before using it
+# }   
+
+
+    
+    #JWT SETUP KEY
     app.config['JWT_SECRET_KEY'] = "Soweto@2024"
-    app.config['JWT_ACCESS_TOKEN_EXPIRES'] = int(
-        os.getenv('JWT_ACCESS_TOKEN_EXPIRES', 2592000)
-    )
-
-    # Mail config
-    app.config['MAIL_SERVER'] = 'mail.kulima.co.ke'
-    app.config['MAIL_PORT'] = 465
-    app.config['MAIL_USERNAME'] = 'kukuzetureports@kulima.co.ke'
-    app.config['MAIL_PASSWORD'] = 'XZbZ{9ZSPZeg'
-    app.config['MAIL_USE_SSL'] = True
-    app.config['MAIL_USE_TLS'] = False
-    app.config['MAIL_DEFAULT_SENDER'] = 'kukuzetureports@kulima.co.ke'
-
-    # VAPID keys
-    app.config['VAPID_PUBLIC_KEY'] = os.getenv("VAPID_PUBLIC_KEY")
-    app.config['VAPID_PRIVATE_KEY'] = os.getenv("VAPID_PRIVATE_KEY")
-    app.config['VAPID_EMAIL'] = os.getenv("VAPID_EMAIL")  # e.g. "mailto:admin@yourdomain.com"
-
-    # Init extensions
+    app.config['JWT_ACCESS_TOKEN_EXPIRES'] = int(os.getenv('JWT_ACCESS_TOKEN_EXPIRES', 2592000))
+    
+    #Initialize DB with app
     db.init_app(app)
-    Migrate(app, db)
+    migrate = Migrate(app, db)
     jwt.init_app(app)
-    mail.init_app(app)
-
-    # Import models
+   
+    # Create database schemas
     with app.app_context():
         initialize_models()
 
-    # Register views
-    initialize_views(app)
+    initialize_views()
+
+
+        
+
 
     return app

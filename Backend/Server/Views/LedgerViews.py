@@ -1,12 +1,12 @@
 from flask_restful import Resource
 from flask import jsonify,request
-from flask_jwt_extended import jwt_required
 from app import db
 from sqlalchemy.orm import aliased
 from datetime import datetime
-
-
+from flask_jwt_extended import jwt_required
+from sqlalchemy import func, or_
 from Server.Models.Accounting.SalesLedger import SalesLedger
+from Server.Models.Accounting.ManualLedger import ManualLedger
 from Server.Models.Accounting.CreditSalesLedger import CreditSalesLedger
 from Server.Models.ChartOfAccounts import ChartOfAccounts
 from Server.Models.Shops import Shops
@@ -3156,7 +3156,6 @@ class ExpensesLedgerList(Resource):
         except Exception as e:
             db.session.rollback()
             return {"error": str(e)}, 500
-
         
 class SpoiltStockLedgerList(Resource):
     @jwt_required()
@@ -3759,9 +3758,7 @@ class SpoiltStockLedgerList(Resource):
         except Exception as e:
             db.session.rollback()
             return {"error": str(e)}, 500
-
-
-
+        
 class CreateManualLedger(Resource):
 
     @jwt_required()
@@ -3836,4 +3833,246 @@ class CreateManualLedger(Resource):
             "shop_id": shop_id,
             "created_at": timestamp.isoformat()
         }, 201
+        
+class ManualLedgerList(Resource):
+    @jwt_required()
+    def get(self):
+        try:
+            # Get query parameters
+            page = request.args.get('page', 1, type=int)
+            per_page = request.args.get('per_page', 20, type=int)
+            search = request.args.get('search', '', type=str)
+            ledger_id = request.args.get('id', type=int)
+            shop_id = request.args.get('shop_id', type=int)
+            debit_account_id = request.args.get('debit_account_id', type=int)
+            credit_account_id = request.args.get('credit_account_id', type=int)
+            account_id = request.args.get('account_id', type=int)
+            start_date = request.args.get('start_date', type=str)
+            end_date = request.args.get('end_date', type=str)
+            min_amount = request.args.get('min_amount', type=float)
+            max_amount = request.args.get('max_amount', type=float)
+            
+            # Aliases for ChartOfAccounts
+            DebitAccount = aliased(ChartOfAccounts)
+            CreditAccount = aliased(ChartOfAccounts)
 
+            # Build base query
+            query = db.session.query(
+                ManualLedger.id,
+                ManualLedger.created_at,
+                ManualLedger.description,
+                ManualLedger.amount,
+                # Debit account details
+                DebitAccount.id.label("debit_account_id"),
+                DebitAccount.name.label("debit_account_name"),
+                DebitAccount.code.label("debit_account_code"),
+                DebitAccount.type.label("debit_account_type"),
+                # Credit account details
+                CreditAccount.id.label("credit_account_id"),
+                CreditAccount.name.label("credit_account_name"),
+                CreditAccount.code.label("credit_account_code"),
+                CreditAccount.type.label("credit_account_type"),
+                # Shop details
+                Shops.shops_id,
+                Shops.shopname.label("shop_name")
+            ).outerjoin(
+                DebitAccount, 
+                ManualLedger.debit_account_id == DebitAccount.id
+            ).outerjoin(
+                CreditAccount, 
+                ManualLedger.credit_account_id == CreditAccount.id
+            ).outerjoin(
+                Shops, 
+                ManualLedger.shop_id == Shops.shops_id
+            )
+
+            # Apply filters
+            if ledger_id:
+                query = query.filter(ManualLedger.id == ledger_id)
+
+            if shop_id:
+                query = query.filter(ManualLedger.shop_id == shop_id)
+
+            if debit_account_id:
+                query = query.filter(ManualLedger.debit_account_id == debit_account_id)
+
+            if credit_account_id:
+                query = query.filter(ManualLedger.credit_account_id == credit_account_id)
+
+            if account_id:
+                query = query.filter(
+                    or_(
+                        ManualLedger.debit_account_id == account_id,
+                        ManualLedger.credit_account_id == account_id
+                    )
+                )
+
+            if start_date:
+                try:
+                    start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
+                    query = query.filter(ManualLedger.created_at >= start_date_obj)
+                except ValueError:
+                    pass
+
+            if end_date:
+                try:
+                    end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+                    end_date_obj = end_date_obj.replace(hour=23, minute=59, second=59)
+                    query = query.filter(ManualLedger.created_at <= end_date_obj)
+                except ValueError:
+                    pass
+
+            if min_amount is not None:
+                query = query.filter(ManualLedger.amount >= min_amount)
+
+            if max_amount is not None:
+                query = query.filter(ManualLedger.amount <= max_amount)
+
+            if search:
+                search_term = f"%{search}%"
+                query = query.filter(
+                    or_(
+                        ManualLedger.description.ilike(search_term),
+                        DebitAccount.name.ilike(search_term),
+                        DebitAccount.code.ilike(search_term),
+                        CreditAccount.name.ilike(search_term),
+                        CreditAccount.code.ilike(search_term),
+                        Shops.shopname.ilike(search_term),
+                        func.cast(ManualLedger.amount, db.String).ilike(search_term)
+                    )
+                )
+
+            # Get total count for pagination
+            total_count = query.count()
+            total_pages = (total_count + per_page - 1) // per_page
+
+            # Apply pagination and ordering
+            query = query.order_by(ManualLedger.created_at.desc())
+            paginated_query = query.offset((page - 1) * per_page).limit(per_page).all()
+
+            # Prepare results
+            data = []
+            for row in paginated_query:
+                entry = {
+                    "id": row.id,
+                    "created_at": row.created_at.strftime("%Y-%m-%d %H:%M:%S") if row.created_at else None,
+                    "description": row.description,
+                    "amount": float(row.amount or 0),
+                    "debit_account": {
+                        "id": row.debit_account_id,
+                        "name": row.debit_account_name,
+                        "code": row.debit_account_code,
+                        "type": row.debit_account_type
+                    } if row.debit_account_id else None,
+                    "credit_account": {
+                        "id": row.credit_account_id,
+                        "name": row.credit_account_name,
+                        "code": row.credit_account_code,
+                        "type": row.credit_account_type
+                    } if row.credit_account_id else None,
+                    "shop": {
+                        "id": row.shops_id,
+                        "name": row.shop_name
+                    } if row.shops_id else None
+                }
+                data.append(entry)
+
+            # Summary statistics
+            summary_query = db.session.query(
+                func.count(ManualLedger.id).label('total_entries'),
+                func.sum(ManualLedger.amount).label('total_amount'),
+                func.avg(ManualLedger.amount).label('average_amount'),
+                func.max(ManualLedger.amount).label('max_amount'),
+                func.min(ManualLedger.amount).label('min_amount'),
+                func.count(db.distinct(ManualLedger.shop_id)).label('unique_shops'),
+                func.count(db.distinct(ManualLedger.debit_account_id)).label('unique_debit_accounts'),
+                func.count(db.distinct(ManualLedger.credit_account_id)).label('unique_credit_accounts')
+            )
+
+            # Apply same filters to summary
+            if ledger_id:
+                summary_query = summary_query.filter(ManualLedger.id == ledger_id)
+            if shop_id:
+                summary_query = summary_query.filter(ManualLedger.shop_id == shop_id)
+            if debit_account_id:
+                summary_query = summary_query.filter(ManualLedger.debit_account_id == debit_account_id)
+            if credit_account_id:
+                summary_query = summary_query.filter(ManualLedger.credit_account_id == credit_account_id)
+            if account_id:
+                summary_query = summary_query.filter(
+                    or_(
+                        ManualLedger.debit_account_id == account_id,
+                        ManualLedger.credit_account_id == account_id
+                    )
+                )
+            if start_date:
+                try:
+                    start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
+                    summary_query = summary_query.filter(ManualLedger.created_at >= start_date_obj)
+                except ValueError:
+                    pass
+            if end_date:
+                try:
+                    end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+                    end_date_obj = end_date_obj.replace(hour=23, minute=59, second=59)
+                    summary_query = summary_query.filter(ManualLedger.created_at <= end_date_obj)
+                except ValueError:
+                    pass
+            if min_amount is not None:
+                summary_query = summary_query.filter(ManualLedger.amount >= min_amount)
+            if max_amount is not None:
+                summary_query = summary_query.filter(ManualLedger.amount <= max_amount)
+            if search:
+                search_term = f"%{search}%"
+                summary_query = summary_query.join(
+                    DebitAccount, 
+                    ManualLedger.debit_account_id == DebitAccount.id, 
+                    isouter=True
+                ).join(
+                    CreditAccount, 
+                    ManualLedger.credit_account_id == CreditAccount.id, 
+                    isouter=True
+                ).join(
+                    Shops, 
+                    ManualLedger.shop_id == Shops.shops_id, 
+                    isouter=True
+                ).filter(
+                    or_(
+                        ManualLedger.description.ilike(search_term),
+                        DebitAccount.name.ilike(search_term),
+                        DebitAccount.code.ilike(search_term),
+                        CreditAccount.name.ilike(search_term),
+                        CreditAccount.code.ilike(search_term),
+                        Shops.shopname.ilike(search_term)
+                    )
+                )
+
+            summary = summary_query.first()
+
+            return jsonify({
+                "data": data,
+                "pagination": {
+                    "total": total_count,
+                    "page": page,
+                    "per_page": per_page,
+                    "pages": total_pages,
+                    "has_next": page < total_pages,
+                    "has_prev": page > 1,
+                    "next_num": page + 1 if page < total_pages else None,
+                    "prev_num": page - 1 if page > 1 else None
+                },
+                "summary": {
+                    "total_entries": summary.total_entries or 0,
+                    "total_amount": float(summary.total_amount or 0),
+                    "average_amount": float(summary.average_amount or 0),
+                    "max_amount": float(summary.max_amount or 0),
+                    "min_amount": float(summary.min_amount or 0),
+                    "unique_shops": summary.unique_shops or 0,
+                    "unique_debit_accounts": summary.unique_debit_accounts or 0,
+                    "unique_credit_accounts": summary.unique_credit_accounts or 0
+                }
+            })
+
+        except Exception as e:
+            db.session.rollback()
+            return {"error": str(e)}, 500
