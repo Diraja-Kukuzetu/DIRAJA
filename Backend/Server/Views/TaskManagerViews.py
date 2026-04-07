@@ -34,10 +34,23 @@ class CreateTask(Resource):
         current_user_id = get_jwt_identity()
 
         try:
-            # Validate status
-            allowed_statuses = ["Pending", "Complete", "In Progress", "Cancelled", "Overdue"]
-            status = data.get("status", "Pending")
+            # Validate required fields
+            required_fields = ['task', 'priority', 'assignee_id']
+            for field in required_fields:
+                if field not in data or not data.get(field):
+                    return {"error": f"Missing required field: {field}"}, 400
 
+            # Validate priority
+            allowed_priorities = ['High', 'Medium', 'Low']
+            priority = data.get('priority')
+            if priority not in allowed_priorities:
+                return {
+                    "error": f"Invalid priority '{priority}'. Allowed values are: {', '.join(allowed_priorities)}"
+                }, 400
+
+            # Validate status
+            allowed_statuses = ['Pending', 'In Progress', 'Complete', 'Cancelled', 'Overdue']
+            status = data.get("status", "Pending")
             if status not in allowed_statuses:
                 return {
                     "error": f"Invalid status '{status}'. Allowed values are: {', '.join(allowed_statuses)}"
@@ -45,59 +58,71 @@ class CreateTask(Resource):
 
             # Validate category
             category = data.get("category", "General")
+
+            # Parse due_date
+            due_date = None
+            if data.get("due_date"):
+                due_date_str = data["due_date"]
+                try:
+                    due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    try:
+                        due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d")
+                    except ValueError:
+                        return {"error": f"Invalid date format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS"}, 400
+
+            # Recurring task fields
+            is_recurring = data.get('is_recurring', False)
+            recurrence_pattern = data.get('recurrence_pattern')
+            recurrence_interval = data.get('recurrence_interval', 1)
+            recurrence_end_date_str = data.get('recurrence_end_date')
+            max_recurrences = data.get('max_recurrences')
             
-           
+            # Validate recurring task settings
+            if is_recurring:
+                if not recurrence_pattern:
+                    return {"error": "Recurrence pattern is required for recurring tasks"}, 400
+                if recurrence_pattern not in ['daily', 'weekly', 'monthly', 'yearly']:
+                    return {"error": "Invalid recurrence pattern"}, 400
+                if recurrence_interval < 1:
+                    return {"error": "Recurrence interval must be at least 1"}, 400
+            
+            # Parse recurrence end date
+            recurrence_end_date = None
+            if recurrence_end_date_str:
+                try:
+                    recurrence_end_date = datetime.datetime.strptime(recurrence_end_date_str, "%Y-%m-%d")
+                except ValueError:
+                    return {"error": "Invalid recurrence end date format. Use YYYY-MM-DD"}, 400
 
             new_task = TaskManager(
-                user_id=current_user_id,  # Use the logged-in user as assigner
+                user_id=current_user_id,
                 assignee_id=data.get("assignee_id"),
                 task=data.get("task"),
-                priority=data.get("priority"),
+                priority=priority,
                 category=category,
                 assigned_date=datetime.datetime.utcnow(),
-                due_date=datetime.datetime.strptime(data["due_date"], "%Y-%m-%d") if data.get("due_date") else None,
+                due_date=due_date,
                 status=status,
+                closing_date=None,
+                is_recurring=is_recurring,
+                recurrence_pattern=recurrence_pattern if is_recurring else None,
+                recurrence_interval=recurrence_interval if is_recurring else 1,
+                recurrence_end_date=recurrence_end_date if is_recurring else None,
+                max_recurrences=max_recurrences if is_recurring else None,
+                last_recurrence_date=datetime.datetime.utcnow() if is_recurring else None
             )
 
             db.session.add(new_task)
             db.session.commit()
 
             # Send push notification to the assignee
-            self.send_push_to_user(new_task.assignee_id, new_task.task, new_task.priority)
-            
-            # Send database notification to the assignee
-            from Server.Views.Services.notifications_service import NotificationService
-            
-            # Create notification data with task details
-            notification_data = {
-                'task_id': new_task.task_id,
-                'assignee_id': new_task.assignee_id,
-                'priority': new_task.priority,
-                'due_date': new_task.due_date.isoformat() if new_task.due_date else None,
-                'category': new_task.category
-            }
-            
-            NotificationService.create_notification(
-                user_id=new_task.assignee_id,
-                notification_type='task_assigned',
-                title=f'New Task Assigned: {new_task.priority} Priority',
-                message=f'Task: {new_task.task[:100]}{"..." if len(new_task.task) > 100 else ""}',
-                data=notification_data
-            )
-            
-            # Also notify the assigner that they created a task (optional)
-            if current_user_id != new_task.assignee_id:
-                NotificationService.create_notification(
-                    user_id=current_user_id,
-                    notification_type='task_created',
-                    title='Task Created',
-                    message=f'You assigned a task to user {new_task.assignee_id}: {new_task.task[:100]}',
-                    data=notification_data
-                )
+            if new_task.assignee_id:
+                self.send_push_to_user(new_task.assignee_id, new_task.task, new_task.priority)
 
             return {
                 "message": "Task created successfully",
-                "task": new_task.to_dict()
+                "task": new_task.to_dict(include_recurrence_info=True)
             }, 201
 
         except Exception as e:
@@ -143,19 +168,16 @@ class GetTasks(Resource):
     @jwt_required()
     @check_role('manager')
     def get(self):
-        # Get query parameters for filtering
-        category = request.args.get('category')
-        status = request.args.get('status')
-        priority = request.args.get('priority')
+        category    = request.args.get('category')
+        status      = request.args.get('status')
+        priority    = request.args.get('priority')
         assignee_id = request.args.get('assignee_id')
-        
-        # Build query
+ 
         query = TaskManager.query.options(
             joinedload(TaskManager.assigner),
             joinedload(TaskManager.assignee),
         )
-        
-        # Apply filters
+ 
         if category:
             query = query.filter(TaskManager.category == category)
         if status:
@@ -164,20 +186,20 @@ class GetTasks(Resource):
             query = query.filter(TaskManager.priority == priority)
         if assignee_id:
             query = query.filter(TaskManager.assignee_id == assignee_id)
-        
-        # Order by due date (newest first) and priority
+ 
         tasks = query.order_by(
             TaskManager.due_date.desc(),
             TaskManager.priority.desc()
         ).all()
-        
+ 
         if not tasks:
             return {"message": "No tasks found"}, 404
-
+ 
         return {
-            "tasks": [task.to_dict() for task in tasks],
-            "total_count": len(tasks)
+            "tasks": [task.to_dict(include_recurrence_info=True) for task in tasks],  # ← changed
+            "total_count": len(tasks),
         }, 200
+
 
 
 class GetUserTasks(Resource):
@@ -192,12 +214,17 @@ class GetUserTasks(Resource):
         status = request.args.get('status')
         category = request.args.get('category')
         priority = request.args.get('priority')
+        include_recurring = request.args.get('include_recurring', 'true').lower() == 'true'
         
         # Build query
         query = TaskManager.query.options(
             joinedload(TaskManager.assigner),
             joinedload(TaskManager.assignee)
         ).filter(TaskManager.assignee_id == target_user_id)
+        
+        # Filter out parent recurring tasks if needed
+        if not include_recurring:
+            query = query.filter(TaskManager.parent_task_id.is_(None))
         
         # Apply filters
         if status:
@@ -207,9 +234,9 @@ class GetUserTasks(Resource):
         if priority:
             query = query.filter(TaskManager.priority == priority)
         
-        # Order by due date and priority
+        # Order by due date (soonest first) and priority
         tasks = query.order_by(
-            TaskManager.due_date.asc(),  # Soonest first for users
+            TaskManager.due_date.asc(),
             TaskManager.priority.desc()
         ).all()
         
@@ -217,9 +244,10 @@ class GetUserTasks(Resource):
             return {"message": "No tasks found"}, 404
 
         return {
-            "tasks": [task.to_dict() for task in tasks],
+            "tasks": [task.to_dict(include_recurrence_info=True) for task in tasks],
             "total_count": len(tasks)
         }, 200
+
 
 
 class TaskResource(Resource):
@@ -229,12 +257,14 @@ class TaskResource(Resource):
             joinedload(TaskManager.assigner),
             joinedload(TaskManager.assignee),
             joinedload(TaskManager.comments).joinedload(TaskComment.user),
-            joinedload(TaskManager.evaluation)
+            joinedload(TaskManager.evaluation),
+            joinedload(TaskManager.child_tasks)
         ).get(task_id)
         
         if not task:
             return {"error": "Task not found"}, 404
 
+        return jsonify(task.to_dict(include_comments=True, include_evaluation=True, include_recurrence_info=True))
         return task.to_dict(include_comments=True, include_evaluation=True)
 
     @jwt_required()
@@ -253,36 +283,46 @@ class TaskResource(Resource):
             if data.get("assignee_id"):
                 task.assignee_id = data["assignee_id"]
             if data.get("status"):
+                old_status = task.status
                 task.status = data["status"]
+                # Auto-set closing date when status changes to "Complete"
                 if data["status"] == "Complete" and not task.closing_date:
-                    task.closing_date = datetime.datetime.utcnow()
+                    task.complete_task()
             if data.get("priority"):
                 task.priority = data["priority"]
             if data.get("category"):
                 task.category = data["category"]
             if data.get("due_date"):
-                task.due_date = datetime.datetime.strptime(data["due_date"], "%Y-%m-%d")
-            if data.get("estimated_hours"):
-                task.estimated_hours = data["estimated_hours"]
-            if data.get("actual_hours"):
-                task.actual_hours = data["actual_hours"]
-            if data.get("progress_percentage"):
-                task.progress_percentage = data["progress_percentage"]
-            if data.get("location"):
-                task.location = data["location"]
-            if data.get("department"):
-                task.department = data["department"]
-
-            # Update audit fields
-            task.last_modified_by = current_user_id
-            task.last_modified_date = datetime.datetime.utcnow()
+                due_date_str = data["due_date"]
+                try:
+                    task.due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    try:
+                        task.due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d")
+                    except ValueError:
+                        return {"error": "Invalid date format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS"}, 400
+            
+            # Update recurring task settings
+            if data.get("is_recurring") is not None:
+                task.is_recurring = data["is_recurring"]
+            if data.get("recurrence_pattern"):
+                task.recurrence_pattern = data["recurrence_pattern"]
+            if data.get("recurrence_interval"):
+                task.recurrence_interval = data["recurrence_interval"]
+            if data.get("recurrence_end_date"):
+                try:
+                    task.recurrence_end_date = datetime.datetime.strptime(data["recurrence_end_date"], "%Y-%m-%d")
+                except ValueError:
+                    return {"error": "Invalid recurrence end date format. Use YYYY-MM-DD"}, 400
+            if data.get("max_recurrences"):
+                task.max_recurrences = data["max_recurrences"]
 
             db.session.commit()
 
             return {
                 "message": "Task updated successfully",
-                "task": task.to_dict()
-            }
+                "task": task.to_dict(include_recurrence_info=True)
+            }, 200
 
         except Exception as e:
             db.session.rollback()
@@ -295,9 +335,14 @@ class TaskResource(Resource):
             return {"error": "Task not found"}, 404
 
         try:
+            # If this is a recurring task, also delete child tasks
+            if task.is_recurring and task.child_tasks:
+                for child in task.child_tasks:
+                    db.session.delete(child)
+            
             db.session.delete(task)
             db.session.commit()
-            return {"message": "Task deleted successfully"}
+            return jsonify({"message": "Task and its recurring instances deleted successfully"})
         except Exception as e:
             db.session.rollback()
             return {"error": str(e)}, 400
@@ -445,24 +490,28 @@ class CommentResource(Resource):
 class TaskEvaluationResource(Resource):
     @jwt_required()
     def post(self, task_id):
-        task = TaskManager.query.get(task_id)
-        if not task:
-            return {"error": "Task not found"}, 404
-
-        if task.status != "Completed":
-            return {"error": "Can only evaluate completed tasks"}, 400
-
-        current_user_id = get_jwt_identity()
-        data = request.get_json()
-
-        rating = data.get("rating")
-        if rating and (rating < 1 or rating > 5):
-            return {"error": "Rating must be between 1 and 5"}, 400
-
-        if not data.get("comment"):
-            return {"error": "Evaluation comment is required"}, 400
-
+        """Add or update evaluation for a completed task"""
         try:
+            task = TaskManager.query.get(task_id)
+            if not task:
+                return {"error": "Task not found"}, 404
+
+            # Check if task is completed
+            if task.status != "Complete":
+                return {"error": "Can only evaluate completed tasks"}, 400
+
+            current_user_id = get_jwt_identity()
+            data = request.get_json()
+
+            # Validate rating if provided
+            rating = data.get("rating")
+            if rating and (rating < 1 or rating > 5):
+                return {"error": "Rating must be between 1 and 5"}, 400
+
+            if not data.get("comment"):
+                return {"error": "Evaluation comment is required"}, 400
+
+            # Check if evaluation already exists
             evaluation = TaskEvaluation.query.filter_by(task_id=task_id).first()
             is_new = False
 
@@ -485,7 +534,7 @@ class TaskEvaluationResource(Resource):
             return {
                 "message": "Evaluation saved successfully",
                 "evaluation": evaluation.to_dict()
-            }, 201 if is_new else 200
+            }, 201 if not evaluation else 200
 
         except Exception as e:
             db.session.rollback()
@@ -506,23 +555,10 @@ class TaskEvaluationResource(Resource):
             if not evaluation:
                 return {"message": "No evaluation found for this task"}, 404
 
-            # Ensure we're returning a proper dictionary
-            evaluation_dict = evaluation.to_dict()
-            
-            # If evaluator is loaded, ensure it's properly serialized
-            if hasattr(evaluation, 'evaluator') and evaluation.evaluator:
-                evaluation_dict['evaluator'] = {
-                    'id': evaluation.evaluator.users_id,
-                    'username': evaluation.evaluator.username,
-                    'email': evaluation.evaluator.email
-                }
-            
-            return {"evaluation": evaluation_dict}, 200
-            
+            return evaluation.to_dict(), 200
+
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return {"error": f"Error retrieving evaluation: {str(e)}"}, 500
+            return {"error": str(e)}, 400
 
 
 class TaskProgressResource(Resource):
@@ -660,7 +696,151 @@ class CompleteTask(Resource):
         except Exception as e:
             db.session.rollback()
             return {"error": str(e)}, 400
+        
 
+class TaskResource(Resource):
+    @jwt_required()
+    def get(self, task_id):
+        task = TaskManager.query.options(
+            joinedload(TaskManager.assigner),
+            joinedload(TaskManager.assignee),
+            joinedload(TaskManager.comments).joinedload(TaskComment.user),
+            joinedload(TaskManager.evaluation),
+            joinedload(TaskManager.child_tasks)
+        ).get(task_id)
+        
+        if not task:
+            return jsonify({"error": "Task not found"}), 404
+
+        return jsonify(task.to_dict(include_comments=True, include_evaluation=True, include_recurrence_info=True))
+
+    @jwt_required()
+    def put(self, task_id):
+        task = TaskManager.query.get(task_id)
+        if not task:
+            return {"error": "Task not found"}, 404
+
+        current_user_id = get_jwt_identity()
+        data = request.get_json()
+
+        try:
+            # Update task fields
+            if data.get("task"):
+                task.task = data["task"]
+            if data.get("assignee_id"):
+                task.assignee_id = data["assignee_id"]
+            if data.get("status"):
+                old_status = task.status
+                task.status = data["status"]
+                # Auto-set closing date when status changes to "Complete"
+                if data["status"] == "Complete" and not task.closing_date:
+                    task.complete_task()
+            if data.get("priority"):
+                task.priority = data["priority"]
+            if data.get("category"):
+                task.category = data["category"]
+            if data.get("due_date"):
+                due_date_str = data["due_date"]
+                try:
+                    task.due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    try:
+                        task.due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d")
+                    except ValueError:
+                        return {"error": "Invalid date format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS"}, 400
+            
+            # Update recurring task settings
+            if data.get("is_recurring") is not None:
+                task.is_recurring = data["is_recurring"]
+            if data.get("recurrence_pattern"):
+                task.recurrence_pattern = data["recurrence_pattern"]
+            if data.get("recurrence_interval"):
+                task.recurrence_interval = data["recurrence_interval"]
+            if data.get("recurrence_end_date"):
+                try:
+                    task.recurrence_end_date = datetime.datetime.strptime(data["recurrence_end_date"], "%Y-%m-%d")
+                except ValueError:
+                    return {"error": "Invalid recurrence end date format. Use YYYY-MM-DD"}, 400
+            if data.get("max_recurrences"):
+                task.max_recurrences = data["max_recurrences"]
+
+            db.session.commit()
+
+            return {
+                "message": "Task updated successfully",
+                "task": task.to_dict(include_recurrence_info=True)
+            }, 200
+
+        except Exception as e:
+            db.session.rollback()
+            return {"error": str(e)}, 400
+
+    @jwt_required()
+    def delete(self, task_id):
+        task = TaskManager.query.get(task_id)
+        if not task:
+            return jsonify({"error": "Task not found"}), 404
+
+        try:
+            # If this is a recurring task, also delete child tasks
+            if task.is_recurring and task.child_tasks:
+                for child in task.child_tasks:
+                    db.session.delete(child)
+            
+            db.session.delete(task)
+            db.session.commit()
+            return jsonify({"message": "Task and its recurring instances deleted successfully"})
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)}), 400
+
+
+class CancelRecurringTask(Resource):
+    @jwt_required()
+    def post(self, task_id):
+        """Cancel a recurring task and prevent future regenerations"""
+        task = TaskManager.query.get(task_id)
+        if not task:
+            return {"error": "Task not found"}, 404
+
+        current_user_id = get_jwt_identity()
+        user = Users.query.get(current_user_id)
+
+        # Check if user is assignee or manager
+        if task.assignee_id != current_user_id and user.role != 'manager':
+            return {"error": "Only assignee or manager can cancel recurring tasks"}, 403
+
+        if not task.is_recurring:
+            return {"error": "Task is not recurring"}, 400
+
+        try:
+            task.cancel_recurring_task()
+            db.session.commit()
+
+            return {
+                "message": "Recurring task cancelled successfully",
+                "task": task.to_dict(include_recurrence_info=True)
+            }, 200
+
+        except Exception as e:
+            db.session.rollback()
+            return {"error": str(e)}, 400
+
+
+class ProcessRecurringTasks(Resource):
+    @jwt_required()
+    @check_role('manager')
+    def post(self):
+        """Manually trigger processing of overdue recurring tasks"""
+        try:
+            from Server.Models.TaskManager import process_overdue_recurring_tasks
+            count = process_overdue_recurring_tasks()
+            return {
+                "message": f"Processed {count} recurring tasks",
+                "tasks_regenerated": count
+            }, 200
+        except Exception as e:
+            return {"error": str(e)}, 500
 
 # Add to_dict methods to your models (add these to your model files)
 

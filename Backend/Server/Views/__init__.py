@@ -43,7 +43,7 @@ from Server.Views.Bankviews import (
 )
 
 from Server.Views.Expenses import (
-    AllExpenses, AddExpense, GetShopExpenses, ExpensesResources, TotalBalance
+    AllExpenses, AddExpense, GetShopExpenses, ExpensesResources, TotalBalance,CreditPaymentResource,GetCreditorDetails,GetCreditors,DeleteCreditor,CreateExpenseCreditor,UpdateCreditor
 )
 
 from Server.Views.Customersviews import (
@@ -161,7 +161,8 @@ from Server.Views.PushSubscription import  (
 
 from Server.Views.TaskManagerViews import (
     # Task Management
-    CreateTask, TaskResource, GetTasks, CompleteTask, GetUserTasks,TaskProgressResource,TaskStatsResource,TaskCommentResource,CommentResource,TaskEvaluationResource
+    CreateTask, TaskResource, GetTasks, CompleteTask, GetUserTasks,TaskProgressResource,TaskStatsResource,TaskCommentResource,CommentResource,TaskEvaluationResource,
+    CancelRecurringTask,ProcessRecurringTasks
 )
 from Server.Views.CookedItemsView import  (
     AddCookedItems
@@ -260,11 +261,18 @@ api.add_resource(DeleteShopStock, '/deleteshopstock/<int:shop_stock_id>')
 api.add_resource(GetInventoryByBatch, '/inventory-by-batch')
 
 # expenses endpoint 
-api.add_resource(AddExpense,'/newexpense')
+# API Resource Registrations
+api.add_resource(AddExpense, '/newexpense')
 api.add_resource(AllExpenses, '/allexpenses')
 api.add_resource(GetShopExpenses, '/expense/shop/<int:shop_id>')
-api.add_resource(ExpensesResources,'/expense/<int:expense_id>')
+api.add_resource(ExpensesResources, '/expense/<int:expense_id>')
 api.add_resource(TotalBalance, '/accountsreceivable')
+api.add_resource(CreditPaymentResource, '/expense/<int:expense_id>/payments') 
+api.add_resource(GetCreditors, '/expense-creditors')
+api.add_resource(GetCreditorDetails, '/expense-creditors/<int:creditor_id>')
+api.add_resource(CreateExpenseCreditor, '/expense-creditors/create')
+api.add_resource(UpdateCreditor, '/expense-creditors/update/<int:creditor_id>')
+api.add_resource(DeleteCreditor, '/expense-creditors/delete/<int:creditor_id>')
 
 # banks endpoint
 api.add_resource(AddBank, '/newbank')
@@ -534,7 +542,8 @@ api.add_resource(TaskProgressResource, "/tasks/<int:task_id>/progress")
 api.add_resource(TaskStatsResource, "/tasks/stats")
 api.add_resource(TaskCommentResource, "/tasks/<int:task_id>/comments")    
 api.add_resource(CommentResource, "/comments/<int:comment_id>")           
-
+api.add_resource(CancelRecurringTask, '/tasks/<int:task_id>/cancel-recurring')
+api.add_resource(ProcessRecurringTasks, '/tasks/process-recurring')
 api.add_resource(TaskEvaluationResource, "/tasks/<int:task_id>/evaluation") 
 
 #creditors

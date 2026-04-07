@@ -16,10 +16,21 @@ class Users(db.Model):
     password = db.Column(db.String(200), unique=True, nullable=False)
     employee_id = db.Column(db.Integer, db.ForeignKey('employees.employee_id'))
     created_at = db.Column(db.DateTime, server_default=db.func.now())
+    status = db.Column(db.String(10), default="inactive" , nullable=False)
 
 
     #users relationship
     employees = db.relationship('Employees', backref='users', lazy=True)
+
+
+    @validates('status')
+    def validate_status(self, key, status):
+        valid_status = ["active", "inactive", "former employee"]
+        if status not in valid_status:
+            # You can either raise an exception or set a default
+            raise ValueError(f"Invalid status. Must be one of: {', '.join(valid_status)}")
+        return status
+            
 
     
     # Data validation
