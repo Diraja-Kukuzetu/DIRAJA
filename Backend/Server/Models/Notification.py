@@ -15,7 +15,7 @@ class Notification(db.Model):
     message = db.Column(db.Text, nullable=False)
     data = db.Column(db.Text, nullable=True)  # JSON string for additional data
     is_read = db.Column(db.Boolean, default=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, server_default=func.now())
+    created_at = db.Column(db.DateTime, server_default=func.now())
 
     # Relationship
     user = db.relationship('Users', backref='notifications', lazy='select')

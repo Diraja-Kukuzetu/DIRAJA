@@ -2,13 +2,13 @@ from flask import request, jsonify
 from flask_restful import Resource
 from app import db
 import json
-from Server.Models.TaskManager import TaskManager,TaskComment,TaskEvaluation
+from Server.Models.TaskManager import TaskManager, TaskComment, TaskEvaluation
 from Server.Models.PushSubscription import PushSubscription
 from pywebpush import webpush, WebPushException
 from Server.Models.Users import Users
 from functools import wraps
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from flask import request, make_response
+from flask import make_response
 import datetime
 from flask import current_app
 from sqlalchemy.orm import joinedload
@@ -58,7 +58,13 @@ class CreateTask(Resource):
             # Validate category
             category = data.get("category", "General")
             
-           
+            # Parse due_date if provided
+            due_date = None
+            if data.get("due_date"):
+                try:
+                    due_date = datetime.datetime.strptime(data["due_date"], "%Y-%m-%d")
+                except ValueError:
+                    return {"error": "Invalid date format. Use YYYY-MM-DD"}, 400
 
             new_task = TaskManager(
                 user_id=current_user_id,  # The logged-in user is the assigner
@@ -152,7 +158,6 @@ class CreateTask(Resource):
 
 class GetTasks(Resource):
     @jwt_required()
-    @check_role('manager')
     def get(self):
         # Get query parameters for filtering
         category = request.args.get('category')
@@ -253,7 +258,6 @@ class TaskResource(Resource):
         task = TaskManager.query.get(task_id)
         if not task:
             return {"error": "Task not found"}, 404
-            return {"error": "Task not found"}, 404
 
         current_user_id = get_jwt_identity()
         data = request.get_json()
@@ -294,13 +298,12 @@ class TaskResource(Resource):
             if data.get("department"):
                 task.department = data["department"]
 
-            # Update audit fields (removed version)
+            # Update audit fields
             task.last_modified_by = current_user_id
             task.last_modified_date = datetime.datetime.utcnow()
 
             db.session.commit()
 
-            return {
             return {
                 "message": "Task updated successfully",
                 "task": task.to_dict()
@@ -308,7 +311,6 @@ class TaskResource(Resource):
 
         except Exception as e:
             db.session.rollback()
-            return {"error": str(e)}, 400
             return {"error": str(e)}, 400
 
     @jwt_required()
@@ -414,55 +416,61 @@ class CommentResource(Resource):
         """Update a comment"""
         comment = TaskComment.query.get(comment_id)
         if not comment:
-            return jsonify({"error": "Comment not found"}), 404
+            return {"error": "Comment not found"}, 404
 
         current_user_id = get_jwt_identity()
         
         # Check if user owns the comment
         if comment.user_id != current_user_id:
-            return jsonify({"error": "You can only edit your own comments"}), 403
+            return {"error": "You can only edit your own comments"}, 403
 
         data = request.get_json()
         
         if not data.get("comment"):
-            return jsonify({"error": "Comment text is required"}), 400
+            return {"error": "Comment text is required"}, 400
 
         try:
             comment.comment = data["comment"]
-            # updated_at will be automatically updated by ON UPDATE CURRENT_TIMESTAMP
             db.session.commit()
 
-            return jsonify({
+            return {
                 "message": "Comment updated successfully",
-                "comment": comment.to_dict()
-            })
+                "comment": {
+                    "comment_id": comment.comment_id,
+                    "task_id": comment.task_id,
+                    "user_id": comment.user_id,
+                    "comment": comment.comment,
+                    "created_at": comment.created_at.isoformat() if comment.created_at else None,
+                    "parent_comment_id": comment.parent_comment_id
+                }
+            }
 
         except Exception as e:
             db.session.rollback()
-            return jsonify({"error": str(e)}), 400
+            return {"error": str(e)}, 400
 
     @jwt_required()
     def delete(self, comment_id):
         """Delete a comment"""
         comment = TaskComment.query.get(comment_id)
         if not comment:
-            return jsonify({"error": "Comment not found"}), 404
+            return {"error": "Comment not found"}, 404
 
         current_user_id = get_jwt_identity()
         
         # Check if user owns the comment or is manager
         user = Users.query.get(current_user_id)
         if comment.user_id != current_user_id and user.role != 'manager':
-            return jsonify({"error": "You don't have permission to delete this comment"}), 403
+            return {"error": "You don't have permission to delete this comment"}, 403
 
         try:
             db.session.delete(comment)
             db.session.commit()
-            return jsonify({"message": "Comment deleted successfully"})
+            return {"message": "Comment deleted successfully"}
 
         except Exception as e:
             db.session.rollback()
-            return jsonify({"error": str(e)}), 400
+            return {"error": str(e)}, 400
 
 
 class TaskEvaluationResource(Resource):
@@ -475,8 +483,8 @@ class TaskEvaluationResource(Resource):
         if task.status != "Completed":
             return {"error": "Can only evaluate completed tasks"}, 400
 
-            current_user_id = get_jwt_identity()
-            data = request.get_json()
+        current_user_id = get_jwt_identity()
+        data = request.get_json()
 
         rating = data.get("rating")
         if rating and (rating < 1 or rating > 5):
@@ -506,14 +514,19 @@ class TaskEvaluationResource(Resource):
             db.session.commit()
 
             return {
-            return {
                 "message": "Evaluation saved successfully",
-                "evaluation": evaluation.to_dict()
+                "evaluation": {
+                    "evaluation_id": evaluation.evaluation_id,
+                    "task_id": evaluation.task_id,
+                    "evaluator_id": evaluation.evaluator_id,
+                    "rating": evaluation.rating,
+                    "comment": evaluation.comment,
+                    "created_at": evaluation.created_at.isoformat() if evaluation.created_at else None
+                }
             }, 201 if is_new else 200
 
         except Exception as e:
             db.session.rollback()
-            return {"error": str(e)}, 400
             return {"error": str(e)}, 400
 
     @jwt_required()
@@ -523,14 +536,7 @@ class TaskEvaluationResource(Resource):
             task = TaskManager.query.get(task_id)
             if not task:
                 return {"error": "Task not found"}, 404
-        try:
-            task = TaskManager.query.get(task_id)
-            if not task:
-                return {"error": "Task not found"}, 404
 
-            evaluation = TaskEvaluation.query.options(
-                joinedload(TaskEvaluation.evaluator)
-            ).filter_by(task_id=task_id).first()
             evaluation = TaskEvaluation.query.options(
                 joinedload(TaskEvaluation.evaluator)
             ).filter_by(task_id=task_id).first()
@@ -538,10 +544,17 @@ class TaskEvaluationResource(Resource):
             if not evaluation:
                 return {"message": "No evaluation found for this task"}, 404
 
-            # Ensure we're returning a proper dictionary
-            evaluation_dict = evaluation.to_dict()
+            # Return evaluation dictionary
+            evaluation_dict = {
+                "evaluation_id": evaluation.evaluation_id,
+                "task_id": evaluation.task_id,
+                "evaluator_id": evaluation.evaluator_id,
+                "rating": evaluation.rating,
+                "comment": evaluation.comment,
+                "created_at": evaluation.created_at.isoformat() if evaluation.created_at else None
+            }
             
-            # If evaluator is loaded, ensure it's properly serialized
+            # If evaluator is loaded, add their info
             if hasattr(evaluation, 'evaluator') and evaluation.evaluator:
                 evaluation_dict['evaluator'] = {
                     'id': evaluation.evaluator.users_id,
@@ -563,7 +576,7 @@ class TaskProgressResource(Resource):
         """Update task progress"""
         task = TaskManager.query.get(task_id)
         if not task:
-            return jsonify({"error": "Task not found"}), 404
+            return {"error": "Task not found"}, 404
 
         current_user_id = get_jwt_identity()
         data = request.get_json()
@@ -571,13 +584,13 @@ class TaskProgressResource(Resource):
         # Check if user is assignee or manager
         user = Users.query.get(current_user_id)
         if task.assignee_id != current_user_id and user.role != 'manager':
-            return jsonify({"error": "Only assignee or manager can update progress"}), 403
+            return {"error": "Only assignee or manager can update progress"}, 403
 
         try:
             if data.get("progress_percentage") is not None:
                 progress = data["progress_percentage"]
                 if progress < 0 or progress > 100:
-                    return jsonify({"error": "Progress must be between 0 and 100"}), 400
+                    return {"error": "Progress must be between 0 and 100"}, 400
                 task.progress_percentage = progress
 
             if data.get("actual_hours"):
@@ -585,7 +598,7 @@ class TaskProgressResource(Resource):
 
             # Auto-update status based on progress
             if task.progress_percentage == 100:
-                task.status = "Complete"
+                task.status = "Completed"
                 task.closing_date = datetime.datetime.utcnow()
             elif task.progress_percentage > 0 and task.status == "Pending":
                 task.status = "In Progress"
@@ -595,14 +608,14 @@ class TaskProgressResource(Resource):
 
             db.session.commit()
 
-            return jsonify({
+            return {
                 "message": "Progress updated successfully",
                 "task": task.to_dict()
-            })
+            }
 
         except Exception as e:
             db.session.rollback()
-            return jsonify({"error": str(e)}), 400
+            return {"error": str(e)}, 400
 
 
 class TaskStatsResource(Resource):
@@ -628,8 +641,7 @@ class TaskStatsResource(Resource):
             "by_status": {
                 "pending": query.filter_by(status="Pending").count(),
                 "in_progress": query.filter_by(status="In Progress").count(),
-                "completed": query.filter_by(status="Complete").count(),
-                "overdue": query.filter_by(status="Overdue").count(),
+                "completed": query.filter_by(status="Completed").count(),
                 "cancelled": query.filter_by(status="Cancelled").count()
             },
             "by_priority": {
@@ -648,11 +660,11 @@ class TaskStatsResource(Resource):
         # Overdue tasks (tasks past due date not completed)
         overdue_count = query.filter(
             TaskManager.due_date < datetime.datetime.utcnow(),
-            TaskManager.status.notin_(["Complete", "Cancelled"])
+            TaskManager.status.notin_(["Completed", "Cancelled"])
         ).count()
         stats["by_status"]["overdue"] = overdue_count
 
-        return jsonify(stats)
+        return stats, 200
 
 
 class CompleteTask(Resource):
@@ -671,12 +683,12 @@ class CompleteTask(Resource):
             return {"error": "Only assignee or manager can complete tasks"}, 403
 
         # Check if task is already completed
-        if task.status == "Complete":
+        if task.status == "Completed":
             return {"message": "Task is already completed"}, 400
 
         try:
             # Update task
-            task.status = "Complete"
+            task.status = "Completed"
             task.closing_date = datetime.datetime.utcnow()
             task.progress_percentage = 100
             task.last_modified_by = current_user_id
@@ -692,83 +704,3 @@ class CompleteTask(Resource):
         except Exception as e:
             db.session.rollback()
             return {"error": str(e)}, 400
-
-
-# Add to_dict methods to your models (add these to your model files)
-
-"""
-Add this to TaskManager model:
-
-def to_dict(self, include_comments=False, include_evaluation=False):
-    data = {
-        "task_id": self.task_id,
-        "assigner_id": self.user_id,
-        "assigner_username": self.assigner.username if self.assigner else "Unknown",
-        "assignee_id": self.assignee_id,
-        "assignee_username": self.assignee.username if self.assignee else "Unknown",
-        "task": self.task,
-        "priority": self.priority,
-        "category": self.category,
-        "status": self.status,
-        "assigned_date": str(self.assigned_date) if self.assigned_date else None,
-        "due_date": str(self.due_date) if self.due_date else None,
-        "closing_date": str(self.closing_date) if self.closing_date else None,
-        "estimated_hours": self.estimated_hours,
-        "actual_hours": self.actual_hours,
-        "progress_percentage": self.progress_percentage,
-        "requires_approval": self.requires_approval,
-        "approved_by": self.approved_by,
-        "approval_date": str(self.approval_date) if self.approval_date else None,
-        "location": self.location,
-        "department": self.department,
-        "project_id": self.project_id,
-        "comment_count": self.comment_count if hasattr(self, 'comment_count') else 0,
-        "is_overdue": self.is_overdue if hasattr(self, 'is_overdue') else False
-    }
-    
-    if include_comments and hasattr(self, 'comments'):
-        data["comments"] = [comment.to_dict() for comment in self.comments]
-    
-    if include_evaluation and hasattr(self, 'evaluation') and self.evaluation:
-        data["evaluation"] = self.evaluation.to_dict()
-    
-    return data
-"""
-
-"""
-Add this to TaskComment model:
-
-def to_dict(self, include_replies=False):
-    data = {
-        "comment_id": self.comment_id,
-        "task_id": self.task_id,
-        "user_id": self.user_id,
-        "username": self.user.username if self.user else "Unknown",
-        "comment": self.comment,
-        "created_at": str(self.created_at),
-        "updated_at": str(self.updated_at) if self.updated_at else None,
-        "parent_comment_id": self.parent_comment_id,
-        "is_reply": self.is_reply,
-        "reply_count": self.reply_count
-    }
-    
-    if include_replies and hasattr(self, 'replies'):
-        data["replies"] = [reply.to_dict(include_replies=False) for reply in self.replies]
-    
-    return data
-"""
-
-"""
-Add this to TaskEvaluation model:
-
-def to_dict(self):
-    return {
-        "evaluation_id": self.evaluation_id,
-        "task_id": self.task_id,
-        "evaluator_id": self.evaluator_id,
-        "evaluator_name": self.evaluator.username if self.evaluator else "Unknown",
-        "rating": self.rating,
-        "comment": self.comment,
-        "created_at": str(self.created_at)
-    }
-"""

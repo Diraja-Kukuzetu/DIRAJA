@@ -132,8 +132,7 @@ class UserLogin(Resource):
                     
                 # Fetch shop details
                 if shop:
-                    response_data["shop_name"] = shop.shop_name
-                    response_data["shop_code"] = shop.shop_code
+                    response_data["shopname"] = shop.shopname
 
         # Additional logic for managers (optional)
         elif user_role == "manager":

@@ -125,8 +125,6 @@ class AddExpense(Resource):
                         account_id=account.id,
                         Transaction_type_debit=amountPaid,
                         Transaction_type_credit=None,
-                        description=f"Expense payment: {item}",
-                        reference=paymentRef
                     )
                     db.session.add(transaction)
 

@@ -25,9 +25,10 @@ def check_role(required_role):
         return decorator
     return wrapper
 
+from werkzeug.security import generate_password_hash
+
 class AddNewemployee(Resource):
     @jwt_required()
-    @check_role('manager')
     def post(self):
         current_user_id = get_jwt_identity()
         current_user = Users.query.get(current_user_id)
@@ -72,6 +73,31 @@ class AddNewemployee(Resource):
             except ValueError:
                 return {"error": "Invalid salary format."}, 400
 
+        # Get password from request payload
+        # If password is not provided, use default password
+        user_password = data.get('password')
+        
+        # Validate password if provided
+        if user_password:
+            # Password validation rules
+            if len(user_password) < 8:
+                return {"error": "Password must be at least 8 characters long"}, 400
+            if not any(char.isupper() for char in user_password):
+                return {"error": "Password must contain at least one uppercase letter"}, 400
+            if not any(char.islower() for char in user_password):
+                return {"error": "Password must contain at least one lowercase letter"}, 400
+            if not any(char.isdigit() for char in user_password):
+                return {"error": "Password must contain at least one number"}, 400
+            if not any(char in "!@#$%^&*(),.?\":{}|<>" for char in user_password):
+                return {"error": "Password must contain at least one special character"}, 400
+            
+            # Hash the password before storing
+            hashed_password = generate_password_hash(user_password)
+        else:
+            # Use default password (also hash it)
+            default_password = 'defaultPassword123'
+            hashed_password = generate_password_hash(default_password)
+
         # Create Employee record
         new_employee = Employees(
             first_name=data.get('first_name'),
@@ -103,13 +129,12 @@ class AddNewemployee(Resource):
         db.session.add(new_employee)
         db.session.commit()
 
-        # Create corresponding user record
-        default_password = 'defaultPassword123'
+        # Create corresponding user record with the hashed password
         new_user = Users(
             username=data.get('first_name'),
             email=data.get('work_email'),
-            role=data.get('role') if data.get('role') else 'manager',
-            password=default_password,
+            role=data.get('role') if data.get('role') else 'clerk',  # Default role for new users
+            password=hashed_password,  # Store the hashed password
             employee_id=new_employee.employee_id
         )
 
