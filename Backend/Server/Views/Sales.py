@@ -2170,7 +2170,7 @@ class TotalCashSalesByUser(Resource):
             # ===============================
             # 1. Fixed start date (16/02/2026)
             # ===============================
-            start_date = datetime.strptime("2026-02-16", "%Y-%m-%d").date()
+            start_date = datetime.strptime("2026-03-23", "%Y-%m-%d").date()
             today = datetime.now().date()
 
             # ===============================

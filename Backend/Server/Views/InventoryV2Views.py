@@ -7,6 +7,7 @@ from Server.Models.ShopstockV2 import ShopStockV2
 from Server.Models.BankAccounts import BankAccount, BankingTransaction
 from Server.Models.Accounting.PurchaseLedger import PurchaseLedgerInventory
 from Server.Models.Accounting.PurchaseLedger import DistributionLedger
+from Server.Models.Employees import Employees
 from Server.Models.Users import Users
 from app import db
 import json
@@ -223,20 +224,20 @@ class DistributeInventoryV2(Resource):
         except ValueError:
             return {'message': 'Invalid date format'}, 400
 
-        # ✅ Fetch inventory item
+        # Fetch inventory item
         inventory_item = InventoryV2.query.get(inventoryV2_id)
         if not inventory_item:
             return {'message': 'Inventory item not found'}, 404
 
-        # ✅ Ensure enough stock is available
+        # Ensure enough stock is available
         if inventory_item.quantity < quantity:
             return {'message': 'Insufficient inventory quantity'}, 400
 
         try:
-            # ✅ Deduct stock immediately
+            # Deduct stock immediately
             inventory_item.quantity -= quantity
 
-            # ✅ Create transfer record
+            # Create transfer record
             new_transfer = TransfersV2(
                 shop_id=shop_id,
                 inventoryV2_id=inventoryV2_id,
@@ -254,162 +255,163 @@ class DistributeInventoryV2(Resource):
 
             db.session.add(new_transfer)
             db.session.flush() 
+            
             from Server.Views.Services.journal_service import DistributionJournalService
 
-
             journal_result = DistributionJournalService.post_distribution_journal(
-            transfer=new_transfer,
-            shop_id=shop_id
-    )
-            db.session.commit()
-
-            # ✅ Send push notification
-            self.send_push_to_shop(shop_id, itemname)
-
-            return {
-                'message': 'Transfer created successfully and notification sent.',
-                'transfer_id': new_transfer.transferv2_id
-            }, 201
-
-        except Exception as e:
-            db.session.rollback()
-            return {'message': 'Error creating transfer', 'error': str(e)}, 500
-
-
-    def send_push_to_shop(self, shop_id, itemname):
-        """Send push notification to all subscriptions for a shop."""
-        subscriptions = PushSubscription.query.filter_by(shop_id=shop_id).all()
-        if not subscriptions:
-            print(f"No push subscriptions found for shop {shop_id}")
-            return
-
-        # ✅ Fetch VAPID keys from app config
-        vapid_private_key = current_app.config.get("VAPID_PRIVATE_KEY")
-        vapid_email = current_app.config.get("VAPID_EMAIL")
-
-        payload = {
-            "title": "New Stock Alert",
-            "body": f"New stock of {itemname} has been distributed to your shop. Please receive it.",
-            "icon": "/logo192.png",
-        }
-
-        for sub in subscriptions:
-            try:
-                webpush(
-                    subscription_info={
-                        "endpoint": sub.endpoint,
-                        "keys": {
-                            "p256dh": sub.p256dh,
-                            "auth": sub.auth,
-                        },
-                    },
-                    data=json.dumps(payload),
-                    vapid_private_key=vapid_private_key,
-                    vapid_claims={"sub": vapid_email},
-                )
-                print(f"Push sent to shop {shop_id} subscriber {sub.id}")
-            except WebPushException as e:
-                print(f"Push failed for {sub.id}: {repr(e)}")
-
-
-
-class DistributeInventoryV2(Resource):
-    @jwt_required()
-    def post(self):
-        data = request.get_json()
-        current_user_id = get_jwt_identity()
-
-        required_fields = [
-            'shop_id', 'inventoryV2_id', 'quantity', 'itemname',
-            'unitCost', 'amountPaid', 'BatchNumber', 'created_at', 'metric'
-        ]
-        if not all(field in data for field in required_fields):
-            return {'message': 'Missing required fields'}, 400
-
-        shop_id = data['shop_id']
-        inventoryV2_id = data['inventoryV2_id']
-        quantity = data['quantity']
-        metric = data['metric']
-        itemname = data['itemname']
-        unitCost = data['unitCost']
-        amountPaid = data['amountPaid']
-        BatchNumber = data['BatchNumber']
-
-        try:
-            distribution_date = parser.isoparse(data['created_at'])
-        except ValueError:
-            return {'message': 'Invalid date format'}, 400
-
-        # ✅ Fetch inventory item
-        inventory_item = InventoryV2.query.get(inventoryV2_id)
-        if not inventory_item:
-            return {'message': 'Inventory item not found'}, 404
-
-        # ✅ Ensure enough stock is available
-        if inventory_item.quantity < quantity:
-            return {'message': 'Insufficient inventory quantity'}, 400
-
-        try:
-            # ✅ Deduct stock immediately
-            inventory_item.quantity -= quantity
-
-            # ✅ Create transfer record
-            new_transfer = TransfersV2(
-                shop_id=shop_id,
-                inventoryV2_id=inventoryV2_id,
-                quantity=quantity,
-                metric=metric,
-                total_cost=unitCost * quantity,
-                BatchNumber=BatchNumber,
-                user_id=current_user_id,
-                itemname=itemname,
-                amountPaid=amountPaid,
-                unitCost=unitCost,
-                created_at=distribution_date,
-                status="Not Received"
+                transfer=new_transfer,
+                shop_id=shop_id
             )
-
-            db.session.add(new_transfer)
-            db.session.flush() 
-            from Server.Views.Services.journal_service import DistributionJournalService
-
-
-            journal_result = DistributionJournalService.post_distribution_journal(
-            transfer=new_transfer,
-            shop_id=shop_id
-    )
+            
+            # ===== CREATE NOTIFICATIONS =====
+            from Server.Views.Services.notifications_service import NotificationService
+            
+            # Get shop details
+            shop = Shops.query.get(shop_id)
+            shop_name = shop.shopname if shop and hasattr(shop, 'shopname') else f"Shop {shop_id}"
+            
+            # Prepare notification data
+            notification_data = {
+                'transfer_id': new_transfer.transferv2_id,
+                'shop_id': shop_id,
+                'shop_name': shop_name,
+                'inventory_id': inventoryV2_id,
+                'itemname': itemname,
+                'quantity': quantity,
+                'metric': metric,
+                'batch_number': BatchNumber,
+                'status': 'Not Received',
+                'distributed_by': current_user_id,
+                'distributed_at': datetime.utcnow().isoformat(),
+                'unit_cost': unitCost,
+                'total_cost': unitCost * quantity
+            }
+            
+            # Track who we've notified
+            notified_users = []
+            
+            # 1. NOTIFY THE DISTRIBUTOR (the person who created the transfer)
+            if current_user_id:
+                NotificationService.create_notification(
+                    user_id=current_user_id,
+                    notification_type='stock_distributed_by_you',
+                    title='Stock Distribution Created',
+                    message=f'You distributed {quantity} {metric} of {itemname} (Batch: {BatchNumber}) to {shop_name}',
+                    data=notification_data
+                )
+                notified_users.append({
+                    'user_id': current_user_id,
+                    'type': 'distributor'
+                })
+                print(f"Notification sent to distributor (user: {current_user_id})")
+            
+            # 2. NOTIFY ALL USERS LINKED TO THE SHOP (via employees table)
+            # Get all active employees for this shop
+            employees = Employees.query.filter_by(
+                shop_id=shop_id,
+                account_status='active'
+            ).all()
+            
+            print(f"Found {len(employees)} active employees for shop {shop_id}")
+            
+            shop_users_notified = 0
+            for employee in employees:
+                # Find the user account associated with this employee
+                user = Users.query.filter_by(employee_id=employee.employee_id).first()
+                
+                if user:
+                    # Skip if this user is the same as the distributor (to avoid duplicate)
+                    if user.users_id == current_user_id:
+                        print(f"Skipping distributor {user.users_id} (already notified)")
+                        continue
+                    
+                    # Create notification for shop user
+                    NotificationService.create_notification(
+                        user_id=user.users_id,
+                        notification_type='stock_distributed',
+                        title='New Stock Distribution',
+                        message=f'{quantity} {metric} of {itemname} (Batch: {BatchNumber}) has been distributed to your shop ({shop_name})',
+                        data=notification_data
+                    )
+                    shop_users_notified += 1
+                    notified_users.append({
+                        'user_id': user.users_id,
+                        'employee_id': employee.employee_id,
+                        'employee_name': f"{employee.first_name} {employee.surname}",
+                        'role': employee.role,
+                        'type': 'shop_staff'
+                    })
+                    print(f"Notification sent to shop staff: {employee.first_name} {employee.surname} (user: {user.users_id})")
+                else:
+                    print(f"Employee {employee.employee_id} has no user account linked")
+            
+            print(f"Notified {shop_users_notified} shop staff members")
+            
             db.session.commit()
 
-            # ✅ Send push notification
-            self.send_push_to_shop(shop_id, itemname)
+            # ===== SEND PUSH NOTIFICATIONS =====
+            # Send push notifications to distributor
+            if current_user_id:
+                self.send_push_to_user(current_user_id, itemname, quantity, metric, BatchNumber, shop_name, is_distributor=True)
+            
+            # Send push notifications to all shop employees
+            self.send_push_to_shop_employees(shop_id, itemname, quantity, metric, BatchNumber, shop_name)
 
             return {
-                'message': 'Transfer created successfully and notification sent.',
-                'transfer_id': new_transfer.transferv2_id
+                'message': 'Transfer created successfully and notifications sent.',
+                'transfer_id': new_transfer.transferv2_id,
+                'journal_entry': journal_result,
+                'notifications_summary': {
+                    'distributor_notified': bool(current_user_id),
+                    'shop_staff_notified': shop_users_notified,
+                    'total_notified': len(notified_users)
+                }
             }, 201
 
         except Exception as e:
             db.session.rollback()
+            print(f"Error in distribution: {str(e)}")
             return {'message': 'Error creating transfer', 'error': str(e)}, 500
 
-
-    def send_push_to_shop(self, shop_id, itemname):
-        """Send push notification to all subscriptions for a shop."""
-        subscriptions = PushSubscription.query.filter_by(shop_id=shop_id).all()
+    def send_push_to_user(self, user_id, itemname, quantity, metric, batch_number, shop_name, is_distributor=False):
+        """Send push notification to a specific user"""
+        # Get push subscriptions for this user
+        subscriptions = PushSubscription.query.filter_by(user_id=user_id).all()
+        
         if not subscriptions:
-            print(f"No push subscriptions found for shop {shop_id}")
+            print(f"No push subscriptions found for user {user_id}")
             return
-
-        # ✅ Fetch VAPID keys from app config
+        
+        # Fetch VAPID keys from app config
         vapid_private_key = current_app.config.get("VAPID_PRIVATE_KEY")
         vapid_email = current_app.config.get("VAPID_EMAIL")
-
+        
+        # Check if VAPID keys are configured
+        if not vapid_private_key or not vapid_email:
+            print(f"VAPID keys not configured. Cannot send push notifications.")
+            return
+        
+        if is_distributor:
+            title = "Stock Distribution Created"
+            body = f"You distributed {quantity} {metric} of {itemname} (Batch: {batch_number}) to {shop_name}"
+        else:
+            title = "New Stock Alert"
+            body = f"{quantity} {metric} of {itemname} (Batch: {batch_number}) has been distributed to {shop_name}"
+        
         payload = {
-            "title": "New Stock Alert",
-            "body": f"New stock of {itemname} has been distributed to your shop. Please receive it.",
+            "title": title,
+            "body": body,
             "icon": "/logo192.png",
+            "data": {
+                "shop_id": None,  # You can add shop_id if available
+                "shop_name": shop_name,
+                "itemname": itemname,
+                "quantity": quantity,
+                "metric": metric,
+                "batch_number": batch_number
+            }
         }
-
+        
         for sub in subscriptions:
             try:
                 webpush(
@@ -424,9 +426,84 @@ class DistributeInventoryV2(Resource):
                     vapid_private_key=vapid_private_key,
                     vapid_claims={"sub": vapid_email},
                 )
-                print(f"Push sent to shop {shop_id} subscriber {sub.id}")
+                print(f"Push sent to user {user_id}")
             except WebPushException as e:
-                print(f"Push failed for {sub.id}: {repr(e)}")
+                print(f"Push failed for subscription {sub.id}: {repr(e)}")
+    
+    def send_push_to_shop_employees(self, shop_id, itemname, quantity, metric, batch_number, shop_name):
+        """Send push notification to all employees of a shop."""
+        # Get all active employees for this shop
+        employees = Employees.query.filter_by(
+            shop_id=shop_id,
+            account_status='active'
+        ).all()
+        
+        if not employees:
+            print(f"No active employees found for shop {shop_id}")
+            return
+        
+        # Fetch VAPID keys once
+        vapid_private_key = current_app.config.get("VAPID_PRIVATE_KEY")
+        vapid_email = current_app.config.get("VAPID_EMAIL")
+        
+        if not vapid_private_key or not vapid_email:
+            print(f"VAPID keys not configured. Cannot send push notifications.")
+            return
+        
+        sent_count = 0
+        failed_count = 0
+        
+        for employee in employees:
+            # Find the user account for this employee
+            user = Users.query.filter_by(employee_id=employee.employee_id).first()
+            
+            if not user:
+                print(f"Employee {employee.employee_id} has no user account")
+                continue
+            
+            # Get push subscriptions for this user
+            subscriptions = PushSubscription.query.filter_by(user_id=user.users_id).all()
+            
+            if not subscriptions:
+                print(f"No push subscriptions found for user {user.users_id}")
+                continue
+            
+            payload = {
+                "title": f"New Stock Alert - {shop_name}",
+                "body": f"{quantity} {metric} of {itemname} (Batch: {batch_number}) has been distributed to {shop_name}. Please receive it.",
+                "icon": "/logo192.png",
+                "data": {
+                    "shop_id": shop_id,
+                    "shop_name": shop_name,
+                    "itemname": itemname,
+                    "quantity": quantity,
+                    "metric": metric,
+                    "batch_number": batch_number
+                }
+            }
+            
+            for sub in subscriptions:
+                try:
+                    webpush(
+                        subscription_info={
+                            "endpoint": sub.endpoint,
+                            "keys": {
+                                "p256dh": sub.p256dh,
+                                "auth": sub.auth,
+                            },
+                        },
+                        data=json.dumps(payload),
+                        vapid_private_key=vapid_private_key,
+                        vapid_claims={"sub": vapid_email},
+                    )
+                    sent_count += 1
+                    print(f"Push sent to user {user.users_id} (employee: {employee.first_name} {employee.surname})")
+                except WebPushException as e:
+                    failed_count += 1
+                    print(f"Push failed for subscription {sub.id}: {repr(e)}")
+        
+        print(f"Push notifications to shop employees - sent: {sent_count}, failed: {failed_count}")
+
 
 
 class ReceiveTransfer(Resource):
@@ -540,7 +617,9 @@ class ReceiveTransfer(Resource):
 class DeclineTransfer(Resource):
     @jwt_required()
     def patch(self, transfer_id):
+        current_user_id = get_jwt_identity()
         transfer = TransfersV2.query.get(transfer_id)
+        
         if not transfer:
             return {'message': 'Transfer not found'}, 404
 
@@ -560,15 +639,117 @@ class DeclineTransfer(Resource):
             transfer.status = "Declined"
 
             db.session.commit()
+            
+            # ===== CREATE DATABASE NOTIFICATIONS =====
+            from Server.Views.Services.notifications_service import NotificationService
+            
+            # Get shop details
+            shop = Shops.query.get(transfer.shop_id)
+            shop_name = shop.shopname if shop and hasattr(shop, 'shopname') else f"Shop {transfer.shop_id}"
+            
+            # Get the user who declined (current user)
+            declining_user = Users.query.get(current_user_id)
+            
+            # Get the user who initiated the transfer (if exists)
+            initiator_user = Users.query.get(transfer.user_id) if transfer.user_id else None
+            
+            # Prepare notification data
+            notification_data = {
+                'transfer_id': transfer.transferv2_id,
+                'shop_id': transfer.shop_id,
+                'shop_name': shop_name,
+                'inventory_id': transfer.inventoryV2_id,
+                'itemname': transfer.itemname,
+                'quantity': transfer.quantity,
+                'metric': transfer.metric,
+                'batch_number': transfer.BatchNumber,
+                'status': 'Declined',
+                'declined_by': current_user_id,
+                'declined_by_name': declining_user.username if declining_user else str(current_user_id),
+                'declined_at': datetime.utcnow().isoformat(),
+                'restored_quantity': transfer.quantity
+            }
+            
+            notified_users = []
+            
+            # 1. NOTIFY THE USER WHO DECLINED THE TRANSFER
+            if current_user_id:
+                NotificationService.create_notification(
+                    user_id=current_user_id,
+                    notification_type='transfer_declined_by_you',
+                    title='Transfer Declined',
+                    message=f'You declined the transfer of {transfer.quantity} {transfer.metric} of {transfer.itemname} (Batch: {transfer.BatchNumber}) from {shop_name}',
+                    data=notification_data
+                )
+                notified_users.append({
+                    'user_id': current_user_id,
+                    'type': 'decliner'
+                })
+                print(f"Notification sent to decliner (user: {current_user_id})")
+            
+            # 2. NOTIFY THE USER WHO INITIATED THE TRANSFER (the distributor)
+            if initiator_user and initiator_user.users_id != current_user_id:
+                NotificationService.create_notification(
+                    user_id=initiator_user.users_id,
+                    notification_type='transfer_declined',
+                    title='Transfer Declined',
+                    message=f'{transfer.quantity} {transfer.metric} of {transfer.itemname} (Batch: {transfer.BatchNumber}) was declined by {declining_user.username if declining_user else "shop staff"} at {shop_name}',
+                    data=notification_data
+                )
+                notified_users.append({
+                    'user_id': initiator_user.users_id,
+                    'type': 'initiator'
+                })
+                print(f"Notification sent to initiator (user: {initiator_user.users_id})")
+            else:
+                if not initiator_user:
+                    print(f"No initiator user found for transfer {transfer_id}")
+                elif initiator_user.users_id == current_user_id:
+                    print(f"Initiator is the same as decliner, skipping duplicate notification")
+            
+            # 3. OPTIONAL: Notify all shop staff about the decline (if you want to inform the team)
+            # Uncomment if you want to notify all staff at the shop about the decline
+            """
+            employees = Employees.query.filter_by(
+                shop_id=transfer.shop_id,
+                account_status='active'
+            ).all()
+            
+            shop_staff_notified = 0
+            for employee in employees:
+                user = Users.query.filter_by(employee_id=employee.employee_id).first()
+                if user and user.users_id != current_user_id and (not initiator_user or user.users_id != initiator_user.users_id):
+                    NotificationService.create_notification(
+                        user_id=user.users_id,
+                        notification_type='transfer_declined_shop_notification',
+                        title='Transfer Declined',
+                        message=f'{transfer.quantity} {transfer.metric} of {transfer.itemname} was declined at {shop_name}',
+                        data=notification_data
+                    )
+                    shop_staff_notified += 1
+                    notified_users.append({
+                        'user_id': user.users_id,
+                        'type': 'shop_staff'
+                    })
+            print(f"Notified {shop_staff_notified} additional shop staff members")
+            """
+            
+            db.session.commit()
 
             return {
                 'message': 'Transfer declined successfully. Stock returned to inventory.',
                 'transfer_id': transfer.transferv2_id,
-                'restored_quantity': transfer.quantity
+                'restored_quantity': transfer.quantity,
+                'notifications_summary': {
+                    'decliner_notified': bool(current_user_id),
+                    'initiator_notified': bool(initiator_user and initiator_user.users_id != current_user_id),
+                    'total_notified': len(notified_users)
+                }
             }, 200
 
         except Exception as e:
             db.session.rollback()
+            print(f"Error declining transfer: {str(e)}")
             return {'message': 'Error declining transfer', 'error': str(e)}, 500
 
 
@@ -1262,7 +1443,6 @@ class AddInventoryV2(Resource):
                     account_id=account.id,
                     Transaction_type_debit=amountPaid,
                     Transaction_type_credit=None,
-                    reference=f"Inventory Purchase: {batch_code}"
                 )
                 db.session.add(transaction)
 

@@ -352,10 +352,351 @@ class SubmitStockReport(Resource):
 
         return reconciliation_results
 
+class InventoryCount(Resource):
+    @jwt_required()
+    def post(self):
+        data = request.get_json()
+
+        user_id = get_jwt_identity()
+        shop_id = data.get('shop_id')  # Can be null for inventory stock
+        report_data = data.get('report')  # JSON report
+        comment = data.get('note', '')
+
+        if not report_data:
+            return {'message': 'report data is required'}, 400
+
+        # ✅ Handle inventory stock count (shop_id is null)
+        if shop_id is None:
+            # For inventory stock count, use default comment
+            if not comment:
+                comment = "Store weekly stock count"
+            
+            # No shop validation needed for inventory
+            print("Processing inventory stock count - shop_id is null")
+            
+            try:
+                # Start transaction
+                db.session.begin_nested()
+
+                # ✅ Create StockReport with null shop_id
+                report = StockReport(
+                    shop_id=None,  # Explicitly set to null for inventory
+                    user_id=user_id,
+                    report=report_data,
+                    comment=comment
+                )
+                db.session.add(report)
+
+                # ✅ Create reconciliation records for inventory
+                reconciliation_results = self.create_reconciliation_records(
+                    shop_id, user_id, report_data, comment
+                )
+
+                db.session.commit()
+
+                return {
+                    'message': 'Inventory stock count submitted successfully',
+                    'reconciliation_created': len(reconciliation_results),
+                    'reconciliation_details': reconciliation_results,
+                    'type': 'inventory_count'
+                }, 201
+
+            except Exception as e:
+                db.session.rollback()
+                return {'message': f'Error processing inventory stock count: {str(e)}'}, 500
+        
+        # ✅ Handle regular shop stock report (existing logic)
+        else:
+            # Check shop existence
+            shop = Shops.query.filter_by(shops_id=shop_id).first()
+            if not shop:
+                return {'message': 'Shop not found'}, 404
+
+            # Prevent duplicate report submissions
+            if shop.report_status:
+                return {'message': 'Stock report already submitted today'}, 400
+
+            # Extract comment from differences if not provided
+            if not comment:
+                differences = report_data.get("differences", {})
+                for item in differences.values():
+                    reason = item.get("reason")
+                    if reason:
+                        comment = reason
+                        break
+
+            try:
+                # Start transaction
+                db.session.begin_nested()
+
+                # Create StockReport
+                report = StockReport(
+                    shop_id=shop_id,
+                    user_id=user_id,
+                    report=report_data,
+                    comment=comment
+                )
+                db.session.add(report)
+
+                # Mark shop as reported
+                shop.report_status = True
+
+                # Create reconciliation records
+                reconciliation_results = self.create_reconciliation_records(
+                    shop_id, user_id, report_data, comment
+                )
+
+                db.session.commit()
+
+                return {
+                    'message': 'Stock report submitted successfully',
+                    'reconciliation_created': len(reconciliation_results),
+                    'reconciliation_details': reconciliation_results
+                }, 201
+
+            except Exception as e:
+                db.session.rollback()
+                return {'message': f'Error processing stock report: {str(e)}'}, 500
+
+    def parse_report_value(self, value_str):
+        """
+        Parse the report value string to extract quantity and unit.
+        Returns tuple (quantity, unit)
+        """
+        if not value_str or value_str == "null":
+            return 0, ""
+
+        value_str = str(value_str).strip()
+
+        # Handle "null"
+        if "null" in value_str.lower():
+            match = re.search(r'([\d.]+)\s*null', value_str)
+            if match:
+                return float(match.group(1)), ""
+            return 0, ""
+
+        # Handle known units
+        for unit in ["item", "kg", "pcs", "pc"]:
+            if unit in value_str.lower():
+                match = re.search(r'([\d.]+)\s*' + unit, value_str, re.IGNORECASE)
+                if match:
+                    detected_unit = unit if unit != "pc" else "pcs"
+                    return float(match.group(1)), detected_unit
+
+        # Handle generic cases
+        match = re.search(r'([\d.]+)\s*([a-zA-Z]*)', value_str)
+        if match:
+            quantity = float(match.group(1))
+            unit = match.group(2).lower().strip()
+            return quantity, unit
+
+        # Try plain numbers (no unit)
+        try:
+            return float(value_str), ""
+        except:
+            print(f"Warning: Could not parse report value: '{value_str}'")
+            return 0, ""
+
+    def normalize_item_name(self, item_name):
+        """
+        Normalize item names for comparison between report and stock data
+        """
+        normalized = ' '.join(item_name.lower().split())
+
+        replacements = {
+            'catering sausages': 'sausage',
+            'smokies': 'smokie',
+            'boneless breast': 'breast',
+            'drumstick': 'drum stick',
+            'gizzard': 'gizzards',
+        }
+
+        for old, new in replacements.items():
+            if old in normalized:
+                normalized = normalized.replace(old, new)
+
+        return normalized
+
+    def get_stock_value_for_item(self, shop_id, report_item_name, report_unit):
+        """
+        Find matching items in ShopStockV2 for a given shop and return total quantity
+        """
+        normalized_name = self.normalize_item_name(report_item_name)
+        
+        # Handle inventory stock count (shop_id is None)
+        if shop_id is None:
+            # For inventory, we might want to get all stock across shops or have a different logic
+            # This depends on your business logic - currently returning 0
+            print(f"Inventory stock lookup - no shop_id provided")
+            return 0.0, "no_match"
+            
+        stock_items = ShopStockV2.query.filter_by(shop_id=shop_id).all()
+
+        total_quantity = 0.0
+        match_found = False
+        match_type = "no_match"
+
+        for stock_item in stock_items:
+            stock_item_name_normalized = self.normalize_item_name(stock_item.itemname)
+
+            if stock_item_name_normalized == normalized_name:
+                total_quantity += float(stock_item.quantity or 0)
+                match_found = True
+                match_type = "exact_match"
+
+            elif normalized_name in stock_item_name_normalized or stock_item_name_normalized in normalized_name:
+                total_quantity += float(stock_item.quantity or 0)
+                match_found = True
+                if match_type != "exact_match":
+                    match_type = "partial_match"
+
+        print(f"Stock lookup - Item: {report_item_name}, Normalized: {normalized_name}, "
+              f"Stock Qty: {total_quantity}, Match: {match_type}")
+
+        return total_quantity, match_type if match_found else "no_match"
+
+    def create_reconciliation_records(self, shop_id, user_id, report_data, comment):
+        """
+        Compare report data with ShopStockV2 and create StockReconciliation records
+        for items with differences, including skipped items with report_value as 0.
+        """
+        reconciliation_results = []
+
+        # Extract reported items
+        reported_items = {}
+        if isinstance(report_data, list):
+            reported_items = {entry.get('item'): entry.get('value') for entry in report_data if entry.get('item')}
+        elif isinstance(report_data, dict):
+            reported_items = {k: v for k, v in report_data.items() if k not in ["differences", "note", "comment"]}
+        else:
+            raise ValueError("Invalid report_data format. Must be dict or list.")
+
+        # Get all stock items
+        if shop_id is None:
+            # For inventory, we might want to get all stock or have different logic
+            # This depends on your business logic - currently empty list
+            stock_items = []
+            print("Processing inventory reconciliation - no shop stock comparison")
+        else:
+            stock_items = ShopStockV2.query.filter_by(shop_id=shop_id).all()
+        
+        # Create a set of all unique item names from stock (normalized for comparison)
+        all_stock_items = {}
+        for stock_item in stock_items:
+            normalized_name = self.normalize_item_name(stock_item.itemname)
+            if normalized_name not in all_stock_items:
+                all_stock_items[normalized_name] = {
+                    'original_name': stock_item.itemname,
+                    'total_quantity': 0.0
+                }
+            all_stock_items[normalized_name]['total_quantity'] += float(stock_item.quantity or 0)
+
+        # Process all items (both reported and skipped)
+        processed_items = set()
+        
+        # First, process reported items
+        for item_name, report_value_str in reported_items.items():
+            normalized_name = self.normalize_item_name(item_name)
+            processed_items.add(normalized_name)
+            
+            print(f"Processing reported item: {item_name}, value: '{report_value_str}'")
+
+            report_quantity, report_unit = self.parse_report_value(report_value_str)
+            print(f"Parsed - Quantity: {report_quantity}, Unit: '{report_unit}'")
+
+            # Get stock quantity for this item
+            stock_quantity = 0.0
+            match_status = "no_match"
+            
+            if shop_id is not None:  # Only check stock if we have a shop_id
+                if normalized_name in all_stock_items:
+                    stock_quantity = all_stock_items[normalized_name]['total_quantity']
+                    match_status = "exact_match"
+                else:
+                    # Try to find partial match
+                    for stock_norm_name, stock_data in all_stock_items.items():
+                        if normalized_name in stock_norm_name or stock_norm_name in normalized_name:
+                            stock_quantity = stock_data['total_quantity']
+                            match_status = "partial_match"
+                            break
+
+            difference = round(report_quantity - stock_quantity, 3)
+
+            # ✅ Skip items with no difference
+            if abs(difference) < 0.01:
+                print(f"Skipping '{item_name}' - no difference (Stock: {stock_quantity}, Report: {report_quantity})")
+                continue
+
+            status = 'Unsolved'
+
+            # ✅ Only save reconciliation when there is a difference
+            reconciliation = StockReconciliation(
+                shop_id=shop_id,
+                user_id=user_id,
+                stock_value=round(stock_quantity, 3),
+                report_value=round(report_quantity, 3),
+                item=item_name,
+                difference=difference,
+                status=status,
+                comment=comment,
+                created_at=func.now()
+            )
+            db.session.add(reconciliation)
+
+            reconciliation_results.append({
+                'item': item_name,
+                'stock_value': round(stock_quantity, 3),
+                'report_value': round(report_quantity, 3),
+                'difference': difference,
+                'status': status,
+                'unit': report_unit if report_unit else None,
+                'match': match_status,
+                'type': 'inventory' if shop_id is None else 'shop'
+            })
+
+        # Then, process skipped items (items in stock but not reported) - only for shops
+        if shop_id is not None:
+            for normalized_name, stock_data in all_stock_items.items():
+                if normalized_name not in processed_items:
+                    item_name = stock_data['original_name']
+                    stock_quantity = stock_data['total_quantity']
+                    report_quantity = 0.0  # Skipped items have report value of 0
+                    difference = round(report_quantity - stock_quantity, 3)
+
+                    print(f"Processing skipped item: {item_name}, Stock: {stock_quantity}, Report: 0")
+
+                    # ✅ Only create record if there's a difference (which there will be for skipped items)
+                    if abs(difference) > 0.01:
+                        status = 'Unsolved'
+
+                        reconciliation = StockReconciliation(
+                            shop_id=shop_id,
+                            user_id=user_id,
+                            stock_value=round(stock_quantity, 3),
+                            report_value=round(report_quantity, 3),
+                            item=item_name,
+                            difference=difference,
+                            status=status,
+                            comment=comment + " (Skipped item)" if comment else "Skipped item",
+                            created_at=func.now()
+                        )
+                        db.session.add(reconciliation)
+
+                        reconciliation_results.append({
+                            'item': item_name,
+                            'stock_value': round(stock_quantity, 3),
+                            'report_value': round(report_quantity, 3),
+                            'difference': difference,
+                            'status': status,
+                            'unit': report_unit if report_unit else None,
+                            'match': "exact_match",
+                            'note': 'skipped',
+                            'type': 'shop'
+                        })
+
+        return reconciliation_results
 
     
-
-
 class ResetShopReportStatus(Resource):
     def put(self):
         # Reset report_status to False for all shops except shop_id = 12

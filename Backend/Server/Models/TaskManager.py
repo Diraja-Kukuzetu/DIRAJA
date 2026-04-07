@@ -54,7 +54,7 @@ class TaskManager(db.Model):
         valid_priorities = ['High', 'Medium', 'Low']
         assert priority in valid_priorities, f"Invalid priority. Must be one of: {', '.join(valid_priorities)}"
         return priority
- 
+    
     @validates('status')
     def validate_status(self, key, status):
         valid_statuses = ['Pending', 'In Progress', 'Complete', 'Cancelled', 'Overdue']

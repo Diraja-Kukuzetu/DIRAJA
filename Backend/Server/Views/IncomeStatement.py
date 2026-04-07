@@ -90,19 +90,29 @@ class IncomeStatement(Resource):
                 "amount": amount
             })
             total_revenue += amount
-
+            
         # ==========================================
         # COST OF GOODS SOLD (COGS) SECTION
         # ==========================================
-        cogs_accounts = ChartOfAccounts.query.filter_by(name="Cost of Goods Sold").all()
+        # Get the Cost of Goods Sold account(s)
+        cogs_accounts = ChartOfAccounts.query.filter_by(type="Cost of Goods Sold").all()
+
+        if not cogs_accounts:
+            # If no account with type "Cost of Goods Sold", try by name
+            cogs_accounts = ChartOfAccounts.query.filter(
+                ChartOfAccounts.name.ilike('%cost of goods sold%')
+            ).all()
+
         cogs_account_ids = [acc.id for acc in cogs_accounts]
 
+        # For Cost of Goods Sold, we need to get debit entries where the debit_account is a COGS account
+        # This represents the cost being recognized when inventory is sold
         cogs_query = db.session.query(
             CostOfSaleLedger.description,
             func.sum(CostOfSaleLedger.amount).label('total_amount')
         ).filter(
             CostOfSaleLedger.created_at.between(start_date, end_date),
-            CostOfSaleLedger.debit_account_id.in_(cogs_account_ids)
+            CostOfSaleLedger.debit_account_id.in_(cogs_account_ids)  # COGS account is debited
         )
 
         if shop_id:
@@ -119,11 +129,48 @@ class IncomeStatement(Resource):
 
         for item in cogs_items:
             amount = round(float(item.total_amount or 0), 2)
+            
+            # Format description to be more readable
+            description = item.description
+            if description and description.startswith("COGS - "):
+                description = description
+            elif description:
+                description = f"COGS - {description}"
+            else:
+                description = "Cost of Goods Sold"
+            
             cogs_list.append({
-                "description": item.description or "Cost of Goods Sold",
+                "description": description,
                 "amount": amount
             })
             total_cogs += amount
+
+        # If no items found with descriptions, try to get total without grouping
+        if total_cogs == 0 and cogs_account_ids:
+            total_query = db.session.query(
+                func.sum(CostOfSaleLedger.amount).label('total_amount')
+            ).filter(
+                CostOfSaleLedger.created_at.between(start_date, end_date),
+                CostOfSaleLedger.debit_account_id.in_(cogs_account_ids)
+            )
+            
+            if shop_id:
+                total_query = total_query.filter(CostOfSaleLedger.shop_id == shop_id)
+            
+            total_cogs = total_query.scalar() or 0
+            total_cogs = round(float(total_cogs), 2)
+            
+            if total_cogs > 0:
+                if len(cogs_accounts) == 1:
+                    description = cogs_accounts[0].name
+                else:
+                    description = "Cost of Goods Sold"
+                
+                cogs_list.append({
+                    "description": description,
+                    "amount": total_cogs
+                })
+
 
         # ==========================================
         # SPOILT STOCK SECTION (Total only - Debit entries)

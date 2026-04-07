@@ -56,6 +56,7 @@ class CreateTask(Resource):
                     "error": f"Invalid status '{status}'. Allowed values are: {', '.join(allowed_statuses)}"
                 }, 400
 
+            # Validate category
             category = data.get("category", "General")
 
             # Parse due_date
@@ -261,9 +262,10 @@ class TaskResource(Resource):
         ).get(task_id)
         
         if not task:
-            return jsonify({"error": "Task not found"}), 404
+            return {"error": "Task not found"}, 404
 
         return jsonify(task.to_dict(include_comments=True, include_evaluation=True, include_recurrence_info=True))
+        return task.to_dict(include_comments=True, include_evaluation=True)
 
     @jwt_required()
     def put(self, task_id):
@@ -330,7 +332,7 @@ class TaskResource(Resource):
     def delete(self, task_id):
         task = TaskManager.query.get(task_id)
         if not task:
-            return jsonify({"error": "Task not found"}), 404
+            return {"error": "Task not found"}, 404
 
         try:
             # If this is a recurring task, also delete child tasks
@@ -343,7 +345,7 @@ class TaskResource(Resource):
             return jsonify({"message": "Task and its recurring instances deleted successfully"})
         except Exception as e:
             db.session.rollback()
-            return jsonify({"error": str(e)}), 400
+            return {"error": str(e)}, 400
 
 
 class TaskCommentResource(Resource):
@@ -511,15 +513,13 @@ class TaskEvaluationResource(Resource):
 
             # Check if evaluation already exists
             evaluation = TaskEvaluation.query.filter_by(task_id=task_id).first()
-            
+            is_new = False
+
             if evaluation:
-                # Update existing evaluation
                 evaluation.rating = rating
                 evaluation.comment = data["comment"]
                 evaluation.evaluator_id = current_user_id
-                # created_at will stay the same, no updated_at field
             else:
-                # Create new evaluation
                 evaluation = TaskEvaluation(
                     task_id=task_id,
                     evaluator_id=current_user_id,
@@ -527,6 +527,7 @@ class TaskEvaluationResource(Resource):
                     comment=data["comment"]
                 )
                 db.session.add(evaluation)
+                is_new = True
 
             db.session.commit()
 
