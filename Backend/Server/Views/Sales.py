@@ -551,6 +551,7 @@ class GetSale(Resource):
             return {"error": str(e)}, 500
 
 
+
 class GetSales(Resource):
     @jwt_required()
     def get(self):
@@ -566,6 +567,8 @@ class GetSales(Resource):
             shop_filter = request.args.get('shop_id')
             sort_by = request.args.get('sort_by', 'created_at')
             sort_order = request.args.get('sort_order', 'desc')
+            start_date = request.args.get('start_date')  # Added for date range
+            end_date = request.args.get('end_date')      # Added for date range
 
             # Valid sort fields
             valid_sort_fields = ['created_at', 'username', 'shopname', 'total_amount_paid']
@@ -587,10 +590,23 @@ class GetSales(Resource):
                     )
                 )
 
+            # Handle single date filter (backward compatibility)
             if selected_date:
                 try:
                     selected_date_obj = datetime.strptime(selected_date, '%Y-%m-%d').date()
                     sales_query = sales_query.filter(func.date(Sales.created_at) == selected_date_obj)
+                except ValueError:
+                    return {"error": "Invalid date format. Use YYYY-MM-DD."}, 400
+
+            # Handle date range filter (for exports)
+            if start_date and end_date:
+                try:
+                    start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
+                    end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
+                    sales_query = sales_query.filter(
+                        func.date(Sales.created_at) >= start_date_obj,
+                        func.date(Sales.created_at) <= end_date_obj
+                    )
                 except ValueError:
                     return {"error": "Invalid date format. Use YYYY-MM-DD."}, 400
 
@@ -609,7 +625,7 @@ class GetSales(Resource):
                 payment_subquery = (
                     db.session.query(
                         SalesPaymentMethods.sale_id,
-                        func.sum(SalesPaymentMethods.amount_paid).label('total_paid')
+                        func.coalesce(func.sum(SalesPaymentMethods.amount_paid), 0).label('total_paid')
                     )
                     .group_by(SalesPaymentMethods.sale_id)
                     .subquery()
@@ -629,25 +645,35 @@ class GetSales(Resource):
             else:
                 sales_query = sales_query.order_by(order_field.asc())
 
-            # Decide pagination
-            use_pagination = not (
-                search_query or
-                selected_date or
-                status_filter or
-                shop_filter or
-                sort_by != 'created_at' or
-                sort_order != 'desc'
-            )
-
-            if use_pagination:
-                offset = (page - 1) * limit
-                sales_list = sales_query.offset(offset).limit(limit).all()
-                total_sales = sales_query.count()
-                total_pages = (total_sales + limit - 1) // limit
-            else:
+            # For exports, always get all data without pagination
+            # Check if this is an export request (large limit or specific parameters)
+            is_export = limit > 500 or start_date or end_date
+            
+            if is_export:
+                # Get all sales without pagination
                 sales_list = sales_query.all()
                 total_sales = len(sales_list)
                 total_pages = 1
+            else:
+                # Decide pagination for normal requests
+                use_pagination = not (
+                    search_query or
+                    selected_date or
+                    status_filter or
+                    shop_filter or
+                    sort_by != 'created_at' or
+                    sort_order != 'desc'
+                )
+
+                if use_pagination:
+                    offset = (page - 1) * limit
+                    sales_list = sales_query.offset(offset).limit(limit).all()
+                    total_sales = sales_query.count()
+                    total_pages = (total_sales + limit - 1) // limit
+                else:
+                    sales_list = sales_query.all()
+                    total_sales = len(sales_list)
+                    total_pages = 1
 
             # Construct response data
             sales_data = []
@@ -667,14 +693,18 @@ class GetSales(Resource):
                 payments = [
                     {
                         "payment_method": p.payment_method,
-                        "amount_paid": p.amount_paid,
+                        "amount_paid": p.amount_paid if p.amount_paid is not None else 0,
+                        "discount": p.discount if p.discount is not None else 0,  # Handle None values
+                        "balance": p.balance if p.balance is not None else 0,    # Handle None values
                         "created_at": p.created_at.strftime('%Y-%m-%d %H:%M:%S'),
-                        "balance": p.balance
+                        "transaction_code": getattr(p, 'transaction_code', None)
                     }
                     for p in sale.payment
                 ]
 
-                total_amount_paid = sum(p["amount_paid"] for p in payments)
+                # Safely calculate totals with None checks
+                total_amount_paid = sum(p.get("amount_paid", 0) for p in payments)
+                total_discount = sum(p.get("discount", 0) for p in payments)
 
                 sales_data.append({
                     "sale_id": sale.sales_id,
@@ -682,14 +712,15 @@ class GetSales(Resource):
                     "username": sale.users.username if sale.users else "Unknown User",
                     "shop_id": sale.shop_id,
                     "shopname": sale.shops.shopname if sale.shops else "Unknown Shop",
-                    "customer_name": sale.customer_name,
+                    "customer_name": sale.customer_name or "Walk-in Customer",
                     "status": sale.status,
                     "customer_number": sale.customer_number,
                     "sold_items": sold_items,
                     "total_amount_paid": total_amount_paid,
+                    "total_discount": total_discount,
                     "payment_methods": payments,
                     "created_at": sale.created_at.strftime('%Y-%m-%d %H:%M:%S'),
-                    "balance": sale.balance,
+                    "balance": sale.balance if sale.balance is not None else 0,
                     "note": sale.note,
                     "delivery": sale.delivery,
                     "promocode": sale.promocode
@@ -699,7 +730,7 @@ class GetSales(Resource):
                 "sales_data": sales_data,
                 "total_sales": total_sales,
                 "total_pages": total_pages,
-                "current_page": page
+                "current_page": page if not is_export else 1
             }, 200
 
         except SQLAlchemyError as e:
@@ -711,7 +742,6 @@ class GetSales(Resource):
         except Exception as e:
             current_app.logger.error(f"Unexpected error: {str(e)}")
             return {"error": "An unexpected error occurred."}, 500
-
 
 
 class GetSalesByShop(Resource):
