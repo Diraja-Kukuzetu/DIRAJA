@@ -1,12 +1,12 @@
 from flask_restful import Resource
 from flask import jsonify,request
-from flask_jwt_extended import jwt_required
 from app import db
 from sqlalchemy.orm import aliased
 from datetime import datetime
-
-
+from flask_jwt_extended import jwt_required
+from sqlalchemy import func, or_
 from Server.Models.Accounting.SalesLedger import SalesLedger
+from Server.Models.Accounting.ManualLedger import ManualLedger
 from Server.Models.Accounting.CreditSalesLedger import CreditSalesLedger
 from Server.Models.ChartOfAccounts import ChartOfAccounts
 from Server.Models.Shops import Shops
@@ -20,6 +20,8 @@ from Server.Models.BankAccounts import BankAccount,BankingTransaction
 from Server.Models.TransferV2 import TransfersV2
 from Server.Models.InventoryV2 import InventoryV2
 from Server.Models.ExpenseCategory import ExpenseCategory
+from Server.Models.SpoiltStock import SpoiltStock
+from Server.Models.Accounting.SpoiltStockLedger import SpoiltStockLedger
 
 
 class SalesLedgerList(Resource):
@@ -3154,8 +3156,609 @@ class ExpensesLedgerList(Resource):
         except Exception as e:
             db.session.rollback()
             return {"error": str(e)}, 500
+        
+class SpoiltStockLedgerList(Resource):
+    @jwt_required()
+    def get(self):
+        try:
+            # Get query parameters
+            page = request.args.get('page', 1, type=int)
+            per_page = request.args.get('per_page', 20, type=int)
+            search = request.args.get('search', '', type=str)
+            spoilt_id = request.args.get('spoilt_id', type=int)
+            shop_id = request.args.get('shop_id', type=int)
+            debit_account_id = request.args.get('debit_account_id', type=int)
+            credit_account_id = request.args.get('credit_account_id', type=int)
+            account_id = request.args.get('account_id', type=int)
+            start_date = request.args.get('start_date', type=str)
+            end_date = request.args.get('end_date', type=str)
+            min_amount = request.args.get('min_amount', type=float)
+            max_amount = request.args.get('max_amount', type=float)
+            
+            # Alias chart_of_accounts
+            DebitAccount = aliased(ChartOfAccounts)
+            CreditAccount = aliased(ChartOfAccounts)
 
+            # Build subquery to get the latest entry for each spoilt_id
+            base_transaction_subquery = db.session.query(
+                SpoiltStockLedger.spoilt_id,
+                db.func.max(SpoiltStockLedger.created_at).label('created_at'),
+                db.func.max(SpoiltStockLedger.id).label('id'),
+                db.func.max(SpoiltStockLedger.description).label('description'),
+                db.func.max(SpoiltStockLedger.amount).label('amount'),
+                db.func.max(SpoiltStockLedger.debit_account_id).label('debit_account_id'),
+                db.func.max(SpoiltStockLedger.credit_account_id).label('credit_account_id'),
+                db.func.max(SpoiltStockLedger.shop_id).label('shop_id')
+            ).group_by(
+                SpoiltStockLedger.spoilt_id
+            ).subquery()
+            
+            # Subquery to get debit account info (first non-null)
+            debit_subquery = db.session.query(
+                SpoiltStockLedger.spoilt_id,
+                SpoiltStockLedger.debit_account_id,
+                db.func.row_number().over(
+                    partition_by=SpoiltStockLedger.spoilt_id,
+                    order_by=SpoiltStockLedger.id
+                ).label('row_num')
+            ).filter(SpoiltStockLedger.debit_account_id.isnot(None)).subquery()
+            
+            # Subquery to get credit account info (first non-null)
+            credit_subquery = db.session.query(
+                SpoiltStockLedger.spoilt_id,
+                SpoiltStockLedger.credit_account_id,
+                db.func.row_number().over(
+                    partition_by=SpoiltStockLedger.spoilt_id,
+                    order_by=SpoiltStockLedger.id
+                ).label('row_num')
+            ).filter(SpoiltStockLedger.credit_account_id.isnot(None)).subquery()
 
+            # Build base query - group by spoilt_id to get one row per spoilt stock entry
+            query = (
+                db.session.query(
+                    db.func.max(base_transaction_subquery.c.id).label('id'),
+                    db.func.max(base_transaction_subquery.c.created_at).label('created_at'),
+                    base_transaction_subquery.c.spoilt_id,
+                    base_transaction_subquery.c.description,
+                    base_transaction_subquery.c.amount,
+                    DebitAccount.name.label("debit_account_name"),
+                    DebitAccount.code.label("debit_account_code"),
+                    db.func.max(debit_subquery.c.debit_account_id).label("debit_account_id"),
+                    DebitAccount.type.label("debit_account_type"),
+                    CreditAccount.name.label("credit_account_name"),
+                    CreditAccount.code.label("credit_account_code"),
+                    db.func.max(credit_subquery.c.credit_account_id).label("credit_account_id"),
+                    CreditAccount.type.label("credit_account_type"),
+                    # Shop details
+                    Shops.shops_id,
+                    Shops.shopname.label("shop_name"),
+                    # Spoilt stock details
+                    SpoiltStock.id.label("spoilt_stock_id"),
+                    SpoiltStock.item.label("item_name"),
+                    SpoiltStock.quantity,
+                    SpoiltStock.unit,
+                    SpoiltStock.disposal_method,
+                    SpoiltStock.collector_name,
+                    SpoiltStock.comment,
+                    SpoiltStock.status,
+                    SpoiltStock.batches_affected,
+                    SpoiltStock.livestock_deduction,
+                    SpoiltStock.created_at.label("spoilt_date"),
+                    
+                )
+                .select_from(base_transaction_subquery)
+                .outerjoin(debit_subquery, 
+                    db.and_(
+                        base_transaction_subquery.c.spoilt_id == debit_subquery.c.spoilt_id,
+                        debit_subquery.c.row_num == 1
+                    )
+                )
+                .outerjoin(credit_subquery,
+                    db.and_(
+                        base_transaction_subquery.c.spoilt_id == credit_subquery.c.spoilt_id,
+                        credit_subquery.c.row_num == 1
+                    )
+                )
+                .outerjoin(DebitAccount, debit_subquery.c.debit_account_id == DebitAccount.id)
+                .outerjoin(CreditAccount, credit_subquery.c.credit_account_id == CreditAccount.id)
+                .join(Shops, base_transaction_subquery.c.shop_id == Shops.shops_id)
+                .join(SpoiltStock, base_transaction_subquery.c.spoilt_id == SpoiltStock.id)
+                .group_by(
+                    base_transaction_subquery.c.spoilt_id,
+                    base_transaction_subquery.c.description,
+                    base_transaction_subquery.c.amount,
+                    base_transaction_subquery.c.created_at,
+                    DebitAccount.name,
+                    DebitAccount.code,
+                    DebitAccount.type,
+                    CreditAccount.name,
+                    CreditAccount.code,
+                    CreditAccount.type,
+                    Shops.shops_id,
+                    Shops.shopname,
+                    SpoiltStock.id,
+                    SpoiltStock.item,
+                    SpoiltStock.quantity,
+                    SpoiltStock.unit,
+                    SpoiltStock.disposal_method,
+                    SpoiltStock.collector_name,
+                    SpoiltStock.comment,
+                    SpoiltStock.status,
+                    SpoiltStock.batches_affected,
+                    SpoiltStock.livestock_deduction,
+                    SpoiltStock.created_at
+                   
+                )
+            )
+
+            # Apply filters
+            if search:
+                search_term = f"%{search}%"
+                query = query.filter(
+                    db.or_(
+                        base_transaction_subquery.c.description.ilike(search_term),
+                        DebitAccount.name.ilike(search_term),
+                        DebitAccount.code.ilike(search_term),
+                        CreditAccount.name.ilike(search_term),
+                        CreditAccount.code.ilike(search_term),
+                        Shops.shopname.ilike(search_term),
+                        SpoiltStock.item.ilike(search_term),
+                        SpoiltStock.disposal_method.ilike(search_term),
+                        SpoiltStock.collector_name.ilike(search_term),
+                        SpoiltStock.comment.ilike(search_term),
+                        SpoiltStock.batches_affected.ilike(search_term),
+                        base_transaction_subquery.c.spoilt_id.cast(db.String).ilike(search_term)
+                    )
+                )
+
+            if spoilt_id:
+                query = query.filter(base_transaction_subquery.c.spoilt_id == spoilt_id)
+
+            if shop_id:
+                query = query.filter(base_transaction_subquery.c.shop_id == shop_id)
+
+            if debit_account_id:
+                query = query.having(db.func.max(debit_subquery.c.debit_account_id) == debit_account_id)
+
+            if credit_account_id:
+                query = query.having(db.func.max(credit_subquery.c.credit_account_id) == credit_account_id)
+
+            if account_id:
+                query = query.having(
+                    db.or_(
+                        db.func.max(debit_subquery.c.debit_account_id) == account_id,
+                        db.func.max(credit_subquery.c.credit_account_id) == account_id
+                    )
+                )
+
+            if start_date:
+                try:
+                    start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
+                    query = query.filter(base_transaction_subquery.c.created_at >= start_date_obj)
+                except ValueError:
+                    pass
+
+            if end_date:
+                try:
+                    end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+                    end_date_obj = end_date_obj.replace(hour=23, minute=59, second=59)
+                    query = query.filter(base_transaction_subquery.c.created_at <= end_date_obj)
+                except ValueError:
+                    pass
+
+            if min_amount is not None:
+                query = query.filter(base_transaction_subquery.c.amount >= min_amount)
+
+            if max_amount is not None:
+                query = query.filter(base_transaction_subquery.c.amount <= max_amount)
+
+            # ============ PAGINATION COUNT ============
+            # Get total count for pagination (distinct spoilt_id)
+            total_count_subquery = db.session.query(
+                SpoiltStockLedger.spoilt_id
+            ).filter(SpoiltStockLedger.spoilt_id.isnot(None))
+
+            # Apply same filters to count subquery
+            if search:
+                total_count_subquery = total_count_subquery.join(
+                    SpoiltStock, 
+                    SpoiltStockLedger.spoilt_id == SpoiltStock.id
+                ).join(
+                    Shops, 
+                    SpoiltStockLedger.shop_id == Shops.shops_id
+                ).filter(
+                    db.or_(
+                        SpoiltStockLedger.description.ilike(f"%{search}%"),
+                        Shops.shopname.ilike(f"%{search}%"),
+                        SpoiltStock.item.ilike(f"%{search}%"),
+                        SpoiltStock.disposal_method.ilike(f"%{search}%"),
+                        SpoiltStock.collector_name.ilike(f"%{search}%"),
+                        SpoiltStock.batches_affected.ilike(f"%{search}%")
+                    )
+                )
+
+            if spoilt_id:
+                total_count_subquery = total_count_subquery.filter(SpoiltStockLedger.spoilt_id == spoilt_id)
+            
+            if shop_id:
+                total_count_subquery = total_count_subquery.filter(SpoiltStockLedger.shop_id == shop_id)
+            
+            if start_date:
+                try:
+                    start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
+                    total_count_subquery = total_count_subquery.filter(SpoiltStockLedger.created_at >= start_date_obj)
+                except ValueError:
+                    pass
+            
+            if end_date:
+                try:
+                    end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+                    end_date_obj = end_date_obj.replace(hour=23, minute=59, second=59)
+                    total_count_subquery = total_count_subquery.filter(SpoiltStockLedger.created_at <= end_date_obj)
+                except ValueError:
+                    pass
+
+            # Handle amount filters for count
+            if min_amount is not None or max_amount is not None:
+                amount_subquery = db.session.query(
+                    SpoiltStockLedger.spoilt_id,
+                    db.func.max(SpoiltStockLedger.amount).label('amount')
+                ).filter(SpoiltStockLedger.spoilt_id.isnot(None))\
+                 .group_by(SpoiltStockLedger.spoilt_id)
+                
+                if min_amount is not None:
+                    amount_subquery = amount_subquery.having(db.func.max(SpoiltStockLedger.amount) >= min_amount)
+                if max_amount is not None:
+                    amount_subquery = amount_subquery.having(db.func.max(SpoiltStockLedger.amount) <= max_amount)
+                
+                amount_subquery = amount_subquery.subquery()
+                total_count_subquery = total_count_subquery.join(amount_subquery, 
+                    SpoiltStockLedger.spoilt_id == amount_subquery.c.spoilt_id
+                )
+
+            # Get distinct count
+            total_count = total_count_subquery.distinct().count()
+            total_pages = (total_count + per_page - 1) // per_page
+            # ============ END PAGINATION COUNT ============
+
+            # Apply pagination
+            query = query.order_by(db.func.max(base_transaction_subquery.c.created_at).desc())
+            paginated_query = query.offset((page - 1) * per_page).limit(per_page).all()
+
+            # Prepare results
+            data = []
+            for row in paginated_query:
+                entry = {
+                    "id": row.id,
+                    "created_at": row.created_at.strftime("%Y-%m-%d %H:%M:%S") if row.created_at else None,
+                    "spoilt_id": row.spoilt_id,
+                    "description": row.description,
+                    "debit_account": {
+                        "id": row.debit_account_id,
+                        "name": row.debit_account_name,
+                        "code": row.debit_account_code,
+                        "type": row.debit_account_type
+                    } if row.debit_account_id else None,
+                    "credit_account": {
+                        "id": row.credit_account_id,
+                        "name": row.credit_account_name,
+                        "code": row.credit_account_code,
+                        "type": row.credit_account_type
+                    } if row.credit_account_id else None,
+                    "amount": float(row.amount or 0),
+                    "shop": {
+                        "id": row.shops_id,
+                        "name": row.shop_name
+                    },
+                    "spoilt_stock": {
+                        "id": row.spoilt_stock_id,
+                        "item_name": row.item_name,
+                        "quantity": float(row.quantity) if row.quantity else 0,
+                        "unit": row.unit,
+                        "disposal_method": row.disposal_method,
+                        "collector_name": row.collector_name,
+                        "comment": row.comment,
+                        "status": row.status,
+                        "batches_affected": row.batches_affected,
+                        "livestock_deduction": float(row.livestock_deduction) if row.livestock_deduction else 0,
+                        "spoilt_date": row.spoilt_date.strftime("%Y-%m-%d %H:%M:%S") if row.spoilt_date else None,
+                        
+                    }
+                }
+                data.append(entry)
+
+            # ============ SUMMARY STATISTICS ============
+            # Get summary statistics - based on individual entries, not grouped
+            total_amount_subquery = db.session.query(
+                SpoiltStockLedger.spoilt_id,
+                db.func.max(SpoiltStockLedger.amount).label('max_amount')
+            ).group_by(SpoiltStockLedger.spoilt_id).subquery()
+            
+            summary_query = db.session.query(
+                db.func.count(SpoiltStockLedger.id).label('total_entries'),
+                db.func.sum(total_amount_subquery.c.max_amount).label('total_amount'),
+                db.func.avg(total_amount_subquery.c.max_amount).label('average_amount'),
+                db.func.max(SpoiltStockLedger.amount).label('max_amount'),
+                db.func.min(SpoiltStockLedger.amount).label('min_amount'),
+                db.func.count(db.distinct(SpoiltStockLedger.spoilt_id)).label('unique_spoilt_entries'),
+                db.func.count(db.distinct(SpoiltStockLedger.shop_id)).label('unique_shops'),
+                db.func.count(db.distinct(SpoiltStockLedger.debit_account_id)).label('unique_debit_accounts'),
+                db.func.count(db.distinct(SpoiltStockLedger.credit_account_id)).label('unique_credit_accounts')
+            ).join(total_amount_subquery, SpoiltStockLedger.spoilt_id == total_amount_subquery.c.spoilt_id)
+
+            # Apply same filters to summary query
+            if search:
+                summary_query = summary_query.join(Shops, SpoiltStockLedger.shop_id == Shops.shops_id)\
+                    .join(SpoiltStock, SpoiltStockLedger.spoilt_id == SpoiltStock.id)\
+                    .filter(
+                        db.or_(
+                            SpoiltStockLedger.description.ilike(f"%{search}%"),
+                            Shops.shopname.ilike(f"%{search}%"),
+                            SpoiltStock.item.ilike(f"%{search}%"),
+                            SpoiltStock.disposal_method.ilike(f"%{search}%"),
+                            SpoiltStock.collector_name.ilike(f"%{search}%"),
+                            SpoiltStock.batches_affected.ilike(f"%{search}%")
+                        )
+                    )
+
+            if spoilt_id:
+                summary_query = summary_query.filter(SpoiltStockLedger.spoilt_id == spoilt_id)
+
+            if shop_id:
+                summary_query = summary_query.filter(SpoiltStockLedger.shop_id == shop_id)
+
+            if debit_account_id:
+                summary_query = summary_query.filter(SpoiltStockLedger.debit_account_id == debit_account_id)
+
+            if credit_account_id:
+                summary_query = summary_query.filter(SpoiltStockLedger.credit_account_id == credit_account_id)
+
+            if account_id:
+                summary_query = summary_query.filter(
+                    db.or_(
+                        SpoiltStockLedger.debit_account_id == account_id,
+                        SpoiltStockLedger.credit_account_id == account_id
+                    )
+                )
+
+            if start_date:
+                try:
+                    start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
+                    summary_query = summary_query.filter(SpoiltStockLedger.created_at >= start_date_obj)
+                except ValueError:
+                    pass
+
+            if end_date:
+                try:
+                    end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+                    end_date_obj = end_date_obj.replace(hour=23, minute=59, second=59)
+                    summary_query = summary_query.filter(SpoiltStockLedger.created_at <= end_date_obj)
+                except ValueError:
+                    pass
+
+            # For amount filters on summary, filter by the max amount per spoilt entry
+            if min_amount is not None or max_amount is not None:
+                filtered_spoilt = db.session.query(
+                    SpoiltStockLedger.spoilt_id,
+                    db.func.max(SpoiltStockLedger.amount).label('amount')
+                ).group_by(SpoiltStockLedger.spoilt_id)
+                
+                if min_amount is not None:
+                    filtered_spoilt = filtered_spoilt.having(db.func.max(SpoiltStockLedger.amount) >= min_amount)
+                if max_amount is not None:
+                    filtered_spoilt = filtered_spoilt.having(db.func.max(SpoiltStockLedger.amount) <= max_amount)
+                
+                filtered_spoilt = filtered_spoilt.subquery()
+                summary_query = summary_query.join(filtered_spoilt, 
+                    SpoiltStockLedger.spoilt_id == filtered_spoilt.c.spoilt_id)
+
+            summary = summary_query.first()
+
+            # Get distribution by shop
+            shop_summary_query = db.session.query(
+                Shops.shopname.label("shop_name"),
+                db.func.count(db.distinct(SpoiltStockLedger.spoilt_id)).label("spoilt_count"),
+                db.func.sum(total_amount_subquery.c.max_amount).label("total_amount"),
+                db.func.avg(total_amount_subquery.c.max_amount).label("average_amount")
+            ).join(Shops, SpoiltStockLedger.shop_id == Shops.shops_id)\
+             .join(total_amount_subquery, SpoiltStockLedger.spoilt_id == total_amount_subquery.c.spoilt_id)\
+             .filter(SpoiltStockLedger.spoilt_id.isnot(None))
+
+            # Apply filters to shop summary
+            if search:
+                shop_summary_query = shop_summary_query.join(SpoiltStock, SpoiltStockLedger.spoilt_id == SpoiltStock.id)\
+                    .filter(
+                        db.or_(
+                            Shops.shopname.ilike(f"%{search}%"),
+                            SpoiltStockLedger.description.ilike(f"%{search}%"),
+                            SpoiltStock.item.ilike(f"%{search}%")
+                        )
+                    )
+
+            if spoilt_id:
+                shop_summary_query = shop_summary_query.filter(SpoiltStockLedger.spoilt_id == spoilt_id)
+
+            if start_date:
+                try:
+                    start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
+                    shop_summary_query = shop_summary_query.filter(SpoiltStockLedger.created_at >= start_date_obj)
+                except ValueError:
+                    pass
+
+            if end_date:
+                try:
+                    end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+                    end_date_obj = end_date_obj.replace(hour=23, minute=59, second=59)
+                    shop_summary_query = shop_summary_query.filter(SpoiltStockLedger.created_at <= end_date_obj)
+                except ValueError:
+                    pass
+
+            if min_amount is not None or max_amount is not None:
+                filtered_spoilt = db.session.query(
+                    SpoiltStockLedger.spoilt_id,
+                    db.func.max(SpoiltStockLedger.amount).label('amount')
+                ).group_by(SpoiltStockLedger.spoilt_id)
+                
+                if min_amount is not None:
+                    filtered_spoilt = filtered_spoilt.having(db.func.max(SpoiltStockLedger.amount) >= min_amount)
+                if max_amount is not None:
+                    filtered_spoilt = filtered_spoilt.having(db.func.max(SpoiltStockLedger.amount) <= max_amount)
+                
+                filtered_spoilt = filtered_spoilt.subquery()
+                shop_summary_query = shop_summary_query.join(filtered_spoilt, 
+                    SpoiltStockLedger.spoilt_id == filtered_spoilt.c.spoilt_id)
+
+            shop_summary = shop_summary_query.group_by(Shops.shopname)\
+                .order_by(db.func.sum(total_amount_subquery.c.max_amount).desc())\
+                .all()
+
+            # Get distribution by status
+            status_summary_query = db.session.query(
+                SpoiltStock.status,
+                db.func.count(db.distinct(SpoiltStockLedger.spoilt_id)).label("spoilt_count"),
+                db.func.sum(total_amount_subquery.c.max_amount).label("total_amount"),
+                db.func.avg(total_amount_subquery.c.max_amount).label("average_amount")
+            ).join(SpoiltStock, SpoiltStockLedger.spoilt_id == SpoiltStock.id)\
+             .join(total_amount_subquery, SpoiltStockLedger.spoilt_id == total_amount_subquery.c.spoilt_id)\
+             .filter(SpoiltStockLedger.spoilt_id.isnot(None))
+
+            # Apply filters to status summary
+            if shop_id:
+                status_summary_query = status_summary_query.filter(SpoiltStockLedger.shop_id == shop_id)
+
+            if start_date:
+                try:
+                    start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
+                    status_summary_query = status_summary_query.filter(SpoiltStockLedger.created_at >= start_date_obj)
+                except ValueError:
+                    pass
+
+            if end_date:
+                try:
+                    end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+                    end_date_obj = end_date_obj.replace(hour=23, minute=59, second=59)
+                    status_summary_query = status_summary_query.filter(SpoiltStockLedger.created_at <= end_date_obj)
+                except ValueError:
+                    pass
+
+            if min_amount is not None or max_amount is not None:
+                filtered_spoilt = db.session.query(
+                    SpoiltStockLedger.spoilt_id,
+                    db.func.max(SpoiltStockLedger.amount).label('amount')
+                ).group_by(SpoiltStockLedger.spoilt_id)
+                
+                if min_amount is not None:
+                    filtered_spoilt = filtered_spoilt.having(db.func.max(SpoiltStockLedger.amount) >= min_amount)
+                if max_amount is not None:
+                    filtered_spoilt = filtered_spoilt.having(db.func.max(SpoiltStockLedger.amount) <= max_amount)
+                
+                filtered_spoilt = filtered_spoilt.subquery()
+                status_summary_query = status_summary_query.join(filtered_spoilt, 
+                    SpoiltStockLedger.spoilt_id == filtered_spoilt.c.spoilt_id)
+
+            status_summary = status_summary_query.group_by(SpoiltStock.status)\
+                .order_by(db.func.sum(total_amount_subquery.c.max_amount).desc())\
+                .all()
+
+            # Get top items spoilt
+            items_summary_query = db.session.query(
+                SpoiltStock.item.label("item_name"),
+                db.func.count(db.distinct(SpoiltStockLedger.spoilt_id)).label("spoilt_count"),
+                db.func.sum(SpoiltStock.quantity).label("total_quantity"),
+                db.func.sum(total_amount_subquery.c.max_amount).label("total_amount"),
+                db.func.avg(total_amount_subquery.c.max_amount).label("average_amount")
+            ).join(SpoiltStock, SpoiltStockLedger.spoilt_id == SpoiltStock.id)\
+             .join(total_amount_subquery, SpoiltStockLedger.spoilt_id == total_amount_subquery.c.spoilt_id)\
+             .filter(SpoiltStockLedger.spoilt_id.isnot(None))
+
+            # Apply filters to items summary
+            if shop_id:
+                items_summary_query = items_summary_query.filter(SpoiltStockLedger.shop_id == shop_id)
+
+            if start_date:
+                try:
+                    start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
+                    items_summary_query = items_summary_query.filter(SpoiltStockLedger.created_at >= start_date_obj)
+                except ValueError:
+                    pass
+
+            if end_date:
+                try:
+                    end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+                    end_date_obj = end_date_obj.replace(hour=23, minute=59, second=59)
+                    items_summary_query = items_summary_query.filter(SpoiltStockLedger.created_at <= end_date_obj)
+                except ValueError:
+                    pass
+
+            if min_amount is not None or max_amount is not None:
+                filtered_spoilt = db.session.query(
+                    SpoiltStockLedger.spoilt_id,
+                    db.func.max(SpoiltStockLedger.amount).label('amount')
+                ).group_by(SpoiltStockLedger.spoilt_id)
+                
+                if min_amount is not None:
+                    filtered_spoilt = filtered_spoilt.having(db.func.max(SpoiltStockLedger.amount) >= min_amount)
+                if max_amount is not None:
+                    filtered_spoilt = filtered_spoilt.having(db.func.max(SpoiltStockLedger.amount) <= max_amount)
+                
+                filtered_spoilt = filtered_spoilt.subquery()
+                items_summary_query = items_summary_query.join(filtered_spoilt, 
+                    SpoiltStockLedger.spoilt_id == filtered_spoilt.c.spoilt_id)
+
+            items_summary = items_summary_query.group_by(SpoiltStock.item)\
+                .order_by(db.func.sum(total_amount_subquery.c.max_amount).desc())\
+                .limit(10)\
+                .all()
+            # ============ END SUMMARY STATISTICS ============
+
+            return jsonify({
+                "data": data,
+                "pagination": {
+                    "total": total_count,
+                    "page": page,
+                    "per_page": per_page,
+                    "pages": total_pages,
+                    "has_next": page < total_pages,
+                    "has_prev": page > 1,
+                    "next_num": page + 1 if page < total_pages else None,
+                    "prev_num": page - 1 if page > 1 else None
+                },
+                "summary": {
+                    "total_entries": summary.total_entries or 0,
+                    "total_amount": float(summary.total_amount or 0),
+                    "average_amount": float(summary.average_amount or 0),
+                    "max_amount": float(summary.max_amount or 0),
+                    "min_amount": float(summary.min_amount or 0),
+                    "unique_spoilt_entries": summary.unique_spoilt_entries or 0,
+                    "unique_shops": summary.unique_shops or 0,
+                    "unique_debit_accounts": summary.unique_debit_accounts or 0,
+                    "unique_credit_accounts": summary.unique_credit_accounts or 0,
+                    "distribution_by_shop": [{
+                        "shop_name": row.shop_name,
+                        "spoilt_count": row.spoilt_count,
+                        "total_amount": float(row.total_amount or 0),
+                        "average_amount": float(row.average_amount or 0)
+                    } for row in shop_summary],
+                    "distribution_by_status": [{
+                        "status": row.status,
+                        "spoilt_count": row.spoilt_count,
+                        "total_amount": float(row.total_amount or 0),
+                        "average_amount": float(row.average_amount or 0)
+                    } for row in status_summary],
+                    "top_items_spoilt": [{
+                        "item_name": row.item_name,
+                        "spoilt_count": row.spoilt_count,
+                        "total_quantity": float(row.total_quantity or 0),
+                        "total_amount": float(row.total_amount or 0),
+                        "average_amount": float(row.average_amount or 0)
+                    } for row in items_summary]
+                }
+            })
+
+        except Exception as e:
+            db.session.rollback()
+            return {"error": str(e)}, 500
+        
 class CreateManualLedger(Resource):
 
     @jwt_required()
@@ -3230,3 +3833,246 @@ class CreateManualLedger(Resource):
             "shop_id": shop_id,
             "created_at": timestamp.isoformat()
         }, 201
+        
+class ManualLedgerList(Resource):
+    @jwt_required()
+    def get(self):
+        try:
+            # Get query parameters
+            page = request.args.get('page', 1, type=int)
+            per_page = request.args.get('per_page', 20, type=int)
+            search = request.args.get('search', '', type=str)
+            ledger_id = request.args.get('id', type=int)
+            shop_id = request.args.get('shop_id', type=int)
+            debit_account_id = request.args.get('debit_account_id', type=int)
+            credit_account_id = request.args.get('credit_account_id', type=int)
+            account_id = request.args.get('account_id', type=int)
+            start_date = request.args.get('start_date', type=str)
+            end_date = request.args.get('end_date', type=str)
+            min_amount = request.args.get('min_amount', type=float)
+            max_amount = request.args.get('max_amount', type=float)
+            
+            # Aliases for ChartOfAccounts
+            DebitAccount = aliased(ChartOfAccounts)
+            CreditAccount = aliased(ChartOfAccounts)
+
+            # Build base query
+            query = db.session.query(
+                ManualLedger.id,
+                ManualLedger.created_at,
+                ManualLedger.description,
+                ManualLedger.amount,
+                # Debit account details
+                DebitAccount.id.label("debit_account_id"),
+                DebitAccount.name.label("debit_account_name"),
+                DebitAccount.code.label("debit_account_code"),
+                DebitAccount.type.label("debit_account_type"),
+                # Credit account details
+                CreditAccount.id.label("credit_account_id"),
+                CreditAccount.name.label("credit_account_name"),
+                CreditAccount.code.label("credit_account_code"),
+                CreditAccount.type.label("credit_account_type"),
+                # Shop details
+                Shops.shops_id,
+                Shops.shopname.label("shop_name")
+            ).outerjoin(
+                DebitAccount, 
+                ManualLedger.debit_account_id == DebitAccount.id
+            ).outerjoin(
+                CreditAccount, 
+                ManualLedger.credit_account_id == CreditAccount.id
+            ).outerjoin(
+                Shops, 
+                ManualLedger.shop_id == Shops.shops_id
+            )
+
+            # Apply filters
+            if ledger_id:
+                query = query.filter(ManualLedger.id == ledger_id)
+
+            if shop_id:
+                query = query.filter(ManualLedger.shop_id == shop_id)
+
+            if debit_account_id:
+                query = query.filter(ManualLedger.debit_account_id == debit_account_id)
+
+            if credit_account_id:
+                query = query.filter(ManualLedger.credit_account_id == credit_account_id)
+
+            if account_id:
+                query = query.filter(
+                    or_(
+                        ManualLedger.debit_account_id == account_id,
+                        ManualLedger.credit_account_id == account_id
+                    )
+                )
+
+            if start_date:
+                try:
+                    start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
+                    query = query.filter(ManualLedger.created_at >= start_date_obj)
+                except ValueError:
+                    pass
+
+            if end_date:
+                try:
+                    end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+                    end_date_obj = end_date_obj.replace(hour=23, minute=59, second=59)
+                    query = query.filter(ManualLedger.created_at <= end_date_obj)
+                except ValueError:
+                    pass
+
+            if min_amount is not None:
+                query = query.filter(ManualLedger.amount >= min_amount)
+
+            if max_amount is not None:
+                query = query.filter(ManualLedger.amount <= max_amount)
+
+            if search:
+                search_term = f"%{search}%"
+                query = query.filter(
+                    or_(
+                        ManualLedger.description.ilike(search_term),
+                        DebitAccount.name.ilike(search_term),
+                        DebitAccount.code.ilike(search_term),
+                        CreditAccount.name.ilike(search_term),
+                        CreditAccount.code.ilike(search_term),
+                        Shops.shopname.ilike(search_term),
+                        func.cast(ManualLedger.amount, db.String).ilike(search_term)
+                    )
+                )
+
+            # Get total count for pagination
+            total_count = query.count()
+            total_pages = (total_count + per_page - 1) // per_page
+
+            # Apply pagination and ordering
+            query = query.order_by(ManualLedger.created_at.desc())
+            paginated_query = query.offset((page - 1) * per_page).limit(per_page).all()
+
+            # Prepare results
+            data = []
+            for row in paginated_query:
+                entry = {
+                    "id": row.id,
+                    "created_at": row.created_at.strftime("%Y-%m-%d %H:%M:%S") if row.created_at else None,
+                    "description": row.description,
+                    "amount": float(row.amount or 0),
+                    "debit_account": {
+                        "id": row.debit_account_id,
+                        "name": row.debit_account_name,
+                        "code": row.debit_account_code,
+                        "type": row.debit_account_type
+                    } if row.debit_account_id else None,
+                    "credit_account": {
+                        "id": row.credit_account_id,
+                        "name": row.credit_account_name,
+                        "code": row.credit_account_code,
+                        "type": row.credit_account_type
+                    } if row.credit_account_id else None,
+                    "shop": {
+                        "id": row.shops_id,
+                        "name": row.shop_name
+                    } if row.shops_id else None
+                }
+                data.append(entry)
+
+            # Summary statistics
+            summary_query = db.session.query(
+                func.count(ManualLedger.id).label('total_entries'),
+                func.sum(ManualLedger.amount).label('total_amount'),
+                func.avg(ManualLedger.amount).label('average_amount'),
+                func.max(ManualLedger.amount).label('max_amount'),
+                func.min(ManualLedger.amount).label('min_amount'),
+                func.count(db.distinct(ManualLedger.shop_id)).label('unique_shops'),
+                func.count(db.distinct(ManualLedger.debit_account_id)).label('unique_debit_accounts'),
+                func.count(db.distinct(ManualLedger.credit_account_id)).label('unique_credit_accounts')
+            )
+
+            # Apply same filters to summary
+            if ledger_id:
+                summary_query = summary_query.filter(ManualLedger.id == ledger_id)
+            if shop_id:
+                summary_query = summary_query.filter(ManualLedger.shop_id == shop_id)
+            if debit_account_id:
+                summary_query = summary_query.filter(ManualLedger.debit_account_id == debit_account_id)
+            if credit_account_id:
+                summary_query = summary_query.filter(ManualLedger.credit_account_id == credit_account_id)
+            if account_id:
+                summary_query = summary_query.filter(
+                    or_(
+                        ManualLedger.debit_account_id == account_id,
+                        ManualLedger.credit_account_id == account_id
+                    )
+                )
+            if start_date:
+                try:
+                    start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
+                    summary_query = summary_query.filter(ManualLedger.created_at >= start_date_obj)
+                except ValueError:
+                    pass
+            if end_date:
+                try:
+                    end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+                    end_date_obj = end_date_obj.replace(hour=23, minute=59, second=59)
+                    summary_query = summary_query.filter(ManualLedger.created_at <= end_date_obj)
+                except ValueError:
+                    pass
+            if min_amount is not None:
+                summary_query = summary_query.filter(ManualLedger.amount >= min_amount)
+            if max_amount is not None:
+                summary_query = summary_query.filter(ManualLedger.amount <= max_amount)
+            if search:
+                search_term = f"%{search}%"
+                summary_query = summary_query.join(
+                    DebitAccount, 
+                    ManualLedger.debit_account_id == DebitAccount.id, 
+                    isouter=True
+                ).join(
+                    CreditAccount, 
+                    ManualLedger.credit_account_id == CreditAccount.id, 
+                    isouter=True
+                ).join(
+                    Shops, 
+                    ManualLedger.shop_id == Shops.shops_id, 
+                    isouter=True
+                ).filter(
+                    or_(
+                        ManualLedger.description.ilike(search_term),
+                        DebitAccount.name.ilike(search_term),
+                        DebitAccount.code.ilike(search_term),
+                        CreditAccount.name.ilike(search_term),
+                        CreditAccount.code.ilike(search_term),
+                        Shops.shopname.ilike(search_term)
+                    )
+                )
+
+            summary = summary_query.first()
+
+            return jsonify({
+                "data": data,
+                "pagination": {
+                    "total": total_count,
+                    "page": page,
+                    "per_page": per_page,
+                    "pages": total_pages,
+                    "has_next": page < total_pages,
+                    "has_prev": page > 1,
+                    "next_num": page + 1 if page < total_pages else None,
+                    "prev_num": page - 1 if page > 1 else None
+                },
+                "summary": {
+                    "total_entries": summary.total_entries or 0,
+                    "total_amount": float(summary.total_amount or 0),
+                    "average_amount": float(summary.average_amount or 0),
+                    "max_amount": float(summary.max_amount or 0),
+                    "min_amount": float(summary.min_amount or 0),
+                    "unique_shops": summary.unique_shops or 0,
+                    "unique_debit_accounts": summary.unique_debit_accounts or 0,
+                    "unique_credit_accounts": summary.unique_credit_accounts or 0
+                }
+            })
+
+        except Exception as e:
+            db.session.rollback()
+            return {"error": str(e)}, 500

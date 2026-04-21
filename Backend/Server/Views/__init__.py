@@ -148,7 +148,7 @@ from Server.Views.Shoptoshoptransferviews import (
 )
 from Server.Views.StockReport import (
     SubmitStockReport, ResetShopReportStatus, GetStockReports, GetStockReportById, StockReconciliationList, StockReconciliationResource,
-    GetReportedStock, StockReconciliationByShop, GetReconciliationItemsByShop, ReconciliationItemsByShop
+    GetReportedStock, StockReconciliationByShop, GetReconciliationItemsByShop, ReconciliationItemsByShop, InventoryCount
     
 )
 
@@ -178,7 +178,18 @@ from Server.Views.ShopTargets import (
 )
 
 from Server.Views.LedgerViews import (
-    SalesLedgerList,CreditSalesLedgerList,DistributionLedgerList,PurchaseLedgerInventoryList,BankTransfersLedgerList, ExpensesLedgerList,CreateManualLedger
+
+    SalesLedgerList,CreditSalesLedgerList,DistributionLedgerList,PurchaseLedgerInventoryList,BankTransfersLedgerList, ExpensesLedgerList, SpoiltStockLedgerList, CreateManualLedger, ManualLedgerList
+
+
+)
+from Server.Views.Notifications import (
+    NotificationsResource,
+    NotificationDetailResource,
+    NotificationReadAllResource,
+    NotificationUnreadCountResource,
+    NotificationBulkResource,
+    NotificationTypesResource
 )
 
 from Server.Views.ClerkReportTime import (
@@ -505,6 +516,7 @@ api.add_resource(ExpenseCategoryResource, '/expensecategories/<int:category_id>'
 
 #StockReport 
 api.add_resource(SubmitStockReport, '/report-stock')
+api.add_resource(InventoryCount, '/inventory-count')
 api.add_resource(ResetShopReportStatus, '/reset-report')
 api.add_resource(GetStockReports, '/stock-reports')
 api.add_resource(GetStockReportById, '/stock-reports/<int:report_id>')
@@ -562,7 +574,9 @@ api.add_resource(CreditSalesLedgerList,"/accounting/credit-sales-ledger")
 api.add_resource(DistributionLedgerList, '/accounting/distribution-ledger')
 api.add_resource(PurchaseLedgerInventoryList, '/accounting/purchase-ledger-inventory')
 api.add_resource(BankTransfersLedgerList, '/accounting/bank-transfers-ledger')
+api.add_resource(SpoiltStockLedgerList, "/accounting/spoilt-ledger")
 api.add_resource(ExpensesLedgerList, "/accounting/expenses-ledger")
+api.add_resource(ManualLedgerList,"/accounting/manual-ledger")
 
 
 # clerkShopReportTime
@@ -580,3 +594,11 @@ api.add_resource(BalanceSheet,'/balance-sheet')
 #diraja ai 
 api.add_resource(RefreshSchema, '/refreshschema')
 api.add_resource(AskAI,"/askdiraja")
+
+# Notifications
+api.add_resource(NotificationsResource, '/notifications')
+api.add_resource(NotificationDetailResource, '/notifications/<int:notification_id>')
+api.add_resource(NotificationReadAllResource, '/notifications/read-all')
+api.add_resource(NotificationUnreadCountResource, '/notifications/unread-count')
+api.add_resource(NotificationBulkResource, '/notifications/bulk')
+api.add_resource(NotificationTypesResource, '/notifications/types')
