@@ -830,16 +830,19 @@ class ProcessRecurringTasks(Resource):
     @jwt_required()
     @check_role('manager')
     def post(self):
-        """Manually trigger processing of overdue recurring tasks"""
+        """Manually trigger processing of recurring tasks that need regeneration"""
         try:
-            from Server.Models.TaskManager import process_overdue_recurring_tasks
-            count = process_overdue_recurring_tasks()
+            from Server.Models.TaskManager import process_recurring_tasks
+            count = process_recurring_tasks()
             return {
                 "message": f"Processed {count} recurring tasks",
                 "tasks_regenerated": count
             }, 200
         except Exception as e:
             return {"error": str(e)}, 500
+
+
+    
 
 # Add to_dict methods to your models (add these to your model files)
 

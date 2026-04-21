@@ -114,13 +114,22 @@ class IncomeStatement(Resource):
             func.sum(CostOfSaleLedger.amount).desc()
         ).all()
 
+        cogs_dict = {}
         cogs_list = []
         total_cogs = 0
 
         for item in cogs_items:
+            # Extract product name from COGS description
+            description = item.description or "Cost of Goods Sold"
+            if description.startswith("Cost of Goods Sold - "):
+                product_name = description.replace("Cost of Goods Sold - ", "")
+            else:
+                product_name = description
+            
             amount = round(float(item.total_amount or 0), 2)
+            cogs_dict[product_name] = amount
             cogs_list.append({
-                "description": item.description or "Cost of Goods Sold",
+                "description": description,
                 "amount": amount
             })
             total_cogs += amount
@@ -166,7 +175,7 @@ class IncomeStatement(Resource):
             func.sum(SpoiltStockLedger.amount).label('total_amount')
         ).filter(
             SpoiltStockLedger.created_at.between(start_date, end_date),
-            SpoiltStockLedger.debit_account_id.in_(spoilt_account_ids)  # Only sum debit entries
+            SpoiltStockLedger.debit_account_id.in_(spoilt_account_ids)
         )
 
         # Apply shop_id filter if provided
@@ -229,6 +238,48 @@ class IncomeStatement(Resource):
 
         # Calculate total cost of goods sold including spoilt stock
         total_cogs_including_spoilt = total_cogs + total_spoilt
+
+        # ==========================================
+        # GROSS PROFIT BREAKDOWN SECTION
+        # ==========================================
+        gross_profit_breakdown = []
+        
+        # Map revenue items to their corresponding COGS
+        for revenue_item in revenue_list:
+            # Extract product name from revenue description
+            revenue_desc = revenue_item["description"]
+            revenue_amount = revenue_item["amount"]
+            
+            # Extract product name (remove "Sales - " prefix)
+            if revenue_desc.startswith("Sales - "):
+                product_name = revenue_desc.replace("Sales - ", "")
+            else:
+                product_name = revenue_desc
+            
+            # Find matching COGS for this product
+            cogs_amount = cogs_dict.get(product_name, 0)
+            
+            # Calculate gross profit for this product
+            product_gross_profit = revenue_amount - cogs_amount
+            gross_margin_percentage = 0
+            if revenue_amount > 0:
+                gross_margin_percentage = round((product_gross_profit / revenue_amount) * 100, 2)
+            
+            gross_profit_breakdown.append({
+                "product": product_name,
+                "revenue": revenue_amount,
+                "cost_of_sales": cogs_amount,
+                "gross_profit": round(product_gross_profit, 2),
+                "gross_margin_percentage": gross_margin_percentage
+            })
+        
+        # Sort by gross profit (highest to lowest)
+        gross_profit_breakdown.sort(key=lambda x: x["gross_profit"], reverse=True)
+        
+        # Calculate totals for the breakdown
+        total_breakdown_revenue = sum(item["revenue"] for item in gross_profit_breakdown)
+        total_breakdown_cogs = sum(item["cost_of_sales"] for item in gross_profit_breakdown)
+        total_breakdown_gross_profit = sum(item["gross_profit"] for item in gross_profit_breakdown)
 
         # ==========================================
         # GROSS PROFIT CALCULATION
@@ -295,6 +346,12 @@ class IncomeStatement(Resource):
                     "total": total_spoilt
                 },
                 "total": total_cogs_including_spoilt
+            },
+            "gross_profit_breakdown": {
+                "items": gross_profit_breakdown,
+                "total_revenue": total_breakdown_revenue,
+                "total_cost_of_sales": total_breakdown_cogs,
+                "total_gross_profit": total_breakdown_gross_profit
             },
             "gross_profit": gross_profit,
             "expenses": {

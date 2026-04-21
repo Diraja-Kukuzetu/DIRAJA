@@ -17,7 +17,7 @@ from app import db
 from flask_restful import Resource
 from flask import jsonify,request,make_response
 from functools import wraps
-
+from Server.Views.Services.journal_service import SpoiltJournalService
 from fuzzywuzzy import process
 
 class AddSpoiltFromInventory(Resource):
@@ -229,13 +229,13 @@ class AddSpoiltStock(Resource):
 class ApproveSpoiltStock(Resource):
     @jwt_required()
     def post(self, record_id):
-        # Get approving user from JWT
+        # ===== AUTH USER =====
         user_id = get_jwt_identity()
         approver = Users.query.get(user_id)
         if not approver:
             return {"message": "Invalid user"}, 400
 
-        # Find the spoilt stock record
+        # ===== FETCH RECORD =====
         spoilt_record = SpoiltStock.query.get(record_id)
         if not spoilt_record:
             return {"message": "Spoilt stock record not found"}, 404
@@ -243,28 +243,49 @@ class ApproveSpoiltStock(Resource):
         if spoilt_record.status != 'pending':
             return {"message": f"Record already {spoilt_record.status}"}, 400
 
-        # Update the spoilt stock record to approved
-        spoilt_record.status = 'approved'
-        spoilt_record.approved_by = user_id
-        spoilt_record.approved_at = datetime.now(timezone.utc)
-
         try:
+            # ===== APPROVE RECORD =====
+            spoilt_record.status = 'approved'
+            spoilt_record.approved_by = user_id
+            spoilt_record.approved_at = datetime.now(timezone.utc)
+
+            db.session.add(spoilt_record)
+
+            # Flush so updated record is available for journal
+            db.session.flush()
+
+            # ===== VALIDATE COST BEFORE JOURNAL =====
+            if not hasattr(spoilt_record, "cost_of_spoilage") or spoilt_record.cost_of_spoilage is None:
+                raise Exception("Cost of spoilage is missing. Ensure cost is calculated during stock deduction.")
+
+            # ===== POST JOURNAL =====
+            journal_result = SpoiltJournalService.post_spoilt_journal(spoilt_record)
+
+            # ===== FINAL COMMIT =====
             db.session.commit()
+
             return {
-                "message": "Spoilt stock approved",
+                "message": "Spoilt stock approved and journal posted successfully",
                 "details": {
                     "record_id": spoilt_record.id,
                     "item": spoilt_record.item,
                     "quantity": spoilt_record.quantity,
+                    "unit": spoilt_record.unit,
                     "approved_by": user_id,
                     "approved_at": spoilt_record.approved_at.isoformat()
-                }
+                },
+                "financial": {
+                    "cost_of_spoilage": float(spoilt_record.cost_of_spoilage)
+                },
+                "journal": journal_result
             }, 200
+
         except Exception as e:
             db.session.rollback()
             return {
                 "message": "Failed to approve spoilt stock",
-                "error": str(e)
+                "error": str(e),
+                "spoilt_id": spoilt_record.id if spoilt_record else None
             }, 500
 
 class RejectSpoiltStock(Resource):

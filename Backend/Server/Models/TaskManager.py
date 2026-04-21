@@ -129,27 +129,30 @@ class TaskManager(db.Model):
         
         return next_date
     
-    def regenerate_recurring_task(self):
-        """Create a new task instance for the next recurrence"""
+    def regenerate_recurring_task(self, mark_as_complete=False):
+        """Create a new task instance for the next recurrence
+        
+        Args:
+            mark_as_complete: If True, marks the current task as Complete.
+                            If False, leaves current task unchanged (for batch processing).
+        """
         if not self.should_regenerate:
             return None
         
-        # Mark current task as completed
-        self.status = 'Complete'
-        self.closing_date = datetime.datetime.utcnow()
+        # Calculate new due date based on the current due date or assigned date
+        base_date = self.due_date or self.assigned_date
+        new_due_date = self.calculate_next_due_date(base_date)
         
-        # Calculate new due date
-        new_due_date = self.calculate_next_due_date(self.due_date or self.assigned_date)
-        
-        # Create new task instance
+        # Create new task instance with same credentials
         new_task = TaskManager(
-            user_id=self.user_id,
-            assignee_id=self.assignee_id,
-            task=self.task,
+            user_id=self.user_id,  # Same assigner
+            assignee_id=self.assignee_id,  # Same assignee
+            task=self.task,  # Same task description
             assigned_date=datetime.datetime.utcnow(),
             due_date=new_due_date,
             priority=self.priority,
             category=self.category,
+            status='Pending',  # New task starts as Pending
             is_recurring=True,
             recurrence_pattern=self.recurrence_pattern,
             recurrence_interval=self.recurrence_interval,
@@ -160,25 +163,28 @@ class TaskManager(db.Model):
             last_recurrence_date=datetime.datetime.utcnow()
         )
         
-        # Copy status if not Complete
-        if self.status != 'Complete':
-            new_task.status = 'Pending'
-        
         db.session.add(new_task)
         
-        # Update last recurrence date on parent
+        # Update the current task's last_recurrence_date
         self.last_recurrence_date = datetime.datetime.utcnow()
+        
+        # Optionally mark current task as complete
+        if mark_as_complete:
+            self.status = 'Complete'
+            self.closing_date = datetime.datetime.utcnow()
         
         return new_task
     
     def complete_task(self, closing_date=None):
-        """Mark task as completed"""
+        """Mark task as completed and regenerate next instance if recurring"""
         self.status = 'Complete'
         self.closing_date = closing_date or datetime.datetime.utcnow()
         
         # If this is a recurring task, regenerate next instance
-        if self.is_recurring:
-            self.regenerate_recurring_task()
+        if self.is_recurring and self.should_regenerate:
+            return self.regenerate_recurring_task(mark_as_complete=False)  # Don't mark again, it's already Complete
+        
+        return None
     
     def cancel_recurring_task(self):
         """Cancel a recurring task and prevent future regenerations"""
@@ -202,7 +208,7 @@ class TaskManager(db.Model):
             "closing_date": self.closing_date.isoformat() if self.closing_date else None,
             "is_overdue": self.is_overdue,
             "comment_count": self.comment_count,
-            "is_recurring": self.is_recurring,   # ← added
+            "is_recurring": self.is_recurring,
         }
     
         if include_recurrence_info:
@@ -246,7 +252,35 @@ def check_recurring_task_regeneration(mapper, connection, target):
         pass
 
 
-# Helper function to process overdue recurring tasks
+# Helper function to process recurring tasks (UPDATED)
+def process_recurring_tasks():
+    """Process all recurring tasks that need regeneration (not just overdue)"""
+    from app import create_app
+    app = create_app()
+    
+    with app.app_context():
+        # Get all active recurring tasks (incomplete and not cancelled)
+        recurring_tasks = TaskManager.query.filter(
+            TaskManager.is_recurring == True,
+            TaskManager.status.in_(['Pending', 'In Progress', 'Overdue'])
+        ).all()
+        
+        regenerated_count = 0
+        for task in recurring_tasks:
+            if task.should_regenerate:
+                # Don't mark the current task as complete in batch processing
+                # This allows the task to remain active while a new one is created
+                new_task = task.regenerate_recurring_task(mark_as_complete=False)
+                if new_task:
+                    regenerated_count += 1
+        
+        if regenerated_count > 0:
+            db.session.commit()
+        
+        return regenerated_count
+
+
+# Keep the old function for backward compatibility if needed
 def process_overdue_recurring_tasks():
     """Background job to process overdue recurring tasks and regenerate them"""
     from app import create_app
@@ -263,7 +297,7 @@ def process_overdue_recurring_tasks():
         regenerated_tasks = []
         for task in overdue_tasks:
             if task.should_regenerate:
-                new_task = task.regenerate_recurring_task()
+                new_task = task.regenerate_recurring_task(mark_as_complete=False)
                 if new_task:
                     regenerated_tasks.append(new_task)
         
@@ -271,6 +305,7 @@ def process_overdue_recurring_tasks():
             db.session.commit()
         
         return len(regenerated_tasks)
+
 
 class TaskComment(db.Model):
     __tablename__ = "task_comments"
