@@ -197,6 +197,7 @@ from Server.Views.ClerkReportTime import (
 )
 from Server.Views.IncomeStatement import (IncomeStatement)
 from Server.Views.Balancesheet import (BalanceSheet)
+from Server.Views.DirajaAI import (RefreshSchema,AskAI)
 
 api_endpoint = Blueprint('auth',__name__,url_prefix='/api/diraja')
 api = Api(api_endpoint)
@@ -590,6 +591,9 @@ api.add_resource(IncomeStatement,'/income-statement')
 #balance sheet
 api.add_resource(BalanceSheet,'/balance-sheet')
 
+#diraja ai 
+api.add_resource(RefreshSchema, '/refreshschema')
+api.add_resource(AskAI,"/askdiraja")
 
 # Notifications
 api.add_resource(NotificationsResource, '/notifications')
