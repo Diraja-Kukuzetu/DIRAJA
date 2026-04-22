@@ -58,10 +58,12 @@ class CreateTask(Resource):
 
             # Validate category
             category = data.get("category", "General")
-
+            
+            
             # Parse due_date
             due_date = None
             if data.get("due_date"):
+                due_date_str = data.get("due_date")  # Add this line to define due_date_str
                 try:
                     due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d %H:%M:%S")
                 except ValueError:

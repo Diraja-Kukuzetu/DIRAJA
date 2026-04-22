@@ -119,6 +119,27 @@ class ProcessInventoryV2(Resource):
         created_at = data.get('created_at')  # This will be None if not provided
 
         try:
+            # ✅ Convert created_at string to datetime object if provided
+            from datetime import datetime
+            created_at_datetime = None
+            if created_at:
+                # Handle different date formats
+                if isinstance(created_at, str):
+                    # Try parsing MySQL format (YYYY-MM-DD HH:MM:SS)
+                    try:
+                        created_at_datetime = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+                    except ValueError:
+                        # Try ISO format with T
+                        try:
+                            created_at_datetime = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        except ValueError:
+                            # If all else fails, use current time
+                            created_at_datetime = datetime.now()
+                elif isinstance(created_at, datetime):
+                    created_at_datetime = created_at
+                else:
+                    created_at_datetime = datetime.now()
+            
             # ✅ Fetch source inventory item
             source_item = InventoryV2.query.get(source_inventory_id)
             if not source_item:
@@ -142,10 +163,18 @@ class ProcessInventoryV2(Resource):
                 # Calculate the cost allocation for this processed item
                 quantity_ratio = item_data['quantity'] / total_processed_quantity
                 allocated_cost = source_item.totalCost * quantity_ratio
-                allocated_amount_paid = source_item.amountPaid * quantity_ratio
                 
-                # Calculate unit cost based on allocated cost
-                unit_cost = allocated_cost / item_data['quantity'] if item_data['quantity'] > 0 else 0
+                # ✅ Unit cost should be same as inventory unit cost (source item's unit cost)
+                unit_cost = source_item.unitCost
+                
+                # ✅ Total cost should be unit cost times quantity
+                total_cost = unit_cost * item_data['quantity']
+                
+                # ✅ Amount paid should be same as total cost
+                amount_paid = total_cost
+                
+                # ✅ Balance should be total cost minus amount paid (which equals 0)
+                balance = total_cost - amount_paid
 
                 # Create new inventory item for the processed product
                 new_processed_item = InventoryV2(
@@ -154,8 +183,8 @@ class ProcessInventoryV2(Resource):
                     quantity=item_data['quantity'],
                     metric=item_data['metric'],
                     unitCost=unit_cost,
-                    totalCost=allocated_cost,
-                    amountPaid=allocated_amount_paid,
+                    totalCost=total_cost,
+                    amountPaid=amount_paid,
                     unitPrice=item_data['unitPrice'],
                     BatchNumber=source_item.BatchNumber,  # Same batch number
                     user_id=current_user_id,
@@ -164,10 +193,10 @@ class ProcessInventoryV2(Resource):
                     paymentRef=source_item.paymentRef,
                     Suppliername=source_item.Suppliername,
                     Supplier_location=source_item.Supplier_location,
-                    ballance=item_data['quantity'],
+                    ballance=balance,
                     note=f"Processed from {source_item.itemname}.",
                     source=source_item.source,
-                    created_at=created_at  # ✅ Set created_at from payload
+                    created_at=created_at_datetime  # ✅ Set created_at as datetime object
                 )
 
                 db.session.add(new_processed_item)
@@ -175,12 +204,15 @@ class ProcessInventoryV2(Resource):
                     'itemname': item_data['itemname'],
                     'quantity': item_data['quantity'],
                     'metric': item_data['metric'],
+                    'unit_cost': unit_cost,
+                    'total_cost': total_cost,
+                    'amount_paid': amount_paid,
+                    'balance': balance,
                     'new_item_id': new_processed_item.inventoryV2_id
                 })
 
             # ✅ Deduct the processed quantity from source item
             source_item.quantity -= total_processed_quantity
-            source_item.ballance = source_item.quantity
             source_item.Transcation_type_debit = total_processed_quantity
             source_item.note = f"Processed into multiple items. {note}"
 
