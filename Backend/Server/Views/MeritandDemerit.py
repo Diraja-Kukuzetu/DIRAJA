@@ -81,6 +81,81 @@ class AssignMeritPoints(Resource):
         }, 200
 
 
+class ResetAllMeritPoints(Resource):
+    @jwt_required()
+    @check_role('manager')
+    def post(self):
+        """Reset merit points to 100 for all employees (Monthly merit reset)"""
+        
+        data = request.get_json() or {}
+        dry_run = data.get("dry_run", False)
+        custom_comment = data.get("comment", "Monthly merit reset")
+        
+        # Get all employees
+        employees = Employees.query.all()
+        
+        if not employees:
+            return {"message": "No employees found."}, 404
+        
+        # Get current stats
+        current_points = [e.merit_points for e in employees]
+        
+        if dry_run:
+            return {
+                "message": "Dry run - no changes made",
+                "reset_type": "Monthly Merit Reset",
+                "stats": {
+                    "total_employees": len(employees),
+                    "current_points_range": {
+                        "min": min(current_points) if current_points else 0,
+                        "max": max(current_points) if current_points else 0,
+                        "average": sum(current_points) / len(current_points) if current_points else 0
+                    },
+                    "target_points": 100
+                }
+            }, 200
+        
+        # Perform the reset
+        reset_count = 0
+        reset_entries = []
+        
+        for employee in employees:
+            old_points = employee.merit_points
+            employee.merit_points = 100
+            employee.merit_points_updated_at = datetime.utcnow()
+            
+            # Create ledger entry with NULL merit_id for monthly reset
+            ledger_entry = MeritLedger(
+                employee_id=employee.employee_id,
+                merit_id=None,  # Nullable for system resets
+                comment=f"Monthly merit reset: Points changed from {old_points} to 100. {custom_comment}",
+                resulting_points=100,
+                date=datetime.utcnow()
+            )
+            
+            db.session.add(ledger_entry)
+            reset_count += 1
+            
+            reset_entries.append({
+                "employee_id": employee.employee_id,
+                "employee_name": f"{employee.first_name} {employee.middle_name} {employee.surname}".strip(),
+                "old_points": old_points,
+                "new_points": 100
+            })
+        
+        db.session.commit()
+        
+        return {
+            "message": "Monthly merit points reset completed successfully.",
+            "reset_type": "Monthly Merit Reset",
+            "reset_count": reset_count,
+            "target_points": 100,
+            "comment": custom_comment,
+            "affected_employees": reset_entries[:10],  # Show first 10 to avoid huge response
+            "total_affected": len(reset_entries),
+            "reset_date": datetime.utcnow().isoformat()
+        }, 200
+
 
 class GetMeritLedger(Resource):
     def get(self):
@@ -193,21 +268,32 @@ class GetEmployeeMeritLedger(Resource):
                                           .order_by(MeritLedger.date.desc())\
                                           .all()
 
+        # 4. Build ledger history with null checks
+        ledger_history = []
+        for entry in ledger_entries:
+            # Handle cases where merit_reason might be None (e.g., system resets)
+            if entry.merit_reason:
+                reason = entry.merit_reason.reason
+                point_value = entry.merit_reason.point
+            else:
+                reason = "System Reset"  # Default reason for system resets
+                point_value = 0  # Default point value for system resets
+            
+            ledger_history.append({
+                "ledger_id": entry.meritledger_id,
+                "merit_id": entry.merit_id if entry.merit_id else None,
+                "reason": reason,
+                "point_value": point_value,
+                "comment": entry.comment if entry.comment else "No comment",
+                "date": entry.date.isoformat() if entry.date else None,
+                "resulting_points": entry.resulting_points
+            })
+
         return {
             "employee": {
                 "id": employee.employee_id,
-                "name": f"{employee.first_name} {employee.middle_name} {employee.surname}",
+                "name": f"{employee.first_name} {employee.middle_name or ''} {employee.surname}".strip(),
                 "current_merit_points": employee.merit_points,
             },
-            "ledger_history": [
-                {
-                    "ledger_id": entry.meritledger_id,
-                    "merit_id": entry.merit_id,
-                    "reason": entry.merit_reason.reason,
-                    "point_value": entry.merit_reason.point,
-                    "comment": entry.comment,
-                    "date": entry.date.isoformat(),
-                    "resulting_points": entry.resulting_points
-                } for entry in ledger_entries
-            ]
+            "ledger_history": ledger_history
         }, 200

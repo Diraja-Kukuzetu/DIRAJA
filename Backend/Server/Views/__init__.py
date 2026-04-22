@@ -113,7 +113,7 @@ from Server.Views.Meritpointsviews import (
 )
 
 from Server.Views.MeritandDemerit import (
-    AssignMeritPoints, GetMeritLedger, GetEmployeeMeritLedger
+    AssignMeritPoints, GetMeritLedger, GetEmployeeMeritLedger, ResetAllMeritPoints
 )
 
 from Server.Views.SupplierView import (
@@ -420,6 +420,7 @@ api.add_resource(PostMeritPoint, '/newmeritpoint')
 api.add_resource(GetAllMeripoints, '/allmeritpoints')
 api.add_resource(MeritPointResource, '/merit-points/<int:id>')
 api.add_resource(AssignMeritPoints, '/employee/<int:employee_id>/assign-merit')
+api.add_resource(ResetAllMeritPoints, '/merit-points/reset-all')
 api.add_resource(GetMeritLedger, '/meritledger')
 api.add_resource(GetEmployeeMeritLedger, '/employees-merit/<int:user_id>')
 
