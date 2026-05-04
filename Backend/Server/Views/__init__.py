@@ -162,7 +162,7 @@ from Server.Views.PushSubscription import  (
 from Server.Views.TaskManagerViews import (
     # Task Management
     CreateTask, TaskResource, GetTasks, CompleteTask, GetUserTasks,TaskProgressResource,TaskStatsResource,TaskCommentResource,CommentResource,TaskEvaluationResource,
-    CancelRecurringTask,ProcessRecurringTasks
+    CancelRecurringTask,ProcessRecurringTasks, UserTasksSimpleOverview, UserTasksOverview
 )
 from Server.Views.CookedItemsView import  (
     AddCookedItems
@@ -547,6 +547,8 @@ api.add_resource(CommentResource, "/comments/<int:comment_id>")
 api.add_resource(CancelRecurringTask, '/tasks/<int:task_id>/cancel-recurring')
 api.add_resource(ProcessRecurringTasks, '/tasks/process-recurring')
 api.add_resource(TaskEvaluationResource, "/tasks/<int:task_id>/evaluation") 
+api.add_resource(UserTasksOverview, '/users-overview')
+api.add_resource(UserTasksSimpleOverview, '/users-overview/simple')
 
 #creditors
 api.add_resource(CreateCreditor, '/add-creditors')
