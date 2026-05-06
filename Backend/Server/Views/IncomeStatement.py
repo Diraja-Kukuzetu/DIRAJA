@@ -385,7 +385,7 @@ class IncomeStatement(Resource):
             "cost_of_goods_sold": {
                 "regular_cogs": {
                     "items": cogs_list,
-                    "total": total_cogs
+                    "total": total_cogs 
                 },
                 "spoilt_stock": {
                     "items": spoilt_list,

@@ -5,8 +5,9 @@ from flask_migrate import Migrate
 from flask_jwt_extended import JWTManager
 from flask_cors import CORS
 from dotenv import load_dotenv
+from flask_socketio import SocketIO
 from flask_mail import Mail
-from openai import OpenAI  # ✅ NEW
+from openai import OpenAI  
 
 # Removed: google.generativeai
 
@@ -16,6 +17,7 @@ load_dotenv()
 db = SQLAlchemy()
 jwt = JWTManager()
 mail = Mail()
+socketio = SocketIO()
 
 # ---------- Models Import ----------
 def initialize_models():
@@ -130,9 +132,12 @@ def create_app(config_name):
     # -------------------------------
     # Register views/routes
     # -------------------------------
+
+    socketio.init_app(app, cors_allowed_origins='*')
+
     initialize_views(app)
 
-    return app
+    return app,socketio
 
 
 # -------------------------------
