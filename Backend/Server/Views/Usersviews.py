@@ -288,6 +288,8 @@ class GetAllUsers(Resource):
         return make_response(jsonify(all_users), 200)
     
 
+from datetime import datetime, timedelta
+
 class PostShopReport(Resource):
 
     @jwt_required()
@@ -314,13 +316,17 @@ class PostShopReport(Resource):
         if not user:
             return {"message": "User not found"}, 404
 
-        # ---- Prevent multiple reports per day (per user per shop) ----
-        today = date.today()
+        # ---- Get current time in EAT (UTC+3) ----
+        now_utc = datetime.utcnow()
+        now_eat = now_utc + timedelta(hours=3)  # EAT is UTC+3
+        today_eat = now_eat.date()
 
+        # ---- Prevent multiple reports per day (per user per shop) ----
+        # Convert existing UTC times to EAT for comparison
         existing_report = ShopReport.query.filter(
             ShopReport.shop_id == shop_id,
             ShopReport.user_id == user.users_id,
-            func.date(ShopReport.reported_at) == today
+            func.date(ShopReport.reported_at + timedelta(hours=3)) == today_eat
         ).first()
 
         if existing_report:
@@ -337,7 +343,7 @@ class PostShopReport(Resource):
             longitude=longitude,
             location=location,
             note=note,
-            reported_at=datetime.utcnow()
+            reported_at=datetime.utcnow()  # Still store UTC in DB
         )
 
         db.session.add(report)
@@ -350,7 +356,7 @@ class PostShopReport(Resource):
                 "shop_id": report.shop_id,
                 "user_id": report.user_id,
                 "username": report.username,
-                "reported_at": report.reported_at.isoformat(),
+                "reported_at": (report.reported_at + timedelta(hours=3)).isoformat(),  # Return as EAT
                 "location": report.location,
                 "latitude": report.latitude,
                 "longitude": report.longitude

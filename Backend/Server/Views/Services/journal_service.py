@@ -661,23 +661,21 @@ class DistributionJournalService:
             }
         }
 
+
 class SpoiltJournalService:
     """
     Handles journal entries for spoilt stock
-    and updates account balances.
     """
-
     @staticmethod
     def post_spoilt_journal(spoilt: SpoiltStock):
-
         # ===== Account lookups =====
         expense_account = ChartOfAccounts.query.filter_by(
-            name="Stock Adjustment"   # changed from Spoilage Expense
-        ).with_for_update().first()
+            name="Stock Adjustment"
+        ).first()
 
         inventory_account = ChartOfAccounts.query.filter_by(
             name="Inventory"
-        ).with_for_update().first()
+        ).first()
 
         if not expense_account:
             raise Exception("Stock Adjustment account not found")
@@ -685,13 +683,16 @@ class SpoiltJournalService:
         if not inventory_account:
             raise Exception("Inventory account not found")
 
-        # ===== Amount logic =====
-        amount = float(spoilt.quantity)
+        # ===== Amount logic - USE COST OF SPOILAGE =====
+        if not spoilt.cost_of_spoilage:
+            raise Exception("Cost of spoilage not calculated. Please ensure cost is set before journal entry.")
+        
+        amount = float(spoilt.cost_of_spoilage)
 
-        description = f"Spoilt stock: {spoilt.item} ({spoilt.quantity} {spoilt.unit})"
+        description = f"Spoilt stock: {spoilt.item} ({spoilt.quantity} {spoilt.unit}) - Cost: {amount}"
         created_at = spoilt.approved_at or spoilt.created_at
 
-        # ===== DR: Stock Adjustment =====
+        # ===== DR: Stock Adjustment (Expense Account) =====
         dr_entry = SpoiltStockLedger(
             spoilt_id=spoilt.id,
             shop_id=spoilt.shop_id,
@@ -713,22 +714,7 @@ class SpoiltJournalService:
             created_at=created_at
         )
 
-        # ===== Adjust Account Balances =====
-
-        # Debit increases expense account
-        expense_account.debit_balance = (
-            (expense_account.debit_balance or 0) + amount
-        )
-
-        # Credit increases credit side of inventory
-        inventory_account.credit_balance = (
-            (inventory_account.credit_balance or 0) + amount
-        )
-
-        # Optional: If you use a normal balance calculation
-        # expense_account.balance += amount
-        # inventory_account.balance -= amount
-
+        # Add both entries to session - NO balance updates
         db.session.add_all([dr_entry, cr_entry])
 
         return {
@@ -737,13 +723,13 @@ class SpoiltJournalService:
                 "spoilt_id": spoilt.id,
                 "item": spoilt.item,
                 "quantity": spoilt.quantity,
+                "cost_of_spoilage": amount,
                 "entries": [
-                    {"side": "DR", "account": expense_account.name, "amount": amount},
-                    {"side": "CR", "account": inventory_account.name, "amount": amount},
+                    {"side": "DR", "account": expense_account.name, "account_id": expense_account.id, "amount": amount},
+                    {"side": "CR", "account": inventory_account.name, "account_id": inventory_account.id, "amount": amount},
                 ]
             }
         }
-
         
 class BankJournalService:
 
