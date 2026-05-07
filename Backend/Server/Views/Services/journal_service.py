@@ -661,6 +661,89 @@ class DistributionJournalService:
             }
         }
 
+# class SpoiltJournalService:
+#     """
+#     Handles journal entries for spoilt stock
+#     and updates account balances.
+#     """
+
+#     @staticmethod
+#     def post_spoilt_journal(spoilt: SpoiltStock):
+
+#         # ===== Account lookups =====
+#         expense_account = ChartOfAccounts.query.filter_by(
+#             name="Stock Adjustment"   # changed from Spoilage Expense
+#         ).with_for_update().first()
+
+#         inventory_account = ChartOfAccounts.query.filter_by(
+#             name="Inventory"
+#         ).with_for_update().first()
+
+#         if not expense_account:
+#             raise Exception("Stock Adjustment account not found")
+
+#         if not inventory_account:
+#             raise Exception("Inventory account not found")
+
+#         # ===== Amount logic =====
+#         amount = float(spoilt.quantity)
+
+#         description = f"Spoilt stock: {spoilt.item} ({spoilt.quantity} {spoilt.unit})"
+#         created_at = spoilt.approved_at or spoilt.created_at
+
+#         # ===== DR: Stock Adjustment =====
+#         dr_entry = SpoiltStockLedger(
+#             spoilt_id=spoilt.id,
+#             shop_id=spoilt.shop_id,
+#             description=description,
+#             debit_account_id=expense_account.id,
+#             credit_account_id=None,
+#             amount=amount,
+#             created_at=created_at
+#         )
+
+#         # ===== CR: Inventory =====
+#         cr_entry = SpoiltStockLedger(
+#             spoilt_id=spoilt.id,
+#             shop_id=spoilt.shop_id,
+#             description=description,
+#             debit_account_id=None,
+#             credit_account_id=inventory_account.id,
+#             amount=amount,
+#             created_at=created_at
+#         )
+
+#         # ===== Adjust Account Balances =====
+
+#         # Debit increases expense account
+#         expense_account.debit_balance = (
+#             (expense_account.debit_balance or 0) + amount
+#         )
+
+#         # Credit increases credit side of inventory
+#         inventory_account.credit_balance = (
+#             (inventory_account.credit_balance or 0) + amount
+#         )
+
+#         # Optional: If you use a normal balance calculation
+#         # expense_account.balance += amount
+#         # inventory_account.balance -= amount
+
+#         db.session.add_all([dr_entry, cr_entry])
+
+#         return {
+#             "journal_type": "spoilt_stock",
+#             "journal_payload": {
+#                 "spoilt_id": spoilt.id,
+#                 "item": spoilt.item,
+#                 "quantity": spoilt.quantity,
+#                 "entries": [
+#                     {"side": "DR", "account": expense_account.name, "amount": amount},
+#                     {"side": "CR", "account": inventory_account.name, "amount": amount},
+#                 ]
+#             }
+#         }
+
 class SpoiltJournalService:
     """
     Handles journal entries for spoilt stock
@@ -671,16 +754,16 @@ class SpoiltJournalService:
     def post_spoilt_journal(spoilt: SpoiltStock):
 
         # ===== Account lookups =====
-        expense_account = ChartOfAccounts.query.filter_by(
-            name="Stock Adjustment"   # changed from Spoilage Expense
-        ).with_for_update().first()
+        # expense_account = ChartOfAccounts.query.filter_by(
+        #     name="Stock Adjustment"   # changed from Spoilage Expense
+        # ).with_for_update().first()
 
         inventory_account = ChartOfAccounts.query.filter_by(
             name="Inventory"
         ).with_for_update().first()
 
-        if not expense_account:
-            raise Exception("Stock Adjustment account not found")
+        # if not expense_account:
+        #     raise Exception("Stock Adjustment account not found")
 
         if not inventory_account:
             raise Exception("Inventory account not found")
@@ -692,15 +775,15 @@ class SpoiltJournalService:
         created_at = spoilt.approved_at or spoilt.created_at
 
         # ===== DR: Stock Adjustment =====
-        dr_entry = SpoiltStockLedger(
-            spoilt_id=spoilt.id,
-            shop_id=spoilt.shop_id,
-            description=description,
-            debit_account_id=expense_account.id,
-            credit_account_id=None,
-            amount=amount,
-            created_at=created_at
-        )
+        # dr_entry = SpoiltStockLedger(
+        #     spoilt_id=spoilt.id,
+        #     shop_id=spoilt.shop_id,
+        #     description=description,
+        #     debit_account_id=expense_account.id,
+        #     credit_account_id=None,
+        #     amount=amount,
+        #     created_at=created_at
+        # )
 
         # ===== CR: Inventory =====
         cr_entry = SpoiltStockLedger(
@@ -716,20 +799,20 @@ class SpoiltJournalService:
         # ===== Adjust Account Balances =====
 
         # Debit increases expense account
-        expense_account.debit_balance = (
-            (expense_account.debit_balance or 0) + amount
-        )
+        # expense_account.debit_balance = (
+        #     (expense_account.debit_balance or 0) + amount
+        # )
 
         # Credit increases credit side of inventory
-        inventory_account.credit_balance = (
-            (inventory_account.credit_balance or 0) + amount
-        )
+        # inventory_account.credit_balance = (
+        #     (inventory_account.credit_balance or 0) + amount
+        # )
 
         # Optional: If you use a normal balance calculation
         # expense_account.balance += amount
         # inventory_account.balance -= amount
 
-        db.session.add_all([dr_entry, cr_entry])
+        db.session.add_all([cr_entry])
 
         return {
             "journal_type": "spoilt_stock",
@@ -738,12 +821,11 @@ class SpoiltJournalService:
                 "item": spoilt.item,
                 "quantity": spoilt.quantity,
                 "entries": [
-                    {"side": "DR", "account": expense_account.name, "amount": amount},
+                    # {"side": "DR", "account": expense_account.name, "amount": amount},
                     {"side": "CR", "account": inventory_account.name, "amount": amount},
                 ]
             }
         }
-
         
 class BankJournalService:
 

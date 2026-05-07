@@ -255,8 +255,8 @@ class ApproveSpoiltStock(Resource):
             db.session.flush()
 
             # ===== VALIDATE COST BEFORE JOURNAL =====
-            if not hasattr(spoilt_record, "cost_of_spoilage") or spoilt_record.cost_of_spoilage is None:
-                raise Exception("Cost of spoilage is missing. Ensure cost is calculated during stock deduction.")
+            # if not hasattr(spoilt_record, "cost_of_spoilage") or spoilt_record.cost_of_spoilage is None:
+            #     raise Exception("Cost of spoilage is missing. Ensure cost is calculated during stock deduction.")
 
             # ===== POST JOURNAL =====
             journal_result = SpoiltJournalService.post_spoilt_journal(spoilt_record)
@@ -274,9 +274,9 @@ class ApproveSpoiltStock(Resource):
                     "approved_by": user_id,
                     "approved_at": spoilt_record.approved_at.isoformat()
                 },
-                "financial": {
-                    "cost_of_spoilage": float(spoilt_record.cost_of_spoilage)
-                },
+                # "financial": {
+                #     "cost_of_spoilage": float(spoilt_record.cost_of_spoilage)
+                # },
                 "journal": journal_result
             }, 200
 

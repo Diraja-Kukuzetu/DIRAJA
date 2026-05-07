@@ -668,11 +668,17 @@ class TotalAmountPaidPerShop(Resource):
             # --- Overall summary ---
             overall_total_sales = overall_paid + overall_unpaid
             overall_avg = overall_total_sales / len(shops) if shops else 0
+            overall_avg_per_transaction = (
+                overall_total_sales / overall_transaction_count
+                if overall_transaction_count > 0
+                else 0
+            )
             summary = {
                 "overall_total_sales": "Ksh {:,.2f}".format(overall_total_sales),
                 "overall_total_paid": "Ksh {:,.2f}".format(overall_paid),
                 "overall_total_unpaid": "Ksh {:,.2f}".format(overall_unpaid),
                 "average_per_shop": "Ksh {:,.2f}".format(overall_avg),
+                "average_sale_per_transaction": "Ksh {:,.2f}".format(overall_avg_per_transaction),
                 "overall_payment_breakdown": {
                     "sasapay": "Ksh {:,.2f}".format(overall_payment_totals["sasapay"]),
                     "cash": "Ksh {:,.2f}".format(overall_payment_totals["cash"]),

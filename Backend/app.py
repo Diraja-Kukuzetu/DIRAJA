@@ -70,7 +70,9 @@ def create_app(config_name):
     app.config.from_object(config_name)
 
     # Database config
-    app.config["SQLALCHEMY_DATABASE_URI"] = "mysql+pymysql://root:MyNewPass@localhost/Diraja"
+    app.config["SQLALCHEMY_DATABASE_URI"] = "mysql+pymysql://root:@localhost/Diraja"
+
+
 
     # JWT config (⚠️ move to .env in production)
     app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET_KEY", "Soweto@2024")
