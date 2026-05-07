@@ -538,6 +538,7 @@ class DistributeInventoryV2(Resource):
 
 
 
+
 class ReceiveTransfer(Resource):
     @jwt_required()
     def patch(self, transfer_id):
