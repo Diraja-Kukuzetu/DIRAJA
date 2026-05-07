@@ -375,6 +375,14 @@ Columns:
 - category_name (VARCHAR(150))
 - type (VARCHAR(150))
 
+Table: expense_items
+Columns:
+- id (INTEGER)
+- item_name (VARCHAR(150))
+- description (VARCHAR(255))
+- category_id (INTEGER)
+- created_at (DATETIME)
+
 Table: stock_reports
 Columns:
 - id (INTEGER)
@@ -446,6 +454,7 @@ Relationships:
 - shop_stock_v2.shop_id = shops.shops_id
 - shop_stock_v2.transferv2_id = transfers.transfer_id
 - shop_stock_v2.inventoryv2_id = inventoryV2.inventoryV2_id
+- expense_items.category_id = expense_category.id
 - stock_reports.shop_id = shops.shops_id
 - stock_reports.user_id = users.users_id
 - permission.user_id = users.users_id

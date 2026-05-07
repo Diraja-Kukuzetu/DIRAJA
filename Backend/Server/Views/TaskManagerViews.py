@@ -2,13 +2,13 @@ from flask import request, jsonify
 from flask_restful import Resource
 from app import db
 import json
-from Server.Models.TaskManager import TaskManager, TaskComment, TaskEvaluation
+from Server.Models.TaskManager import TaskManager,TaskComment,TaskEvaluation
 from Server.Models.PushSubscription import PushSubscription
 from pywebpush import webpush, WebPushException
 from Server.Models.Users import Users
 from functools import wraps
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from flask import make_response
+from flask import request, make_response
 import datetime
 from flask import current_app
 from sqlalchemy.orm import joinedload
@@ -56,14 +56,12 @@ class CreateTask(Resource):
                     "error": f"Invalid status '{status}'. Allowed values are: {', '.join(allowed_statuses)}"
                 }, 400
 
-            # Validate category
             category = data.get("category", "General")
-            
-            
+
             # Parse due_date
             due_date = None
             if data.get("due_date"):
-                due_date_str = data.get("due_date")  # Add this line to define due_date_str
+                due_date_str = data["due_date"]
                 try:
                     due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d %H:%M:%S")
                 except ValueError:
@@ -167,6 +165,7 @@ class CreateTask(Resource):
 
 class GetTasks(Resource):
     @jwt_required()
+    @check_role('manager')
     def get(self):
         category    = request.args.get('category')
         status      = request.args.get('status')
@@ -262,10 +261,9 @@ class TaskResource(Resource):
         ).get(task_id)
         
         if not task:
-            return {"error": "Task not found"}, 404
+            return jsonify({"error": "Task not found"}), 404
 
         return jsonify(task.to_dict(include_comments=True, include_evaluation=True, include_recurrence_info=True))
-        return task.to_dict(include_comments=True, include_evaluation=True)
 
     @jwt_required()
     def put(self, task_id):
@@ -332,7 +330,7 @@ class TaskResource(Resource):
     def delete(self, task_id):
         task = TaskManager.query.get(task_id)
         if not task:
-            return {"error": "Task not found"}, 404
+            return jsonify({"error": "Task not found"}), 404
 
         try:
             # If this is a recurring task, also delete child tasks
@@ -345,7 +343,7 @@ class TaskResource(Resource):
             return jsonify({"message": "Task and its recurring instances deleted successfully"})
         except Exception as e:
             db.session.rollback()
-            return {"error": str(e)}, 400
+            return jsonify({"error": str(e)}), 400
 
 
 class TaskCommentResource(Resource):
@@ -436,61 +434,55 @@ class CommentResource(Resource):
         """Update a comment"""
         comment = TaskComment.query.get(comment_id)
         if not comment:
-            return {"error": "Comment not found"}, 404
+            return jsonify({"error": "Comment not found"}), 404
 
         current_user_id = get_jwt_identity()
         
         # Check if user owns the comment
         if comment.user_id != current_user_id:
-            return {"error": "You can only edit your own comments"}, 403
+            return jsonify({"error": "You can only edit your own comments"}), 403
 
         data = request.get_json()
         
         if not data.get("comment"):
-            return {"error": "Comment text is required"}, 400
+            return jsonify({"error": "Comment text is required"}), 400
 
         try:
             comment.comment = data["comment"]
+            # updated_at will be automatically updated by ON UPDATE CURRENT_TIMESTAMP
             db.session.commit()
 
-            return {
+            return jsonify({
                 "message": "Comment updated successfully",
-                "comment": {
-                    "comment_id": comment.comment_id,
-                    "task_id": comment.task_id,
-                    "user_id": comment.user_id,
-                    "comment": comment.comment,
-                    "created_at": comment.created_at.isoformat() if comment.created_at else None,
-                    "parent_comment_id": comment.parent_comment_id
-                }
-            }
+                "comment": comment.to_dict()
+            })
 
         except Exception as e:
             db.session.rollback()
-            return {"error": str(e)}, 400
+            return jsonify({"error": str(e)}), 400
 
     @jwt_required()
     def delete(self, comment_id):
         """Delete a comment"""
         comment = TaskComment.query.get(comment_id)
         if not comment:
-            return {"error": "Comment not found"}, 404
+            return jsonify({"error": "Comment not found"}), 404
 
         current_user_id = get_jwt_identity()
         
         # Check if user owns the comment or is manager
         user = Users.query.get(current_user_id)
         if comment.user_id != current_user_id and user.role != 'manager':
-            return {"error": "You don't have permission to delete this comment"}, 403
+            return jsonify({"error": "You don't have permission to delete this comment"}), 403
 
         try:
             db.session.delete(comment)
             db.session.commit()
-            return {"message": "Comment deleted successfully"}
+            return jsonify({"message": "Comment deleted successfully"})
 
         except Exception as e:
             db.session.rollback()
-            return {"error": str(e)}, 400
+            return jsonify({"error": str(e)}), 400
 
 
 class TaskEvaluationResource(Resource):
@@ -519,13 +511,15 @@ class TaskEvaluationResource(Resource):
 
             # Check if evaluation already exists
             evaluation = TaskEvaluation.query.filter_by(task_id=task_id).first()
-            is_new = False
-
+            
             if evaluation:
+                # Update existing evaluation
                 evaluation.rating = rating
                 evaluation.comment = data["comment"]
                 evaluation.evaluator_id = current_user_id
+                # created_at will stay the same, no updated_at field
             else:
+                # Create new evaluation
                 evaluation = TaskEvaluation(
                     task_id=task_id,
                     evaluator_id=current_user_id,
@@ -533,7 +527,6 @@ class TaskEvaluationResource(Resource):
                     comment=data["comment"]
                 )
                 db.session.add(evaluation)
-                is_new = True
 
             db.session.commit()
 
@@ -573,7 +566,7 @@ class TaskProgressResource(Resource):
         """Update task progress"""
         task = TaskManager.query.get(task_id)
         if not task:
-            return {"error": "Task not found"}, 404
+            return jsonify({"error": "Task not found"}), 404
 
         current_user_id = get_jwt_identity()
         data = request.get_json()
@@ -581,13 +574,13 @@ class TaskProgressResource(Resource):
         # Check if user is assignee or manager
         user = Users.query.get(current_user_id)
         if task.assignee_id != current_user_id and user.role != 'manager':
-            return {"error": "Only assignee or manager can update progress"}, 403
+            return jsonify({"error": "Only assignee or manager can update progress"}), 403
 
         try:
             if data.get("progress_percentage") is not None:
                 progress = data["progress_percentage"]
                 if progress < 0 or progress > 100:
-                    return {"error": "Progress must be between 0 and 100"}, 400
+                    return jsonify({"error": "Progress must be between 0 and 100"}), 400
                 task.progress_percentage = progress
 
             if data.get("actual_hours"):
@@ -595,7 +588,7 @@ class TaskProgressResource(Resource):
 
             # Auto-update status based on progress
             if task.progress_percentage == 100:
-                task.status = "Completed"
+                task.status = "Complete"
                 task.closing_date = datetime.datetime.utcnow()
             elif task.progress_percentage > 0 and task.status == "Pending":
                 task.status = "In Progress"
@@ -605,14 +598,14 @@ class TaskProgressResource(Resource):
 
             db.session.commit()
 
-            return {
+            return jsonify({
                 "message": "Progress updated successfully",
                 "task": task.to_dict()
-            }
+            })
 
         except Exception as e:
             db.session.rollback()
-            return {"error": str(e)}, 400
+            return jsonify({"error": str(e)}), 400
 
 
 class TaskStatsResource(Resource):
@@ -638,7 +631,8 @@ class TaskStatsResource(Resource):
             "by_status": {
                 "pending": query.filter_by(status="Pending").count(),
                 "in_progress": query.filter_by(status="In Progress").count(),
-                "completed": query.filter_by(status="Completed").count(),
+                "completed": query.filter_by(status="Complete").count(),
+                "overdue": query.filter_by(status="Overdue").count(),
                 "cancelled": query.filter_by(status="Cancelled").count()
             },
             "by_priority": {
@@ -657,11 +651,11 @@ class TaskStatsResource(Resource):
         # Overdue tasks (tasks past due date not completed)
         overdue_count = query.filter(
             TaskManager.due_date < datetime.datetime.utcnow(),
-            TaskManager.status.notin_(["Completed", "Cancelled"])
+            TaskManager.status.notin_(["Complete", "Cancelled"])
         ).count()
         stats["by_status"]["overdue"] = overdue_count
 
-        return stats, 200
+        return jsonify(stats)
 
 
 class CompleteTask(Resource):
@@ -680,12 +674,12 @@ class CompleteTask(Resource):
             return {"error": "Only assignee or manager can complete tasks"}, 403
 
         # Check if task is already completed
-        if task.status == "Completed":
+        if task.status == "Complete":
             return {"message": "Task is already completed"}, 400
 
         try:
             # Update task
-            task.status = "Completed"
+            task.status = "Complete"
             task.closing_date = datetime.datetime.utcnow()
             task.progress_percentage = 100
             task.last_modified_by = current_user_id

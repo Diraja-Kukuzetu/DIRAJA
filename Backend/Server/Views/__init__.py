@@ -141,7 +141,7 @@ from Server.Views.ShopstockviewsV2 import (
     AddShopStockV2, GetAllStockV2, GetBatchStockV2, GetItemsByShopIdV2, GetItemStockV2, GetStockValueByShopV2, GetShopStockByShopIdV2, GetShopStockV2, BatchDetailsResourceForShopV2, BatchDetailsResourceV2, AvailableBatchesByShopResourceV2, AvailableBatchesResourceV2, ShopStockByDateV2, AvailableItemsByShopResourceV2, ShopStockDeleteV2, ItemDetailsResourceForShopV2, StockReturns
 )
 from Server.Views.ExpenseCategoies import (
-    PostExpenseCategory, GetAllExpenseCategories, ExpenseCategoryResource
+    PostExpenseCategory, GetAllExpenseCategories, ExpenseCategoryResource,PostExpenseItem,GetAllExpenseItems,ExpenseItemResource,CategoryWithItemsResource
 )
 from Server.Views.Shoptoshoptransferviews import (
     ShopToShopTransfer,  ConfirmTransfer, GetAllShopToShopTransfers, GetPendingShopToShopTransfers, DeclineTransfers
@@ -217,7 +217,7 @@ api.add_resource(UsersResourceById, '/user/<int:users_id>')
 api.add_resource(UserLogin, '/login')
 api.add_resource(PostShopReport, "/shop-reports")
 
-
+    
 # shops endpoints 
 api.add_resource(AddShops, '/newshop')
 api.add_resource(ShopsResourceById, '/shop/<int:shops_id>')
@@ -510,8 +510,12 @@ api.add_resource(GetPendingShopToShopTransfers, '/pending-transfers')
 
 #Expensecategories
 api.add_resource(PostExpenseCategory, '/add-expense-category')
-api.add_resource(GetAllExpenseCategories, '/expensecategories')
+api.add_resource(GetAllExpenseCategories, '/expense-categories')
 api.add_resource(ExpenseCategoryResource, '/expensecategories/<int:category_id>')
+api.add_resource(PostExpenseItem, '/expense-items')
+api.add_resource(GetAllExpenseItems, '/expense-items/all')
+api.add_resource(ExpenseItemResource, '/expense-items/<int:item_id>', '/expense-items', '/expense-items/category/<int:category_id>')
+api.add_resource(CategoryWithItemsResource, '/expense-categories/<int:category_id>/items')
 
 
 
@@ -547,6 +551,7 @@ api.add_resource(CommentResource, "/comments/<int:comment_id>")
 api.add_resource(CancelRecurringTask, '/tasks/<int:task_id>/cancel-recurring')
 api.add_resource(ProcessRecurringTasks, '/tasks/process-recurring')
 api.add_resource(TaskEvaluationResource, "/tasks/<int:task_id>/evaluation") 
+
 
 #creditors
 api.add_resource(CreateCreditor, '/add-creditors')

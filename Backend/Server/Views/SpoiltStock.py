@@ -243,7 +243,38 @@ class ApproveSpoiltStock(Resource):
         if spoilt_record.status != 'pending':
             return {"message": f"Record already {spoilt_record.status}"}, 400
 
+        # ===== VALIDATE INVENTORY ID EXISTS =====
+        if not spoilt_record.inventory_id:
+            return {
+                "message": "Cannot approve spoilt stock",
+                "error": "No inventory item linked to this spoilt record. Please ensure inventory_id is set.",
+                "spoilt_id": spoilt_record.id
+            }, 400
+
         try:
+            # ===== FETCH INVENTORY ITEM =====
+            inventory_item = InventoryV2.query.get(spoilt_record.inventory_id)
+            if not inventory_item:
+                raise Exception(f"Inventory item not found for ID: {spoilt_record.inventory_id}")
+            
+            # Debug logging
+            print(f"Quantity: {spoilt_record.quantity}")
+            print(f"Unit Cost: {inventory_item.unitCost}")
+            
+            # ===== CALCULATE COST OF SPOILAGE =====
+            # Check if quantity is valid
+            if not spoilt_record.quantity or spoilt_record.quantity <= 0:
+                raise Exception(f"Invalid quantity: {spoilt_record.quantity}. Quantity must be greater than 0.")
+            
+            # Check if unit cost is valid
+            if not inventory_item.unitCost or inventory_item.unitCost <= 0:
+                raise Exception(f"Invalid unit cost: {inventory_item.unitCost}. Unit cost must be greater than 0.")
+            
+            # Calculate using unitCost (cost price, not selling price)
+            spoilt_record.cost_of_spoilage = spoilt_record.quantity * inventory_item.unitCost
+            
+            print(f"Calculated cost: {spoilt_record.cost_of_spoilage}")
+            
             # ===== APPROVE RECORD =====
             spoilt_record.status = 'approved'
             spoilt_record.approved_by = user_id
@@ -287,6 +318,7 @@ class ApproveSpoiltStock(Resource):
                 "error": str(e),
                 "spoilt_id": spoilt_record.id if spoilt_record else None
             }, 500
+
 
 class RejectSpoiltStock(Resource):
     @jwt_required()
