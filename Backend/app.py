@@ -9,8 +9,7 @@ from flask_socketio import SocketIO
 from flask_mail import Mail
 from openai import OpenAI  
 
-# Removed: google.generativeai
-
+# Load env
 load_dotenv()
 
 # ---------- Extensions ----------
@@ -21,7 +20,6 @@ socketio = SocketIO()
 
 # ---------- Models Import ----------
 def initialize_models():
-    """Import all models so SQLAlchemy can discover them."""
     from Server.Models.Users import Users
     from Server.Models.Shops import Shops
     from Server.Models.Sales import Sales
@@ -52,11 +50,79 @@ def initialize_models():
 
 # ---------- Views Import ----------
 def initialize_views(app):
-    """Register Flask blueprints/resources."""
     from Server.Views import api_endpoint
     app.register_blueprint(api_endpoint)
 
 
+# ---------- SasaPay Service ----------
+import requests
+import time
+
+class SasaPayService:
+    def __init__(self, app):
+        self.app = app
+        self.base_url = app.config["SASAPAY_BASE_URL"]
+        self.client_id = app.config["SASAPAY_CLIENT_ID"]
+        self.client_secret = app.config["SASAPAY_CLIENT_SECRET"]
+        self.token_expiry = 0
+
+    def get_token(self):
+        # reuse token if not expired
+        if self.app.sasapay_token and time.time() < self.token_expiry:
+            return self.app.sasapay_token
+
+        url = f"{self.base_url}/auth/token"
+
+        payload = {
+            "client_id": self.client_id,
+            "client_secret": self.client_secret
+        }
+
+        response = requests.post(url, json=payload)
+        data = response.json()
+
+        token = data.get("access_token")
+
+        # store token + expiry (assume 1 hour if not provided)
+        self.app.sasapay_token = token
+        self.token_expiry = time.time() + 3500
+
+        return token
+
+    def request_payment(self, amount, phone, reference):
+        token = self.get_token()
+
+        url = f"{self.base_url}/payments/request"
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "amount": amount,
+            "phone_number": phone,
+            "account_reference": reference,
+            "transaction_desc": "Payment"
+        }
+
+        response = requests.post(url, json=payload, headers=headers)
+        return response.json()
+
+    def check_status(self, transaction_id):
+        token = self.get_token()
+
+        url = f"{self.base_url}/transactions/{transaction_id}"
+
+        headers = {
+            "Authorization": f"Bearer {token}"
+        }
+
+        response = requests.get(url, headers=headers)
+        return response.json()
+
+
+# ---------- App Factory ----------
 def create_app(config_name):
     app = Flask(__name__)
     app.url_map.strict_slashes = False
@@ -71,16 +137,16 @@ def create_app(config_name):
     # Load config
     app.config.from_object(config_name)
 
-    # Database config
+    # Database
     app.config["SQLALCHEMY_DATABASE_URI"] = "mysql+pymysql://root:MyNewPass@localhost/Diraja"
 
-    # JWT config (⚠️ move to .env in production)
+    # JWT
     app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET_KEY", "Soweto@2024")
     app.config['JWT_ACCESS_TOKEN_EXPIRES'] = int(
         os.getenv('JWT_ACCESS_TOKEN_EXPIRES', 2592000)
     )
 
-    # Mail config (⚠️ move password to .env)
+    # Mail
     app.config['MAIL_SERVER'] = 'mail.kulima.co.ke'
     app.config['MAIL_PORT'] = 465
     app.config['MAIL_USERNAME'] = 'kukuzetureports@kulima.co.ke'
@@ -89,10 +155,22 @@ def create_app(config_name):
     app.config['MAIL_USE_TLS'] = False
     app.config['MAIL_DEFAULT_SENDER'] = 'kukuzetureports@kulima.co.ke'
 
-    # VAPID keys
+    # VAPID
     app.config['VAPID_PUBLIC_KEY'] = os.getenv("VAPID_PUBLIC_KEY")
     app.config['VAPID_PRIVATE_KEY'] = os.getenv("VAPID_PRIVATE_KEY")
     app.config['VAPID_EMAIL'] = os.getenv("VAPID_EMAIL")
+
+    # -------------------------------
+    # SasaPay Config
+    # -------------------------------
+    app.config["SASAPAY_CLIENT_ID"] = os.getenv("SASAPAY_CLIENT_ID")
+    app.config["SASAPAY_CLIENT_SECRET"] = os.getenv("SASAPAY_CLIENT_SECRET")
+    app.config["SASAPAY_BASE_URL"] = os.getenv("SASAPAY_BASE_URL")
+    app.config["SASAPAY_CALLBACK_URL"] = os.getenv("SASAPAY_CALLBACK_URL")
+    app.config["SASAPAY_MERCHANT_CODE"] = os.getenv("SASAPAY_MERCHANT_CODE")
+    
+
+    app.sasapay_token = None
 
     # Init extensions
     db.init_app(app)
@@ -100,8 +178,11 @@ def create_app(config_name):
     jwt.init_app(app)
     mail.init_app(app)
 
+    # Init socket
+    socketio.init_app(app, cors_allowed_origins='*')
+
     # -------------------------------
-    # Initialize models & generate schema
+    # Initialize models + schema
     # -------------------------------
     with app.app_context():
         initialize_models()
@@ -109,16 +190,15 @@ def create_app(config_name):
         write_schema_file()
 
     # -------------------------------
-    # Configure ChatGPT (OpenAI)
+    # OpenAI Setup
     # -------------------------------
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        raise ValueError("OPENAI_API_KEY is not set. Check your .env file.")
+        raise ValueError("OPENAI_API_KEY is not set.")
 
     client = OpenAI(api_key=api_key)
     app.llm_client = client
 
-    # System prompt (same logic you had in Gemini)
     app.llm_system_prompt = (
         "Use only the tables provided. "
         "Use relationships when joining tables. "
@@ -126,35 +206,33 @@ def create_app(config_name):
         "Return only valid MySQL SQL queries."
     )
 
-    # Chat history (optional)
     app.chat_history = []
 
     # -------------------------------
-    # Register views/routes
+    # Attach SasaPay Service
     # -------------------------------
+    app.sasapay = SasaPayService(app)
 
-    socketio.init_app(app, cors_allowed_origins='*')
-
+    # -------------------------------
+    # Register Views
+    # -------------------------------
     initialize_views(app)
 
-    return app,socketio
+    return app, socketio
 
 
 # -------------------------------
-# OPTIONAL HELPER FUNCTION
+# SQL Generator Helper
 # -------------------------------
 def generate_sql(app, user_prompt):
-    """
-    Generate SQL query using ChatGPT
-    """
     response = app.llm_client.chat.completions.create(
-        model="gpt-5-mini",  # you can upgrade to gpt-5.3
+        model="gpt-5-mini",
         messages=[
             {"role": "system", "content": app.llm_system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-      
         max_completion_tokens=1000
     )
 
     return response.choices[0].message.content.strip()
+
