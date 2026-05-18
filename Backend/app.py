@@ -46,6 +46,7 @@ def initialize_models():
     from Server.Models.ExpenseCategory import ExpenseCategory
     from Server.Models.StockReport import StockReport
     from Server.Models.Permission import Permission
+    from Server.Models.TaskManager import TaskManager, TaskComment, TaskEvaluation
 
 
 # ---------- Views Import ----------
@@ -61,15 +62,26 @@ import time
 class SasaPayService:
     def __init__(self, app):
         self.app = app
-        self.base_url = app.config["SASAPAY_BASE_URL"]
-        self.client_id = app.config["SASAPAY_CLIENT_ID"]
-        self.client_secret = app.config["SASAPAY_CLIENT_SECRET"]
+        self.base_url = app.config.get("SASAPAY_BASE_URL")
+        self.client_id = app.config.get("SASAPAY_CLIENT_ID")
+        self.client_secret = app.config.get("SASAPAY_CLIENT_SECRET")
         self.token_expiry = 0
+        
+        # Log configuration status
+        if not self.base_url or not self.client_id or not self.client_secret:
+            print("⚠️ SasaPay service initialized with missing configuration")
+            print(f"  Base URL: {self.base_url}")
+            print(f"  Client ID: {'Set' if self.client_id else 'Missing'}")
+            print(f"  Client Secret: {'Set' if self.client_secret else 'Missing'}")
 
     def get_token(self):
         # reuse token if not expired
         if self.app.sasapay_token and time.time() < self.token_expiry:
             return self.app.sasapay_token
+
+        if not self.base_url or not self.client_id or not self.client_secret:
+            print("❌ Cannot get token: Missing SasaPay configuration")
+            return None
 
         url = f"{self.base_url}/auth/token"
 
@@ -78,19 +90,24 @@ class SasaPayService:
             "client_secret": self.client_secret
         }
 
-        response = requests.post(url, json=payload)
-        data = response.json()
+        try:
+            response = requests.post(url, json=payload, timeout=30)
+            data = response.json()
+            token = data.get("access_token")
 
-        token = data.get("access_token")
+            # store token + expiry (assume 1 hour if not provided)
+            self.app.sasapay_token = token
+            self.token_expiry = time.time() + 3500
 
-        # store token + expiry (assume 1 hour if not provided)
-        self.app.sasapay_token = token
-        self.token_expiry = time.time() + 3500
-
-        return token
+            return token
+        except Exception as e:
+            print(f"❌ Error getting SasaPay token: {str(e)}")
+            return None
 
     def request_payment(self, amount, phone, reference):
         token = self.get_token()
+        if not token:
+            return {"error": "Failed to get access token"}
 
         url = f"{self.base_url}/payments/request"
 
@@ -106,11 +123,16 @@ class SasaPayService:
             "transaction_desc": "Payment"
         }
 
-        response = requests.post(url, json=payload, headers=headers)
-        return response.json()
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            return response.json()
+        except Exception as e:
+            return {"error": str(e)}
 
     def check_status(self, transaction_id):
         token = self.get_token()
+        if not token:
+            return {"error": "Failed to get access token"}
 
         url = f"{self.base_url}/transactions/{transaction_id}"
 
@@ -118,8 +140,11 @@ class SasaPayService:
             "Authorization": f"Bearer {token}"
         }
 
-        response = requests.get(url, headers=headers)
-        return response.json()
+        try:
+            response = requests.get(url, headers=headers, timeout=30)
+            return response.json()
+        except Exception as e:
+            return {"error": str(e)}
 
 
 # ---------- App Factory ----------
@@ -134,11 +159,12 @@ def create_app(config_name):
         "http://127.0.0.1:3000"
     ])
 
-    # Load config
+    # Load config from config object
     app.config.from_object(config_name)
 
     # Database
     app.config["SQLALCHEMY_DATABASE_URI"] = "mysql+pymysql://root:MyNewPass@localhost/Diraja"
+    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
     # JWT
     app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET_KEY", "Soweto@2024")
@@ -161,15 +187,31 @@ def create_app(config_name):
     app.config['VAPID_EMAIL'] = os.getenv("VAPID_EMAIL")
 
     # -------------------------------
-    # SasaPay Config
+    # SasaPay Config - Now loaded from config object
+    # Note: These values are already set by the config class
     # -------------------------------
-    app.config["SASAPAY_CLIENT_ID"] = os.getenv("SASAPAY_CLIENT_ID")
-    app.config["SASAPAY_CLIENT_SECRET"] = os.getenv("SASAPAY_CLIENT_SECRET")
-    app.config["SASAPAY_BASE_URL"] = os.getenv("SASAPAY_BASE_URL")
-    app.config["SASAPAY_CALLBACK_URL"] = os.getenv("SASAPAY_CALLBACK_URL")
-    app.config["SASAPAY_MERCHANT_CODE"] = os.getenv("SASAPAY_MERCHANT_CODE")
+    # The config object already has these attributes from the Config class
+    # We just need to ensure they're accessible
+    if not app.config.get("SASAPAY_BASE_URL"):
+        print("⚠️ Warning: SASAPAY_BASE_URL not configured")
+    if not app.config.get("SASAPAY_CLIENT_ID"):
+        print("⚠️ Warning: SASAPAY_CLIENT_ID not configured")
+    if not app.config.get("SASAPAY_CLIENT_SECRET"):
+        print("⚠️ Warning: SASAPAY_CLIENT_SECRET not configured")
     
-
+    # Print SasaPay configuration status
+    print("\n" + "="*50)
+    print("SASAPAY CONFIGURATION STATUS")
+    print("="*50)
+    print(f"Environment: {os.getenv('SASAPAY_ENVIRONMENT', 'sandbox')}")
+    print(f"Base URL: {app.config.get('SASAPAY_BASE_URL', 'NOT SET')}")
+    print(f"Merchant Code: {app.config.get('SASAPAY_MERCHANT_CODE', 'NOT SET')}")
+    print(f"Client ID: {'✓ SET' if app.config.get('SASAPAY_CLIENT_ID') else '✗ MISSING'}")
+    print(f"Client Secret: {'✓ SET' if app.config.get('SASAPAY_CLIENT_SECRET') else '✗ MISSING'}")
+    print(f"Callback URL: {app.config.get('SASAPAY_CALLBACK_URL', 'NOT SET')}")
+    print(f"Use Mock: {app.config.get('SASAPAY_USE_MOCK', False)}")
+    print("="*50 + "\n")
+    
     app.sasapay_token = None
 
     # Init extensions
@@ -186,8 +228,11 @@ def create_app(config_name):
     # -------------------------------
     with app.app_context():
         initialize_models()
-        from schema_generator import write_schema_file
-        write_schema_file()
+        try:
+            from schema_generator import write_schema_file
+            write_schema_file()
+        except ImportError:
+            print("⚠️ schema_generator not found, skipping schema generation")
 
     # -------------------------------
     # OpenAI Setup
@@ -211,7 +256,12 @@ def create_app(config_name):
     # -------------------------------
     # Attach SasaPay Service
     # -------------------------------
-    app.sasapay = SasaPayService(app)
+    # Only initialize if configuration exists
+    if app.config.get("SASAPAY_BASE_URL") and app.config.get("SASAPAY_CLIENT_ID"):
+        app.sasapay = SasaPayService(app)
+    else:
+        print("⚠️ SasaPay service not initialized due to missing configuration")
+        app.sasapay = None
 
     # -------------------------------
     # Register Views
@@ -235,4 +285,3 @@ def generate_sql(app, user_prompt):
     )
 
     return response.choices[0].message.content.strip()
-

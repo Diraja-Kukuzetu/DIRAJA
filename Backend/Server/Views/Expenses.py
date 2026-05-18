@@ -261,6 +261,9 @@ class AllExpenses(Resource):
         if filters:
             query = query.filter(and_(*filters))
 
+        # Calculate total amount paid for ALL expenses (before pagination)
+        total_amount_paid_all = db.session.query(db.func.sum(Expenses.amountPaid)).filter(and_(*filters)).scalar() or 0
+
         # Order by latest
         query = query.order_by(Expenses.created_at.desc())
 
@@ -334,9 +337,9 @@ class AllExpenses(Resource):
 
         return make_response(jsonify({
             "expenses": all_expenses,
-            "pagination": pagination_info
+            "pagination": pagination_info,
+            "total_amount_paid_all_expenses": total_amount_paid_all
         }), 200)
-
 
 class GetShopExpenses(Resource):
     @jwt_required()
