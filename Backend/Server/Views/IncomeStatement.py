@@ -11,15 +11,17 @@ from Server.Models.Accounting.CostOfSalesLedger import CostOfSaleLedger
 from Server.Models.Accounting.SpoiltStockLedger import SpoiltStockLedger
 from Server.Models.ExpenseCategory import ExpenseCategory
 from Server.Models.SoldItems import SoldItem
+from Server.Models.SpoiltStock import SpoiltStock
 from app import db
 
 class IncomeStatement(Resource):
 
     @jwt_required()
     def get(self):
-        # -----------------------------
-        # Get query params
-        # -----------------------------
+
+        # ==========================================
+        # REQUEST PARAMS
+        # ==========================================
         start_date = request.args.get("start_date")
         end_date = request.args.get("end_date")
         shop_id = request.args.get("shop_id")
@@ -33,12 +35,14 @@ class IncomeStatement(Resource):
         try:
             start_date = datetime.strptime(start_date, "%Y-%m-%d")
             end_date = datetime.strptime(end_date, "%Y-%m-%d")
+
             if shop_id:
                 shop_id = int(shop_id)
+
         except ValueError:
             return {
                 "success": False,
-                "message": "Invalid date format or shop_id. Use YYYY-MM-DD for dates and integer for shop_id"
+                "message": "Invalid date format or shop_id"
             }, 400
 
         if start_date > end_date:
@@ -48,191 +52,100 @@ class IncomeStatement(Resource):
             }, 400
 
         # ==========================================
-        # REVENUE SECTION
+        # REVENUE
         # ==========================================
-        revenue_accounts = ChartOfAccounts.query.filter_by(type="Revenue").all()
-        if not revenue_accounts:
-            return {
-                "success": False,
-                "message": "No revenue accounts found"
-            }, 404
+        revenue_accounts = ChartOfAccounts.query.filter_by(
+            type="Revenue"
+        ).all()
 
         revenue_account_ids = [acc.id for acc in revenue_accounts]
 
         revenue_query = db.session.query(
             SalesLedger.description,
-            func.sum(SalesLedger.amount).label('total_amount')
+            func.sum(SalesLedger.amount).label("total_amount")
         ).filter(
             SalesLedger.created_at.between(start_date, end_date),
             SalesLedger.credit_account_id.in_(revenue_account_ids)
         )
 
         if shop_id:
-            revenue_query = revenue_query.filter(SalesLedger.shop_id == shop_id)
+            revenue_query = revenue_query.filter(
+                SalesLedger.shop_id == shop_id
+            )
 
         revenue_items = revenue_query.group_by(
             SalesLedger.description
-        ).order_by(
-            func.sum(SalesLedger.amount).desc()
         ).all()
 
         revenue_list = []
         total_revenue = 0
 
         for item in revenue_items:
-            description = item.description
-            if description and description.startswith("Sales - "):
-                description = description.replace("Sales - ", "Sales - ")
-            
             amount = round(float(item.total_amount or 0), 2)
             revenue_list.append({
-                "description": description,
+                "description": item.description or "Sales",
                 "amount": amount
             })
             total_revenue += amount
-            
-        # ==========================================
-        # COST OF GOODS SOLD (COGS) SECTION
-        # ==========================================
-        # Get the Cost of Goods Sold account(s)
-        cogs_accounts = ChartOfAccounts.query.filter_by(type="Cost of Goods Sold").all()
 
-        if not cogs_accounts:
-            # If no account with type "Cost of Goods Sold", try by name
-            cogs_accounts = ChartOfAccounts.query.filter(
-                ChartOfAccounts.name.ilike('%cost of goods sold%')
-            ).all()
+        # ==========================================
+        # COGS (Regular COGS only - no spoilt stock)
+        # ==========================================
+        cogs_accounts = ChartOfAccounts.query.filter(
+            ChartOfAccounts.name.ilike('%cost of goods sold%')
+        ).all()
 
         cogs_account_ids = [acc.id for acc in cogs_accounts]
 
-        # For Cost of Goods Sold, we need to get debit entries where the debit_account is a COGS account
-        # This represents the cost being recognized when inventory is sold
         cogs_query = db.session.query(
             CostOfSaleLedger.description,
-            func.sum(CostOfSaleLedger.amount).label('total_amount')
+            func.sum(CostOfSaleLedger.amount).label("total_amount")
         ).filter(
             CostOfSaleLedger.created_at.between(start_date, end_date),
-            CostOfSaleLedger.debit_account_id.in_(cogs_account_ids)  # COGS account is debited
+            CostOfSaleLedger.debit_account_id.in_(cogs_account_ids)
         )
 
         if shop_id:
-            cogs_query = cogs_query.filter(CostOfSaleLedger.shop_id == shop_id)
+            cogs_query = cogs_query.filter(
+                CostOfSaleLedger.shop_id == shop_id
+            )
 
         cogs_items = cogs_query.group_by(
             CostOfSaleLedger.description
-        ).order_by(
-            func.sum(CostOfSaleLedger.amount).desc()
         ).all()
 
-        cogs_dict = {}
         cogs_list = []
         total_cogs = 0
 
         for item in cogs_items:
-            # Extract product name from COGS description
-            description = item.description or "Cost of Goods Sold"
-            if description.startswith("Cost of Goods Sold - "):
-                product_name = description.replace("Cost of Goods Sold - ", "")
-            else:
-                product_name = description
-            
             amount = round(float(item.total_amount or 0), 2)
-            
-            # Format description to be more readable
-            description = item.description
-            if description and description.startswith("COGS - "):
-                description = description
-            elif description:
-                description = f"COGS - {description}"
-            else:
-                description = "Cost of Goods Sold"
-            
+            description = item.description or "COGS"
             cogs_list.append({
                 "description": description,
                 "amount": amount
             })
             total_cogs += amount
 
-        # If no items found with descriptions, try to get total without grouping
-        if total_cogs == 0 and cogs_account_ids:
-            total_query = db.session.query(
-                func.sum(CostOfSaleLedger.amount).label('total_amount')
-            ).filter(
-                CostOfSaleLedger.created_at.between(start_date, end_date),
-                CostOfSaleLedger.debit_account_id.in_(cogs_account_ids)
-            )
-            
-            if shop_id:
-                total_query = total_query.filter(CostOfSaleLedger.shop_id == shop_id)
-            
-            total_cogs = total_query.scalar() or 0
-            total_cogs = round(float(total_cogs), 2)
-            
-            if total_cogs > 0:
-                if len(cogs_accounts) == 1:
-                    description = cogs_accounts[0].name
-                else:
-                    description = "Cost of Goods Sold"
-                
-                cogs_list.append({
-                    "description": description,
-                    "amount": total_cogs
-                })
-
-
         # ==========================================
-        # SPOILT STOCK SECTION (Total only - Debit entries)
+        # SPOILT STOCK - PICK ONLY DEBIT ENTRIES
         # ==========================================
-        # Look for accounts that might be used for spoilt stock
-        possible_account_names = [
-            "Spoilt Stock", 
-            "Stock adjustment", 
-            "Stock Adjustment",
-            "Inventory Adjustment",
-            "Stock Write-off",
-            "Wastage",
-            "Damage"
-        ]
-        
-        spoilt_accounts = ChartOfAccounts.query.filter(
-            ChartOfAccounts.name.in_(possible_account_names)
-        ).all()
-
-        # If not found by exact name, try a more flexible search
-        if not spoilt_accounts:
-            spoilt_accounts = ChartOfAccounts.query.filter(
-                (ChartOfAccounts.name.ilike('%spoilt%')) |
-                (ChartOfAccounts.name.ilike('%adjust%')) |
-                (ChartOfAccounts.name.ilike('%wast%')) |
-                (ChartOfAccounts.name.ilike('%damage%')) |
-                (ChartOfAccounts.name.ilike('%write%')) |
-                (ChartOfAccounts.name.ilike('%off%'))
-            ).all()
-
-        spoilt_account_ids = [acc.id for acc in spoilt_accounts]
-
-        # If still no accounts found, initialize empty list
-        if not spoilt_account_ids:
-            spoilt_account_ids = [-1]  # Use -1 to ensure no matches
-
-        # Build the spoilt stock query
+        # Query spoilt stock from ledger - ONLY debit entries
         spoilt_query = db.session.query(
             SpoiltStockLedger.description,
-            func.sum(SpoiltStockLedger.amount).label('total_amount')
+            func.sum(SpoiltStockLedger.amount).label("total_amount")
         ).filter(
             SpoiltStockLedger.created_at.between(start_date, end_date),
-            SpoiltStockLedger.debit_account_id.in_(spoilt_account_ids)
+            SpoiltStockLedger.debit_account_id.isnot(None),
+            SpoiltStockLedger.credit_account_id.is_(None)
         )
 
-        # Apply shop_id filter if provided
         if shop_id:
-            spoilt_query = spoilt_query.filter(SpoiltStockLedger.shop_id == shop_id)
+            spoilt_query = spoilt_query.filter(
+                SpoiltStockLedger.shop_id == shop_id
+            )
 
-        # Get spoilt stock items with descriptions
         spoilt_items = spoilt_query.group_by(
             SpoiltStockLedger.description
-        ).order_by(
-            func.sum(SpoiltStockLedger.amount).desc()
         ).all()
 
         spoilt_list = []
@@ -240,117 +153,40 @@ class IncomeStatement(Resource):
 
         for item in spoilt_items:
             amount = round(float(item.total_amount or 0), 2)
-            description = item.description or "Spoilt Stock"
-            
-            # Add a prefix to identify it's spoilt stock
-            if not description.lower().startswith(('spoilt', 'adjust', 'wast', 'damage')):
-                description = f"Spoilt - {description}"
-            
-            spoilt_list.append({
-                "description": description,
-                "amount": amount
-            })
-            total_spoilt += amount
-
-        # If no items with descriptions found, try to get at least the total
-        if total_spoilt == 0 and spoilt_account_ids != [-1]:
-            # Fallback: get total without grouping
-            total_query = db.session.query(
-                func.sum(SpoiltStockLedger.amount).label('total_amount')
-            ).filter(
-                SpoiltStockLedger.created_at.between(start_date, end_date),
-                SpoiltStockLedger.debit_account_id.in_(spoilt_account_ids)
-            )
-            
-            if shop_id:
-                total_query = total_query.filter(SpoiltStockLedger.shop_id == shop_id)
-            
-            total_spoilt = total_query.scalar() or 0
-            total_spoilt = round(float(total_spoilt), 2)
-            
-            if total_spoilt > 0:
-                # Use the account name(s) for description
-                if len(spoilt_accounts) == 1:
-                    description = spoilt_accounts[0].name
-                elif spoilt_accounts:
-                    description = "Stock Adjustments (Including Spoilt)"
-                else:
-                    description = "Spoilt Stock"
-                
+            if amount > 0:
                 spoilt_list.append({
-                    "description": description,
-                    "amount": total_spoilt
+                    "description": item.description or "Spoilt Stock",
+                    "amount": amount
                 })
-
-        # Calculate total cost of goods sold including spoilt stock
-        total_cogs_including_spoilt = total_cogs + total_spoilt
+                total_spoilt += amount
 
         # ==========================================
-        # GROSS PROFIT BREAKDOWN SECTION
+        # GROSS PROFIT (spoilt stock NOT included in COGS)
         # ==========================================
-        gross_profit_breakdown = []
-        
-        # Map revenue items to their corresponding COGS
-        for revenue_item in revenue_list:
-            # Extract product name from revenue description
-            revenue_desc = revenue_item["description"]
-            revenue_amount = revenue_item["amount"]
-            
-            # Extract product name (remove "Sales - " prefix)
-            if revenue_desc.startswith("Sales - "):
-                product_name = revenue_desc.replace("Sales - ", "")
-            else:
-                product_name = revenue_desc
-            
-            # Find matching COGS for this product
-            cogs_amount = cogs_dict.get(product_name, 0)
-            
-            # Calculate gross profit for this product
-            product_gross_profit = revenue_amount - cogs_amount
-            gross_margin_percentage = 0
-            if revenue_amount > 0:
-                gross_margin_percentage = round((product_gross_profit / revenue_amount) * 100, 2)
-            
-            gross_profit_breakdown.append({
-                "product": product_name,
-                "revenue": revenue_amount,
-                "cost_of_sales": cogs_amount,
-                "gross_profit": round(product_gross_profit, 2),
-                "gross_margin_percentage": gross_margin_percentage
-            })
-        
-        # Sort by gross profit (highest to lowest)
-        gross_profit_breakdown.sort(key=lambda x: x["gross_profit"], reverse=True)
-        
-        # Calculate totals for the breakdown
-        total_breakdown_revenue = sum(item["revenue"] for item in gross_profit_breakdown)
-        total_breakdown_cogs = sum(item["cost_of_sales"] for item in gross_profit_breakdown)
-        total_breakdown_gross_profit = sum(item["gross_profit"] for item in gross_profit_breakdown)
+        gross_profit = total_revenue - total_cogs
 
         # ==========================================
-        # GROSS PROFIT CALCULATION
-        # ==========================================
-        gross_profit = total_revenue - total_cogs_including_spoilt
-
-        # ==========================================
-        # EXPENSES SECTION
+        # EXPENSES (including spoilt stock)
         # ==========================================
         expense_query = db.session.query(
-            ExpenseCategory.category_name.label('category_name'),
-            func.sum(ExpensesLedger.amount).label('total_amount')
+            ExpenseCategory.category_name,
+            func.sum(ExpensesLedger.amount).label("total_amount")
         ).join(
-            ExpenseCategory, ExpenseCategory.id == ExpensesLedger.category_id
+            ExpenseCategory,
+            ExpenseCategory.id == ExpensesLedger.category_id
         ).filter(
-            ExpensesLedger.created_at.between(start_date, end_date)
+            ExpensesLedger.created_at.between(start_date, end_date),
+            ExpensesLedger.debit_account_id.isnot(None),
+            ExpensesLedger.credit_account_id.is_(None)
         )
 
         if shop_id:
-            expense_query = expense_query.filter(ExpensesLedger.shop_id == shop_id)
+            expense_query = expense_query.filter(
+                ExpensesLedger.shop_id == shop_id
+            )
 
         expense_items = expense_query.group_by(
-            ExpenseCategory.id, ExpenseCategory.category_name
-        ).order_by(
-            func.sum(ExpensesLedger.amount).desc()
+            ExpenseCategory.category_name
         ).all()
 
         expense_list = []
@@ -364,13 +200,23 @@ class IncomeStatement(Resource):
             })
             total_expenses += amount
 
+        # Add spoilt stock as a separate expense category
+        if total_spoilt > 0:
+            expense_list.append({
+                "category": "Spoilt Stock",
+                "amount": total_spoilt
+            })
+            total_expenses += total_spoilt
+
+        expense_list.sort(key=lambda x: x["amount"], reverse=True)
+
         # ==========================================
         # NET INCOME
         # ==========================================
         net_income = gross_profit - total_expenses
 
         # ==========================================
-        # RESPONSE
+        # RESPONSE - Maintaining backward compatibility
         # ==========================================
         response = {
             "success": True,
@@ -385,19 +231,13 @@ class IncomeStatement(Resource):
             "cost_of_goods_sold": {
                 "regular_cogs": {
                     "items": cogs_list,
-                    "total": total_cogs 
+                    "total": total_cogs
                 },
                 "spoilt_stock": {
                     "items": spoilt_list,
                     "total": total_spoilt
                 },
-                "total": total_cogs_including_spoilt
-            },
-            "gross_profit_breakdown": {
-                "items": gross_profit_breakdown,
-                "total_revenue": total_breakdown_revenue,
-                "total_cost_of_sales": total_breakdown_cogs,
-                "total_gross_profit": total_breakdown_gross_profit
+                "total": total_cogs  # Total COGS without spoilt stock
             },
             "gross_profit": gross_profit,
             "expenses": {
