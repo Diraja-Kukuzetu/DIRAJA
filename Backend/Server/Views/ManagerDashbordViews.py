@@ -478,223 +478,151 @@ class TotalAmountPaidPerShop(Resource):
     @check_role('manager')
     def get(self):
         today = datetime.utcnow()
-        start_date = None
-        end_date = None
-        period = None  # Initialize period variable
-
-        # Check if custom date range is provided
-        start_date_str = request.args.get('start_date')
-        end_date_str = request.args.get('end_date')
-        
-        if start_date_str and end_date_str:
-            try:
-                start_date = datetime.strptime(start_date_str, '%Y-%m-%d').replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                )
-                end_date = datetime.strptime(end_date_str, '%Y-%m-%d').replace(
-                    hour=23, minute=59, second=59, microsecond=999999
-                )
-                period = "custom"
-            except ValueError:
-                return {"message": "Invalid date format. Use YYYY-MM-DD."}, 400
-        else:
-            # Check if a single custom date is provided (for backward compatibility)
-            date_str = request.args.get('date')
-            if date_str:
-                try:
-                    start_date = datetime.strptime(date_str, '%Y-%m-%d').replace(
-                        hour=0, minute=0, second=0, microsecond=0
-                    )
-                    end_date = start_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-                    period = "custom"
-                except ValueError:
-                    return {"message": "Invalid date format. Use YYYY-MM-DD."}, 400
-            else:
-                period = request.args.get('period', 'today')
-
-                if period == 'today':
-                    start_date = today.replace(hour=0, minute=0, second=0, microsecond=0)
-                    end_date = today.replace(hour=23, minute=59, second=59, microsecond=999999)
-                elif period == 'yesterday':
-                    yesterday = today - timedelta(days=1)
-                    start_date = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
-                    end_date = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999)
-                elif period == 'week':
-                    # Last 7 days inclusive (including today)
-                    start_date = (today - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
-                    end_date = today.replace(hour=23, minute=59, second=59, microsecond=999999)
-                elif period == 'month':
-                    # Last 30 days inclusive (including today)
-                    start_date = (today - timedelta(days=29)).replace(hour=0, minute=0, second=0, microsecond=0)
-                    end_date = today.replace(hour=23, minute=59, second=59, microsecond=999999)
-                else:
-                    return {
-                        "message": "Invalid period specified. Use 'today', 'yesterday', 'week', 'month', or provide start_date and end_date."
-                    }, 400
-
-        # Validate date range
-        if start_date > end_date:
-            return {"message": "Start date cannot be after end date."}, 400
 
         try:
-            shops = Shops.query.filter_by(shopstatus="active").all()
-            results = []
-            overall_paid = 0
-            overall_unpaid = 0
-            
-            # NEW: Track total transaction count across all shops
-            overall_transaction_count = 0
+            # Date filtering
+            start_date_str, end_date_str = request.args.get('start_date'), request.args.get('end_date')
+            date_str, period = request.args.get('date'), request.args.get('period', 'today')
 
+            if start_date_str and end_date_str:
+                start_date = datetime.strptime(start_date_str, '%Y-%m-%d').replace(hour=0, minute=0, second=0, microsecond=0)
+                end_date = datetime.strptime(end_date_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59, microsecond=999999)
+                period = "custom"
+
+            elif date_str:
+                start_date = datetime.strptime(date_str, '%Y-%m-%d').replace(hour=0, minute=0, second=0, microsecond=0)
+                end_date = start_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                period = "custom"
+
+            else:
+                days_map = {"today": 0, "yesterday": 1, "week": 6, "month": 29}
+                if period not in days_map:
+                    return {"message": "Invalid period"}, 400
+
+                base_date = today if period != "yesterday" else today - timedelta(days=1)
+                start_date = (base_date - timedelta(days=days_map[period])).replace(hour=0, minute=0, second=0, microsecond=0)
+                end_date = base_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+            shops = Shops.query.filter_by(shopstatus="active").all()
+
+            results = []
+            overall_paid = overall_unpaid = overall_delivery_sales = overall_transaction_count = 0
             overall_payment_totals = {"sasapay": 0, "cash": 0, "not_payed": 0}
 
             for shop in shops:
                 shop_id = shop.shops_id
 
-                # --- Total paid for requested period ---
-                total_paid = (
-                    db.session.query(func.sum(SalesPaymentMethods.amount_paid))
-                    .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)
-                    .filter(Sales.shop_id == shop_id)
-                    .filter(Sales.created_at.between(start_date, end_date))
+                # Paid sales
+                total_paid = db.session.query(func.sum(SalesPaymentMethods.amount_paid))\
+                    .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)\
+                    .filter(Sales.shop_id == shop_id, Sales.created_at.between(start_date, end_date))\
                     .scalar() or 0
-                )
 
-                # --- Total unpaid (balance) for requested period ---
-                total_unpaid = (
-                    db.session.query(func.sum(Sales.balance))
-                    .filter(Sales.shop_id == shop_id)
-                    .filter(Sales.created_at.between(start_date, end_date))
-                    .filter(Sales.status.in_(["unpaid", "partially_paid"]))  # ✅ Only unpaid or partially paid
+                # Unpaid balances
+                total_unpaid = db.session.query(func.sum(Sales.balance))\
+                    .filter(
+                        Sales.shop_id == shop_id,
+                        Sales.created_at.between(start_date, end_date),
+                        Sales.status.in_(["unpaid", "partially_paid"])
+                    ).scalar() or 0
+
+                # Delivery sales
+                delivery_sales = db.session.query(func.sum(SalesPaymentMethods.amount_paid))\
+                    .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)\
+                    .filter(
+                        Sales.shop_id == shop_id,
+                        Sales.delivery == True,
+                        Sales.created_at.between(start_date, end_date)
+                    ).scalar() or 0
+
+                # Transaction count
+                transaction_count = db.session.query(func.count(SalesPaymentMethods.id))\
+                    .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)\
+                    .filter(Sales.shop_id == shop_id, Sales.created_at.between(start_date, end_date))\
                     .scalar() or 0
-                )
 
-                # --- Total sales = paid + unpaid ---
+                # Payment breakdown
+                payment_summary = {"sasapay": 0, "cash": 0, "not_payed": float(total_unpaid)}
+
+                payments = db.session.query(
+                    SalesPaymentMethods.payment_method,
+                    func.sum(SalesPaymentMethods.amount_paid)
+                ).join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)\
+                 .filter(Sales.shop_id == shop_id, Sales.created_at.between(start_date, end_date))\
+                 .group_by(SalesPaymentMethods.payment_method).all()
+
+                for method, amount in payments:
+                    amount = float(amount or 0)
+                    if method in payment_summary:
+                        payment_summary[method] = amount
+                        overall_payment_totals[method] += amount
+
+                overall_payment_totals["not_payed"] += float(total_unpaid)
+
                 total_sales = total_paid + total_unpaid
 
-                # --- Transaction count for the shop (number of records in salespaymentmethod table) ---
-                transaction_count = (
-                    db.session.query(func.count(SalesPaymentMethods.id))
-                    .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)
-                    .filter(Sales.shop_id == shop_id)
-                    .filter(Sales.created_at.between(start_date, end_date))
-                    .scalar() or 0
-                )
-                
-                # Add to overall transaction count
-                overall_transaction_count += transaction_count
-
-                # --- Totals by payment method ---
-                payment_totals = (
-                    db.session.query(
-                        SalesPaymentMethods.payment_method,
-                        func.sum(SalesPaymentMethods.amount_paid).label("total")
-                    )
-                    .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)
-                    .filter(Sales.shop_id == shop_id)
-                    .filter(Sales.created_at.between(start_date, end_date))
-                    .group_by(SalesPaymentMethods.payment_method)
-                    .all()
-                )
-
-                payment_summary = {"sasapay": 0, "cash": 0, "not_payed": 0}
-                for method, total in payment_totals:
-                    if method == "sasapay":
-                        payment_summary["sasapay"] = float(total or 0)
-                        overall_payment_totals["sasapay"] += float(total or 0)
-                    elif method == "cash":
-                        payment_summary["cash"] = float(total or 0)
-                        overall_payment_totals["cash"] += float(total or 0)
-
-                # --- Ensure not_payed comes from Sales.balance with correct status ---
-                payment_summary["not_payed"] = float(total_unpaid or 0)
-                overall_payment_totals["not_payed"] += float(total_unpaid or 0)
-
-                # --- Comparison with previous period ---
-                comparison_diff = 0  # Initialize with default value
-                
-                # Only calculate comparison for predefined periods, not custom dates
+                # Comparison
+                comparison = 0
                 if period != "custom":
-                    comparison_start, comparison_end = None, None
-                    
-                    if period == "today":
-                        # For today, compare with yesterday
-                        comparison_start = (start_date - timedelta(days=1))
-                        comparison_end = comparison_start.replace(hour=23, minute=59, second=59, microsecond=999999)
-                    elif period == "yesterday":
-                        # For yesterday, compare with day before yesterday
-                        comparison_start = (start_date - timedelta(days=1))
-                        comparison_end = comparison_start.replace(hour=23, minute=59, second=59, microsecond=999999)
-                    elif period == "week":
-                        # For this week, compare with previous 7 days
-                        comparison_start = (start_date - timedelta(days=7))
-                        comparison_end = (start_date - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
-                    elif period == "month":
-                        # For this month, compare with previous 30 days
-                        comparison_start = (start_date - timedelta(days=30))
-                        comparison_end = (start_date - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
+                    compare_days = {"today": 1, "yesterday": 1, "week": 7, "month": 30}
+                    shift = compare_days.get(period, 0)
 
-                    if comparison_start and comparison_end:
-                        previous_paid = (
-                            db.session.query(func.sum(SalesPaymentMethods.amount_paid))
-                            .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)
-                            .filter(Sales.shop_id == shop_id)
-                            .filter(Sales.created_at.between(comparison_start, comparison_end))
-                            .scalar() or 0
-                        )
-                        previous_unpaid = (
-                            db.session.query(func.sum(Sales.balance))
-                            .filter(Sales.shop_id == shop_id)
-                            .filter(Sales.created_at.between(comparison_start, comparison_end))
-                            .filter(Sales.status.in_(["unpaid", "partially paid"]))  # ✅ Apply same filter here
-                            .scalar() or 0
-                        )
-                        previous_total = previous_paid + previous_unpaid
-                        comparison_diff = total_sales - previous_total
+                    prev_start = start_date - timedelta(days=shift)
+                    prev_end = (start_date - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
+
+                    prev_paid = db.session.query(func.sum(SalesPaymentMethods.amount_paid))\
+                        .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)\
+                        .filter(Sales.shop_id == shop_id, Sales.created_at.between(prev_start, prev_end))\
+                        .scalar() or 0
+
+                    prev_unpaid = db.session.query(func.sum(Sales.balance))\
+                        .filter(
+                            Sales.shop_id == shop_id,
+                            Sales.created_at.between(prev_start, prev_end),
+                            Sales.status.in_(["unpaid", "partially_paid"])
+                        ).scalar() or 0
+
+                    comparison = total_sales - (prev_paid + prev_unpaid)
 
                 overall_paid += total_paid
                 overall_unpaid += total_unpaid
+                overall_delivery_sales += delivery_sales
+                overall_transaction_count += transaction_count
 
                 results.append({
                     "shop_id": shop_id,
                     "shop_name": shop.shopname,
-                    "total_paid": "Ksh {:,.2f}".format(total_paid),
-                    "total_unpaid": "Ksh {:,.2f}".format(total_unpaid),
-                    "total_sales": "Ksh {:,.2f}".format(total_sales),
-                    "transaction_count": transaction_count,  # Add transaction count per shop
+                    "total_paid": f"Ksh {total_paid:,.2f}",
+                    "total_unpaid": f"Ksh {total_unpaid:,.2f}",
+                    "total_sales": f"Ksh {total_sales:,.2f}",
+                    "delivery_sales": f"Ksh {delivery_sales:,.2f}",
+                    "transaction_count": transaction_count,
                     "payment_breakdown": payment_summary,
-                    "comparison": comparison_diff
+                    "comparison": comparison
                 })
 
-            # --- Overall summary ---
             overall_total_sales = overall_paid + overall_unpaid
-            overall_avg = overall_total_sales / len(shops) if shops else 0
-            overall_avg_per_transaction = (
-                overall_total_sales / overall_transaction_count
-                if overall_transaction_count > 0
-                else 0
-            )
+
             summary = {
-                "overall_total_sales": "Ksh {:,.2f}".format(overall_total_sales),
-                "overall_total_paid": "Ksh {:,.2f}".format(overall_paid),
-                "overall_total_unpaid": "Ksh {:,.2f}".format(overall_unpaid),
-                "average_per_shop": "Ksh {:,.2f}".format(overall_avg),
-                "average_sale_per_transaction": "Ksh {:,.2f}".format(overall_avg_per_transaction),
+                "overall_total_sales": f"Ksh {overall_total_sales:,.2f}",
+                "overall_total_paid": f"Ksh {overall_paid:,.2f}",
+                "overall_total_unpaid": f"Ksh {overall_unpaid:,.2f}",
+                "overall_delivery_sales": f"Ksh {overall_delivery_sales:,.2f}",
+                "average_per_shop": f"Ksh {(overall_total_sales / len(shops) if shops else 0):,.2f}",
+                "average_sale_per_transaction": f"Ksh {(overall_total_sales / overall_transaction_count if overall_transaction_count else 0):,.2f}",
                 "overall_payment_breakdown": {
-                    "sasapay": "Ksh {:,.2f}".format(overall_payment_totals["sasapay"]),
-                    "cash": "Ksh {:,.2f}".format(overall_payment_totals["cash"]),
-                    "not_payed": "Ksh {:,.2f}".format(overall_payment_totals["not_payed"])
+                    "sasapay": f"Ksh {overall_payment_totals['sasapay']:,.2f}",
+                    "cash": f"Ksh {overall_payment_totals['cash']:,.2f}",
+                    "not_payed": f"Ksh {overall_payment_totals['not_payed']:,.2f}"
                 },
-                "transaction_count": overall_transaction_count  # NEW: Add overall transaction count to summary
+                "transaction_count": overall_transaction_count
             }
 
             return {"total_sales_per_shop": results, "summary": summary}, 200
 
-        except SQLAlchemyError as e:
+        except (ValueError, SQLAlchemyError) as e:
             db.session.rollback()
-            return {
-                "error": "An error occurred while fetching total sales amounts for all shops",
-                "details": str(e)
-            }, 500
+            return {"error": str(e)}, 500
 
 
 
@@ -1659,50 +1587,73 @@ class GetInventoryStock(Resource):
             # Optional filters
             supplier_name = request.args.get('supplier_name', type=str)
             item_name = request.args.get('item_name', type=str)
-            
-            # Query from InventoryV2 - group only by itemname and metric
+
+            # Query inventory grouped by item + metric
             query = db.session.query(
                 InventoryV2.itemname,
                 InventoryV2.metric,
                 func.sum(InventoryV2.quantity).label("total_quantity"),
-                func.avg(InventoryV2.unitCost).label("average_unit_cost"),
+                
+                # Sum of (quantity × unitCost) across all batches
+                func.sum(
+                    InventoryV2.quantity * InventoryV2.unitCost
+                ).label("total_stock_value"),
+
                 func.count(InventoryV2.BatchNumber).label("batch_count")
             ).filter(
-                InventoryV2.quantity > 0  # Only items with stock remaining
+                InventoryV2.quantity > 0
             )
 
-            # Optional filters
+            # Filters
             if supplier_name:
-                query = query.filter(InventoryV2.Suppliername.ilike(f'%{supplier_name}%'))
-            
-            if item_name:
-                query = query.filter(InventoryV2.itemname.ilike(f'%{item_name}%'))
+                query = query.filter(
+                    InventoryV2.Suppliername.ilike(f'%{supplier_name}%')
+                )
 
-            # Group by item and metric only (not by supplier/location)
+            if item_name:
+                query = query.filter(
+                    InventoryV2.itemname.ilike(f'%{item_name}%')
+                )
+
+            # Group by item + metric
             inventory_stock = query.group_by(
-                InventoryV2.itemname, 
+                InventoryV2.itemname,
                 InventoryV2.metric
             ).all()
 
-            # Prepare list with aggregated information
-            inventory_stock_list = [
-                {
+            inventory_stock_list = []
+
+            for itemname, metric, total_quantity, total_stock_value, batch_count in inventory_stock:
+
+                # Weighted average cost
+                average_unit_cost = (
+                    total_stock_value / total_quantity
+                    if total_quantity > 0 else 0
+                )
+
+                inventory_stock_list.append({
                     "itemname": itemname,
                     "metric": metric,
                     "total_remaining": round(total_quantity, 3),
                     "average_unit_cost": round(average_unit_cost, 2),
                     "batch_count": batch_count,
-                    "total_value": round(total_quantity * average_unit_cost, 2)
-                }
-                for itemname, metric, total_quantity, average_unit_cost, batch_count in inventory_stock
-            ]
 
-            # Calculate totals
+                    # Actual stock value from all batches
+                    "total_value": round(total_stock_value, 2)
+                })
+
+            # Grand totals
             total_items = len(inventory_stock_list)
-            total_value = sum(item['total_value'] for item in inventory_stock_list)
-            total_quantity = sum(item['total_remaining'] for item in inventory_stock_list)
+            total_quantity = sum(
+                item["total_remaining"]
+                for item in inventory_stock_list
+            )
 
-            # Response
+            total_value = sum(
+                item["total_value"]
+                for item in inventory_stock_list
+            )
+
             response = {
                 "total_items": total_items,
                 "total_quantity": round(total_quantity, 3),
