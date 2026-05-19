@@ -65,7 +65,7 @@ from Server.Views.Sales import (
     UpdateSalePayment, GetUnpaidSales, PaymentMethodsResource,
     CapturePaymentResource, CreditHistoryResource, GetSingleSaleByShop,
     SalesByEmployeeResource, GetSale, GetUnpaidSalesByClerk,
-    TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport,ProductEarningsSummary,CategoryEarningsSummary, ItemsSoldSummary
+    TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport,ProductEarningsSummary,CategoryEarningsSummary, ItemsSoldSummary, DeliverySalesSummary
 )
 
 from Server.Views.ManagerDashbordViews import (
@@ -302,6 +302,7 @@ api.add_resource(CreditHistoryResource, "/credit-history")
 api.add_resource(GetSingleSaleByShop, "/sale/<int:shop_id>/<int:sales_id>")
 api.add_resource(GetUnpaidSalesByClerk, "/unpaidsales/clerk") 
 api.add_resource(ItemsSoldSummary, '/sold-items-summary', '/sold-items-summary/<int:shop_id>')
+api.add_resource(DeliverySalesSummary, '/delivery-sales-summary','/delivery-sales-summary/<int:shop_id>', '/sold-items-summary/<int:shop_id>')
 api.add_resource(ProductEarningsSummary, '/shops/<int:shop_id>/product-earnings', '/product-earnings')
 api.add_resource(CategoryEarningsSummary, "/category-earnings-summary", "/category-earnings-summary/<int:shop_id>")
 

@@ -748,18 +748,21 @@ class GetSalesByShop(Resource):
     @jwt_required()
     def get(self, shop_id):
         try:
-            # Get query parameters
+            # Query params
             page = int(request.args.get('page', 1))
             limit = int(request.args.get('limit', 50))
             search_query = request.args.get('search', '').lower()
-            date_filter = request.args.get('date', '')
+
+            # Date range params
+            start_date = request.args.get('start_date')
+            end_date = request.args.get('end_date')
 
             offset = (page - 1) * limit
 
             # Base query
             sales_query = Sales.query.filter_by(shop_id=shop_id)
 
-            # Apply search filter if provided
+            # Search filter
             if search_query:
                 sales_query = sales_query.join(SoldItem).filter(
                     or_(
@@ -768,27 +771,58 @@ class GetSalesByShop(Resource):
                     )
                 )
 
-            # Apply date filter if provided
-            if date_filter:
+            # Date range filter
+            if start_date and end_date:
                 try:
-                    filter_date = datetime.strptime(date_filter, '%Y-%m-%d').date()
-                    sales_query = sales_query.filter(
-                        db.func.date(Sales.created_at) == filter_date
-                    )
-                except ValueError:
-                    pass
+                    start = datetime.strptime(start_date, '%Y-%m-%d').date()
+                    end = datetime.strptime(end_date, '%Y-%m-%d').date()
 
-            # Get total count before pagination
+                    sales_query = sales_query.filter(
+                        db.func.date(Sales.created_at).between(start, end)
+                    )
+
+                except ValueError:
+                    return {"error": "Invalid date format. Use YYYY-MM-DD"}, 400
+
+            elif start_date:
+                try:
+                    start = datetime.strptime(start_date, '%Y-%m-%d').date()
+
+                    sales_query = sales_query.filter(
+                        db.func.date(Sales.created_at) >= start
+                    )
+
+                except ValueError:
+                    return {"error": "Invalid start_date format"}, 400
+
+            elif end_date:
+                try:
+                    end = datetime.strptime(end_date, '%Y-%m-%d').date()
+
+                    sales_query = sales_query.filter(
+                        db.func.date(Sales.created_at) <= end
+                    )
+
+                except ValueError:
+                    return {"error": "Invalid end_date format"}, 400
+
+            # Count after filters
             total_sales = sales_query.count()
 
-            # Apply pagination and ordering
-            sales = sales_query.order_by(Sales.created_at.desc()) \
-                              .offset(offset).limit(limit).all()
+            # Pagination
+            sales = (
+                sales_query
+                .order_by(Sales.created_at.desc())
+                .offset(offset)
+                .limit(limit)
+                .all()
+            )
 
             if not sales:
                 return {"message": "No sales found for this shop"}, 404
 
             sales_data = []
+
             for sale in sales:
                 username = sale.users.username if sale.users else "Unknown User"
                 shopname = sale.shops.shopname if sale.shops else "Unknown Shop"
@@ -801,7 +835,10 @@ class GetSalesByShop(Resource):
                     }
                     for payment in sale.payment
                 ]
-                total_amount_paid = sum(payment["amount_paid"] for payment in payment_data)
+
+                total_amount_paid = sum(
+                    p["amount_paid"] for p in payment_data
+                )
 
                 sold_items = [
                     {
@@ -819,7 +856,9 @@ class GetSalesByShop(Resource):
                     for item in sale.items
                 ]
 
-                total_items_price = sum(item["total_price"] for item in sold_items)
+                total_items_price = sum(
+                    item["total_price"] for item in sold_items
+                )
 
                 sales_data.append({
                     "sale_id": sale.sales_id,
@@ -2503,6 +2542,87 @@ class ItemsSoldSummary(Resource):
             db.session.rollback()
             return {
                 "error": "An error occurred while fetching sold item data",
+                "details": str(e)
+            }, 500
+            
+class DeliverySalesSummary(Resource):
+    @jwt_required()
+    def get(self, shop_id=None):
+        try:
+            # Query params
+            start_date = request.args.get('start_date')  # YYYY-MM-DD
+            end_date = request.args.get('end_date')      # YYYY-MM-DD
+
+            # Validate dates
+            try:
+                if start_date:
+                    start_date = datetime.strptime(start_date, '%Y-%m-%d')
+
+                if end_date:
+                    end_date = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
+            except ValueError:
+                return {
+                    "error": "Invalid date format. Use YYYY-MM-DD"
+                }, 400
+
+            # Base query
+            query = db.session.query(
+                SoldItem.item_name,
+                SoldItem.metric,
+                Shops.shopname,
+                func.sum(SoldItem.quantity).label("quantity_sold"),
+                func.sum(SoldItem.total_price).label("total_amount_sold")
+            ).join(
+                Sales, SoldItem.sales_id == Sales.sales_id
+            ).join(
+                Shops, Sales.shop_id == Shops.shops_id
+            ).filter(
+                Sales.delivery == True
+            )
+
+            # Shop filter
+            if shop_id is not None:
+                query = query.filter(Sales.shop_id == shop_id)
+
+            # Date filters
+            if start_date:
+                query = query.filter(Sales.created_at >= start_date)
+
+            if end_date:
+                query = query.filter(Sales.created_at < end_date)
+
+            # Group results
+            result = query.group_by(
+                SoldItem.item_name,
+                SoldItem.metric,
+                Shops.shopname
+            ).all()
+
+            # Format response
+            items = [
+                {
+                    "item_name": item_name,
+                    "shop": shopname,
+                    "metric": metric,
+                    "quantity_sold": round(quantity_sold or 0, 2),
+                    "total_amount_sold": round(total_amount_sold or 0, 2)
+                }
+                for item_name, metric, shopname, quantity_sold, total_amount_sold in result
+            ]
+
+            response = {
+                "shop_id": shop_id,
+                "total_items": len(items),
+                "items": items
+            }
+
+            return make_response(jsonify(response), 200)
+
+        except SQLAlchemyError as e:
+            db.session.rollback()
+
+            return {
+                "error": "An error occurred while fetching delivery sales summary",
                 "details": str(e)
             }, 500
 
