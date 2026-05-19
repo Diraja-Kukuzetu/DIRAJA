@@ -12,6 +12,7 @@ from Server.Models.Accounting.SpoiltStockLedger import SpoiltStockLedger
 from Server.Models.SpoiltStock import SpoiltStock
 from Server.Models.ExpenseCategory import ExpenseCategory
 from Server.Models.SoldItems import SoldItem
+from Server.Models.SpoiltStock import SpoiltStock
 from app import db
 
 class IncomeStatement(Resource):
@@ -81,7 +82,6 @@ class IncomeStatement(Resource):
         total_revenue = 0
 
         for item in revenue_items:
-
             amount = round(float(item.total_amount or 0), 2)
 
             revenue_list.append({
@@ -92,7 +92,7 @@ class IncomeStatement(Resource):
             total_revenue += amount
 
         # ==========================================
-        # COGS
+        # COGS (Regular COGS only - no spoilt stock)
         # ==========================================
         cogs_accounts = ChartOfAccounts.query.filter(
             ChartOfAccounts.name.ilike('%cost of goods sold%')
@@ -118,15 +118,11 @@ class IncomeStatement(Resource):
         ).all()
 
         cogs_list = []
-        cogs_dict = {}
         total_cogs = 0
 
         for item in cogs_items:
-
             amount = round(float(item.total_amount or 0), 2)
-
             description = item.description or "COGS"
-
             cogs_list.append({
                 "description": description,
                 "amount": amount
@@ -138,55 +134,23 @@ class IncomeStatement(Resource):
             total_cogs += amount
 
         # ==========================================
-        # SPOILT STOCK - FIXED VERSION (SOLUTION 1)
+        # SPOILT STOCK - PICK ONLY DEBIT ENTRIES
         # ==========================================
-        
-        # Try to find spoilt stock expense accounts first
-        spoilt_accounts = ChartOfAccounts.query.filter(
-            ChartOfAccounts.type == "Expense",
-            (
-                ChartOfAccounts.name.ilike('%spoilt%') |
-                ChartOfAccounts.name.ilike('%adjust%') |
-                ChartOfAccounts.name.ilike('%wast%') |
-                ChartOfAccounts.name.ilike('%damage%') |
-                ChartOfAccounts.name.ilike('%write%')
-            )
-        ).all()
-        
-        spoilt_account_ids = [acc.id for acc in spoilt_accounts]
-        
-        # Query for spoilt stock ledger entries
+        # Query spoilt stock from ledger - ONLY debit entries
         spoilt_query = db.session.query(
             SpoiltStockLedger.description,
             func.sum(SpoiltStockLedger.amount).label("total_amount")
         ).filter(
-            SpoiltStockLedger.created_at.between(start_date, end_date)
+            SpoiltStockLedger.created_at.between(start_date, end_date),
+            SpoiltStockLedger.debit_account_id.isnot(None),
+            SpoiltStockLedger.credit_account_id.is_(None)
         )
-        
-        # Only filter by debit_account_id if we have valid expense accounts
-        # Otherwise, include entries where debit_account_id is NULL
-        if spoilt_account_ids:
-            spoilt_query = spoilt_query.filter(
-                db.or_(
-                    SpoiltStockLedger.debit_account_id.in_(spoilt_account_ids),
-                    SpoiltStockLedger.debit_account_id.is_(None)
-                )
-            )
-        else:
-            # If no spoilt accounts found, include entries with NULL debit_account_id
-            # (which is common in the current data)
-            spoilt_query = spoilt_query.filter(
-                db.or_(
-                    SpoiltStockLedger.debit_account_id.is_(None),
-                    SpoiltStockLedger.debit_account_id.in_(spoilt_account_ids)
-                )
-            )
-        
+
         if shop_id:
             spoilt_query = spoilt_query.filter(
                 SpoiltStockLedger.shop_id == shop_id
             )
-        
+
         spoilt_items = spoilt_query.group_by(
             SpoiltStockLedger.description
         ).all()
@@ -197,99 +161,31 @@ class IncomeStatement(Resource):
         # Process spoilt stock from ledger
         for item in spoilt_items:
             amount = round(float(item.total_amount or 0), 2)
-            
             if amount > 0:
                 spoilt_list.append({
                     "description": item.description or "Spoilt Stock",
                     "amount": amount
                 })
                 total_spoilt += amount
-        
-        # If no spoilt stock found from ledger, try direct from SpoiltStock table
-        if total_spoilt == 0:
-            # Query the SpoiltStock table directly with join to ledger
-            direct_spoilt_query = db.session.query(
-                SpoiltStock,
-                func.sum(SpoiltStockLedger.amount).label("total_amount")
-            ).join(
-                SpoiltStockLedger,
-                SpoiltStockLedger.spoilt_id == SpoiltStock.id
-            ).filter(
-                SpoiltStock.created_at.between(start_date, end_date),
-                SpoiltStock.status == 'approved'  # Only count approved spoilt
-            )
-            
-            if shop_id:
-                direct_spoilt_query = direct_spoilt_query.filter(
-                    SpoiltStock.shop_id == shop_id
-                )
-            
-            direct_spoilt_items = direct_spoilt_query.group_by(
-                SpoiltStock.id
-            ).all()
-            
-            for spoilt, amount in direct_spoilt_items:
-                amount = round(float(amount or 0), 2)
-                if amount > 0:
-                    spoilt_list.append({
-                        "description": f"Spoilt Stock - {spoilt.item}",
-                        "amount": amount
-                    })
-                    total_spoilt += amount
-        
-        # If still no spoilt stock, try getting from SpoiltStock without ledger join
-        if total_spoilt == 0:
-            # This fallback calculates estimated cost based on quantity
-            # You may need to adjust this based on your data structure
-            direct_spoilt_only = SpoiltStock.query.filter(
-                SpoiltStock.created_at.between(start_date, end_date),
-                SpoiltStock.status == 'approved'
-            )
-            
-            if shop_id:
-                direct_spoilt_only = direct_spoilt_only.filter(
-                    SpoiltStock.shop_id == shop_id
-                )
-            
-            for spoilt in direct_spoilt_only.all():
-                # If you have a cost field in SpoiltStock, use it
-                # Otherwise, you might need to calculate from inventory
-                if hasattr(spoilt, 'cost') and spoilt.cost:
-                    amount = round(float(spoilt.cost), 2)
-                elif hasattr(spoilt, 'quantity') and hasattr(spoilt, 'unit_cost'):
-                    amount = round(float(spoilt.quantity * spoilt.unit_cost), 2)
-                else:
-                    # Skip if we can't determine the cost
-                    continue
-                
-                if amount > 0:
-                    spoilt_list.append({
-                        "description": f"Spoilt Stock - {spoilt.item}",
-                        "amount": amount
-                    })
-                    total_spoilt += amount
 
         # ==========================================
-        # GROSS PROFIT
+        # GROSS PROFIT (spoilt stock NOT included in COGS)
         # ==========================================
         gross_profit = total_revenue - total_cogs
 
         # ==========================================
-        # EXPENSES
+        # EXPENSES (including spoilt stock)
         # ==========================================
         expense_query = db.session.query(
             ExpenseCategory.category_name,
-            func.sum(ExpensesLedger.amount).label(
-                "total_amount"
-            )
+            func.sum(ExpensesLedger.amount).label("total_amount")
         ).join(
             ExpenseCategory,
             ExpenseCategory.id == ExpensesLedger.category_id
         ).filter(
-            ExpensesLedger.created_at.between(
-                start_date,
-                end_date
-            )
+            ExpensesLedger.created_at.between(start_date, end_date),
+            ExpensesLedger.debit_account_id.isnot(None),
+            ExpensesLedger.credit_account_id.is_(None)
         )
 
         if shop_id:
@@ -318,7 +214,7 @@ class IncomeStatement(Resource):
 
             total_expenses += amount
 
-        # Add spoilt stock as expense
+        # Add spoilt stock as a separate expense category
         if total_spoilt > 0:
             expense_list.append({
                 "category": "Spoilt Stock",
@@ -326,13 +222,15 @@ class IncomeStatement(Resource):
             })
             total_expenses += total_spoilt
 
+        expense_list.sort(key=lambda x: x["amount"], reverse=True)
+
         # ==========================================
         # NET INCOME
         # ==========================================
         net_income = gross_profit - total_expenses
 
         # ==========================================
-        # RESPONSE
+        # RESPONSE - Maintaining backward compatibility
         # ==========================================
         response = {
             "success": True,
@@ -357,12 +255,9 @@ class IncomeStatement(Resource):
                     "items": spoilt_list,
                     "total": total_spoilt
                 },
-
-                "total": total_cogs + total_spoilt  # Add spoilt stock to total COGS
+                "total": total_cogs  # Total COGS without spoilt stock
             },
-
-            "gross_profit": gross_profit - total_spoilt,  # Subtract spoilt stock from gross profit
-
+            "gross_profit": gross_profit,
             "expenses": {
                 "items": expense_list,
                 "total": total_expenses

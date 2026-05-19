@@ -698,6 +698,27 @@ class CompleteTask(Resource):
         
 
 class TaskResource(Resource):
+    
+    def _add_system_comment(self, task_id, change_description, current_user_id):
+        """Helper method to add a system comment for task changes without emojis"""
+        try:
+            system_comment = TaskComment(
+                task_id=task_id,
+                user_id=current_user_id,
+                comment=f"[SYSTEM UPDATE]: {change_description}",
+                created_at=datetime.datetime.utcnow()
+            )
+            db.session.add(system_comment)
+        except Exception as e:
+            print(f"Error adding system comment: {e}")
+    
+    def _get_user_name(self, user_id):
+        """Helper method to get username by ID"""
+        if not user_id:
+            return None
+        user = Users.query.get(user_id)
+        return user.username if user else f"User {user_id}"
+    
     @jwt_required()
     def get(self, task_id):
         task = TaskManager.query.options(
@@ -721,53 +742,130 @@ class TaskResource(Resource):
 
         current_user_id = get_jwt_identity()
         data = request.get_json()
+        
+        # Store old values for change tracking
+        changes = []
+        old_assignee_id = task.assignee_id
+        old_due_date = task.due_date
+        old_status = task.status
+        old_priority = task.priority
+        old_category = task.category
+        old_task_description = task.task
 
         try:
-            # Update task fields
-            if data.get("task"):
+            # Update task description with tracking
+            if data.get("task") and data["task"] != old_task_description:
+                new_task = data["task"]
+                changes.append(f"Task description changed from '{old_task_description}' to '{new_task}'")
                 task.task = data["task"]
-            if data.get("assignee_id"):
+            
+            # Update assignee with tracking
+            if data.get("assignee_id") and data["assignee_id"] != old_assignee_id:
+                old_assignee_name = self._get_user_name(old_assignee_id) or "Unassigned"
+                new_assignee_name = self._get_user_name(data["assignee_id"]) or "Unassigned"
                 task.assignee_id = data["assignee_id"]
-            if data.get("status"):
-                old_status = task.status
-                task.status = data["status"]
+                changes.append(f"Task reassigned from {old_assignee_name} to {new_assignee_name}")
+            
+            # Update status with tracking
+            if data.get("status") and data["status"] != old_status:
+                new_status = data["status"]
+                changes.append(f"Status changed from {old_status} to {new_status}")
+                task.status = new_status
+                
                 # Auto-set closing date when status changes to "Complete"
-                if data["status"] == "Complete" and not task.closing_date:
+                if new_status == "Complete" and not task.closing_date:
                     task.complete_task()
-            if data.get("priority"):
+                    changes.append("Task marked as complete")
+            
+            # Update priority with tracking
+            if data.get("priority") and data["priority"] != old_priority:
+                new_priority = data["priority"]
+                changes.append(f"Priority changed from {old_priority} to {new_priority}")
                 task.priority = data["priority"]
-            if data.get("category"):
+            
+            # Update category with tracking
+            if data.get("category") and data["category"] != old_category:
+                new_category = data["category"]
+                changes.append(f"Category changed from {old_category} to {new_category}")
                 task.category = data["category"]
+            
+            # Update due date with tracking
             if data.get("due_date"):
                 due_date_str = data["due_date"]
                 try:
-                    task.due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d %H:%M:%S")
+                    new_due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d %H:%M:%S")
                 except ValueError:
                     try:
-                        task.due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d")
+                        new_due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d")
                     except ValueError:
                         return {"error": "Invalid date format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS"}, 400
+                
+                if old_due_date != new_due_date:
+                    old_value = old_due_date.strftime("%Y-%m-%d %H:%M:%S") if old_due_date else "Not set"
+                    new_value = new_due_date.strftime("%Y-%m-%d %H:%M:%S")
+                    changes.append(f"Due date changed from {old_value} to {new_value}")
+                    task.due_date = new_due_date
             
-            # Update recurring task settings
-            if data.get("is_recurring") is not None:
+            # Update recurring task settings with tracking
+            if data.get("is_recurring") is not None and data["is_recurring"] != task.is_recurring:
+                old_value = "Yes" if task.is_recurring else "No"
+                new_value = "Yes" if data["is_recurring"] else "No"
+                changes.append(f"Recurring task setting changed from {old_value} to {new_value}")
                 task.is_recurring = data["is_recurring"]
-            if data.get("recurrence_pattern"):
+            
+            if data.get("recurrence_pattern") and data["recurrence_pattern"] != task.recurrence_pattern:
+                old_value = task.recurrence_pattern or "Not set"
+                new_value = data["recurrence_pattern"]
+                changes.append(f"Recurrence pattern changed from {old_value} to {new_value}")
                 task.recurrence_pattern = data["recurrence_pattern"]
-            if data.get("recurrence_interval"):
+            
+            if data.get("recurrence_interval") and data["recurrence_interval"] != task.recurrence_interval:
+                old_value = task.recurrence_interval or 1
+                new_value = data["recurrence_interval"]
+                changes.append(f"Recurrence interval changed from {old_value} to {new_value}")
                 task.recurrence_interval = data["recurrence_interval"]
+            
             if data.get("recurrence_end_date"):
                 try:
-                    task.recurrence_end_date = datetime.datetime.strptime(data["recurrence_end_date"], "%Y-%m-%d")
+                    new_end_date = datetime.datetime.strptime(data["recurrence_end_date"], "%Y-%m-%d")
+                    if task.recurrence_end_date != new_end_date:
+                        old_value = task.recurrence_end_date.strftime("%Y-%m-%d") if task.recurrence_end_date else "Never"
+                        new_value = new_end_date.strftime("%Y-%m-%d")
+                        changes.append(f"Recurrence end date changed from {old_value} to {new_value}")
+                        task.recurrence_end_date = new_end_date
                 except ValueError:
                     return {"error": "Invalid recurrence end date format. Use YYYY-MM-DD"}, 400
-            if data.get("max_recurrences"):
+            
+            if data.get("max_recurrences") and data["max_recurrences"] != task.max_recurrences:
+                old_value = task.max_recurrences or "Unlimited"
+                new_value = data["max_recurrences"]
+                changes.append(f"Max recurrences changed from {old_value} to {new_value}")
                 task.max_recurrences = data["max_recurrences"]
+
+            # If there are changes, add a system comment
+            if changes:
+                if len(changes) == 1:
+                    comment_text = changes[0]
+                else:
+                    comment_text = "Multiple changes made: " + "; ".join(changes)
+                
+                self._add_system_comment(task_id, comment_text, current_user_id)
 
             db.session.commit()
 
+            # Fetch updated task with all relationships
+            updated_task = TaskManager.query.options(
+                joinedload(TaskManager.assigner),
+                joinedload(TaskManager.assignee),
+                joinedload(TaskManager.comments).joinedload(TaskComment.user),
+                joinedload(TaskManager.evaluation),
+                joinedload(TaskManager.child_tasks)
+            ).get(task_id)
+
             return {
                 "message": "Task updated successfully",
-                "task": task.to_dict(include_recurrence_info=True)
+                "changes_made": changes,
+                "task": updated_task.to_dict(include_comments=True, include_evaluation=True, include_recurrence_info=True)
             }, 200
 
         except Exception as e:
@@ -781,6 +879,11 @@ class TaskResource(Resource):
             return jsonify({"error": "Task not found"}), 404
 
         try:
+            # Add system comment before deletion
+            current_user_id = get_jwt_identity()
+            self._add_system_comment(task_id, "Task was deleted", current_user_id)
+            db.session.commit()
+            
             # If this is a recurring task, also delete child tasks
             if task.is_recurring and task.child_tasks:
                 for child in task.child_tasks:
@@ -788,7 +891,7 @@ class TaskResource(Resource):
             
             db.session.delete(task)
             db.session.commit()
-            return jsonify({"message": "Task and its recurring instances deleted successfully"})
+            return jsonify({"message": "Task and its recurring instances deleted successfully"}), 200
         except Exception as e:
             db.session.rollback()
             return jsonify({"error": str(e)}), 400

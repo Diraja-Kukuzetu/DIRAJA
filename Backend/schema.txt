@@ -410,6 +410,46 @@ Columns:
 - Accounting (BOOLEAN)
 - Settings (BOOLEAN)
 
+Table: task_manager
+Columns:
+- task_id (INTEGER)
+- user_id (INTEGER)
+- assignee_id (INTEGER)
+- task (VARCHAR(255))
+- assigned_date (DATETIME)
+- due_date (DATETIME)
+- status (VARCHAR(50))
+- priority (VARCHAR(50))
+- category (VARCHAR(50))
+- closing_date (DATETIME)
+- is_recurring (BOOLEAN)
+- recurrence_pattern (VARCHAR(50))
+- recurrence_interval (INTEGER)
+- recurrence_end_date (DATETIME)
+- last_recurrence_date (DATETIME)
+- parent_task_id (INTEGER)
+- recurrence_count (INTEGER)
+- max_recurrences (INTEGER)
+
+Table: task_comments
+Columns:
+- comment_id (INTEGER)
+- task_id (INTEGER)
+- user_id (INTEGER)
+- comment (TEXT)
+- created_at (DATETIME)
+- updated_at (DATETIME)
+- parent_comment_id (INTEGER)
+
+Table: task_evaluations
+Columns:
+- evaluation_id (INTEGER)
+- task_id (INTEGER)
+- evaluator_id (INTEGER)
+- rating (INTEGER)
+- comment (TEXT)
+- created_at (DATETIME)
+
 
 
 Relationships:
@@ -458,6 +498,14 @@ Relationships:
 - stock_reports.shop_id = shops.shops_id
 - stock_reports.user_id = users.users_id
 - permission.user_id = users.users_id
+- task_manager.user_id = users.users_id
+- task_manager.assignee_id = users.users_id
+- task_manager.parent_task_id = task_manager.task_id
+- task_comments.task_id = task_manager.task_id
+- task_comments.user_id = users.users_id
+- task_comments.parent_comment_id = task_comments.comment_id
+- task_evaluations.task_id = task_manager.task_id
+- task_evaluations.evaluator_id = users.users_id
 
 
 

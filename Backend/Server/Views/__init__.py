@@ -198,6 +198,10 @@ from Server.Views.ClerkReportTime import (
 from Server.Views.IncomeStatement import (IncomeStatement)
 from Server.Views.Balancesheet import (BalanceSheet)
 from Server.Views.DirajaAI import (RefreshSchema,AskAI)
+from Server.Views.Sasapyaviews import (
+    SasaPayBalanceResource,SasaPayChannelCodesResource,SasaPayTransactionStatementResource
+)
+from Server.Views.Services.sasapay_callback import SasaPayCallbackResource
 
 api_endpoint = Blueprint('auth',__name__,url_prefix='/api/diraja')
 api = Api(api_endpoint)
@@ -609,3 +613,12 @@ api.add_resource(NotificationReadAllResource, '/notifications/read-all')
 api.add_resource(NotificationUnreadCountResource, '/notifications/unread-count')
 api.add_resource(NotificationBulkResource, '/notifications/bulk')
 api.add_resource(NotificationTypesResource, '/notifications/types')
+
+#sasapay
+# api.add_resource(SasaPayBalanceResource,"/sasapay/balance")
+api.add_resource(SasaPayBalanceResource,"/sasapay/account")
+api.add_resource(SasaPayChannelCodesResource, "/channel-codes")
+api.add_resource(SasaPayTransactionStatementResource, "/sasapay/transactions")
+
+# Register the callback endpoint
+api.add_resource(SasaPayCallbackResource, '/api/sasapay/callback')
