@@ -1321,7 +1321,7 @@ class AddInventoryV2(Resource):
         current_user_id = get_jwt_identity()
 
         required_fields = [
-            'itemname', 'quantity', 'metric', 'unitCost', 'amountPaid', 'unitPrice',
+            'itemname', 'quantity', 'metric', 'unitCost', 'amountPaid', 'unitPrice', 'vat',
             'Suppliername', 'phone_number', 'Supplier_location', 'created_at', 'payment_status'
         ]
         if not all(field in data for field in required_fields):
@@ -1334,6 +1334,7 @@ class AddInventoryV2(Resource):
         unitCost = float(data.get('unitCost'))
         amountPaid = float(data.get('amountPaid'))
         unitPrice = float(data.get('unitPrice'))
+        vat = float(data.get('vat'))
         Suppliername = data.get('Suppliername')
         Supplier_location = data.get('Supplier_location')
         source = data.get('source')
@@ -1429,6 +1430,7 @@ class AddInventoryV2(Resource):
                 totalCost=totalCost,
                 amountPaid=amountPaid,
                 unitPrice=unitPrice,
+                vat=vat,
                 BatchNumber=batch_code,
                 user_id=current_user_id,
                 Suppliername=Suppliername,

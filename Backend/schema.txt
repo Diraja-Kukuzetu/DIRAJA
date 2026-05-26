@@ -369,6 +369,7 @@ Columns:
 - unitCost (FLOAT)
 - totalCost (FLOAT)
 - amountPaid (FLOAT)
+- vat (FLOAT)
 - unitPrice (FLOAT)
 - BatchNumber (VARCHAR(150))
 - user_id (INTEGER)
