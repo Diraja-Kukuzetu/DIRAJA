@@ -10,7 +10,7 @@ from app import db
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from flask import jsonify, request, make_response
 from datetime import datetime
-from sqlalchemy import and_
+from sqlalchemy import and_, or_
 from math import ceil
 from functools import wraps
 from sqlalchemy.exc import SQLAlchemyError
@@ -223,16 +223,30 @@ class AllExpenses(Resource):
     def get(self):
         # Query parameters
         page = request.args.get('page', 1, type=int)
-        per_page = 50
+        per_page = int(request.args.get('per_page', request.args.get('limit', 50)))
+        search_query = request.args.get('searchQuery', '')
         category = request.args.get('category', type=str)
         shopname = request.args.get('shopname', type=str)
         creditor_id = request.args.get('creditor_id', type=int)
         payment_status = request.args.get('payment_status', type=str)
+        paymentRef = request.args.get('paymentRef', type=str)
         start_date = request.args.get('start_date', type=str)
         end_date = request.args.get('end_date', type=str)
 
         # Base query
         query = Expenses.query
+        
+         # Apply search filter
+        if search_query:
+            query = Expenses.query.filter(
+                 or_(
+                    Expenses.category.ilike(f"%{search_query}%"),
+                    Expenses.item.ilike(f"%{search_query}%"),
+                    Expenses.paidTo.ilike(f"%{search_query}%"),
+                    Expenses.source.ilike(f"%{search_query}%"),
+                    Expenses.paymentRef.ilike(f"%{search_query}%")  # Added to search
+                )
+            )
 
         # Apply filters if provided
         filters = []
@@ -244,6 +258,9 @@ class AllExpenses(Resource):
 
         if payment_status:
             filters.append(Expenses.payment_status == payment_status)
+        
+        if paymentRef:
+            filters.append(Expenses.paymentRef == paymentRef)
 
         if shopname:
             # Join with Shops table to filter by shopname

@@ -9,7 +9,6 @@ from Server.Models.Accounting.SalesLedger import SalesLedger
 from Server.Models.Accounting.ExpensesLedger import ExpensesLedger
 from Server.Models.Accounting.CostOfSalesLedger import CostOfSaleLedger
 from Server.Models.Accounting.SpoiltStockLedger import SpoiltStockLedger
-from Server.Models.SpoiltStock import SpoiltStock
 from Server.Models.ExpenseCategory import ExpenseCategory
 from Server.Models.SoldItems import SoldItem
 from Server.Models.SpoiltStock import SpoiltStock
@@ -83,12 +82,10 @@ class IncomeStatement(Resource):
 
         for item in revenue_items:
             amount = round(float(item.total_amount or 0), 2)
-
             revenue_list.append({
                 "description": item.description or "Sales",
                 "amount": amount
             })
-
             total_revenue += amount
 
         # ==========================================
@@ -127,10 +124,6 @@ class IncomeStatement(Resource):
                 "description": description,
                 "amount": amount
             })
-
-            product_name = description.replace("COGS - ", "")
-            cogs_dict[product_name] = amount
-
             total_cogs += amount
 
         # ==========================================
@@ -154,11 +147,10 @@ class IncomeStatement(Resource):
         spoilt_items = spoilt_query.group_by(
             SpoiltStockLedger.description
         ).all()
-        
+
         spoilt_list = []
         total_spoilt = 0
-        
-        # Process spoilt stock from ledger
+
         for item in spoilt_items:
             amount = round(float(item.total_amount or 0), 2)
             if amount > 0:
@@ -201,17 +193,11 @@ class IncomeStatement(Resource):
         total_expenses = 0
 
         for item in expense_items:
-
-            amount = round(
-                float(item.total_amount or 0),
-                2
-            )
-
+            amount = round(float(item.total_amount or 0), 2)
             expense_list.append({
                 "category": item.category_name,
                 "amount": amount
             })
-
             total_expenses += amount
 
         # Add spoilt stock as a separate expense category
@@ -234,23 +220,19 @@ class IncomeStatement(Resource):
         # ==========================================
         response = {
             "success": True,
-
             "period": {
                 "start_date": start_date.strftime("%Y-%m-%d"),
                 "end_date": end_date.strftime("%Y-%m-%d")
             },
-
             "revenue": {
                 "items": revenue_list,
                 "total": total_revenue
             },
-
             "cost_of_goods_sold": {
                 "regular_cogs": {
                     "items": cogs_list,
                     "total": total_cogs
                 },
-
                 "spoilt_stock": {
                     "items": spoilt_list,
                     "total": total_spoilt
@@ -262,7 +244,6 @@ class IncomeStatement(Resource):
                 "items": expense_list,
                 "total": total_expenses
             },
-
             "net_income": net_income
         }
 

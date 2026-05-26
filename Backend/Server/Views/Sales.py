@@ -62,507 +62,6 @@ logger = logging.getLogger(__name__)
 #         return jsonify({"message": "Success"})
 
 
-class AddSale(Resource):
-    @jwt_required()
-    def post(self):
-        data = request.get_json()
-        current_user_id = get_jwt_identity()
-        new_sale = None
-
-        # ===== VALIDATION =====
-        required_fields = [
-            'shop_id', 'customer_name', 'customer_number',
-            'items', 'payment_methods', 'status', 'delivery'
-        ]
-        if not all(field in data for field in required_fields):
-            return {
-                'message': 'Missing required fields',
-                'missing': [f for f in required_fields if f not in data]
-            }, 400
-
-        try:
-            shop_id = int(data['shop_id'])
-            payment_methods = data['payment_methods']
-            promocode = data.get('promocode', '')
-            status = data['status'].lower()
-            balance = float(data.get('balance', 0))
-            delivery = bool(data.get('delivery', 0))
-            creditor_id = data.get('creditor_id')
-            created_at = datetime.strptime(data['sale_date'], "%Y-%m-%d") if 'sale_date' in data else datetime.utcnow()
-
-            if not isinstance(data['items'], list) or not data['items']:
-                return {'message': 'Items must be a non-empty list'}, 400
-
-            items = []
-            total_price = 0.0
-            total_quantity = 0.0
-            purchase_account = 0.0
-
-            for item in data['items']:
-                item_fields = ['item_name', 'quantity', 'metric', 'unit_price']
-                if not all(field in item for field in item_fields):
-                    return {
-                        'message': 'Missing required item fields',
-                        'missing': [f for f in item_fields if f not in item]
-                    }, 400
-
-                metric = item['metric'].strip().lower()
-                if metric not in ['item', 'kg', 'ltrs']:
-                    return {
-                        'message': f"Invalid metric '{metric}' for item '{item['item_name']}'. Must be one of: item, kg, ltrs",
-                        'invalid_item': item
-                    }, 400
-
-                items.append({
-                    'item_name': item['item_name'],
-                    'quantity': float(item['quantity']),
-                    'metric': metric,
-                    'unit_price': float(item['unit_price']),
-                    'total_price': float(item['total_price']) 
-                })
-                total_quantity += float(item['quantity'])
-
-        except (ValueError, KeyError, TypeError) as e:
-            return {'message': f'Invalid data format: {str(e)}'}, 400
-
-        # ===== CREDITOR VALIDATION =====
-        creditor = None
-        if creditor_id:
-            try:
-                creditor_id = int(creditor_id)
-                creditor = Creditors.query.filter_by(id=creditor_id, shop_id=shop_id).first()
-                if not creditor:
-                    return {'message': f'Creditor with ID {creditor_id} not found for this shop'}, 404
-                
-                if status not in ["unpaid", "partially_paid"]:
-                    return {'message': 'Creditor sales must have status "unpaid" or "partially paid"'}, 400
-                    
-            except (ValueError, TypeError):
-                return {'message': 'Invalid creditor ID format'}, 400
-
-        # ===== PAYMENT METHOD VALIDATION =====
-        if status != "unpaid":
-            if not isinstance(payment_methods, list):
-                return {'message': 'Payment methods must be a list'}, 400
-
-            for pm in payment_methods:
-                if 'method' not in pm or 'amount' not in pm:
-                    return {'message': 'Each payment method must have "method" and "amount"'}, 400
-                try:
-                    float(pm['amount'])
-                except ValueError:
-                    return {'message': f'Invalid amount for payment method {pm["method"]}'}, 400
-
-        # ===== BANK MAPPING =====
-        shop_to_bank_mapping = {
-            1: 12, 2: 3, 3: 6, 4: 2, 5: 5, 6: 17,
-            7: 15, 8: 9, 10: 18, 11: 8, 12: 7,
-            14: 14, 16: 13, 19: 22
-        }
-        bank_id = shop_to_bank_mapping.get(shop_id, 11)
-
-        # ===== STOCK PROCESSING =====
-        stock_processing_errors = []
-        batch_deductions = []
-        stock_ids_used = []
-        sold_items = []
-        livestock_deductions = []
-
-        try:
-            for item in items:
-                batches = ShopStockV2.query.filter(
-                    ShopStockV2.itemname == item['item_name'],
-                    ShopStockV2.shop_id == shop_id,
-                    ShopStockV2.quantity > 0
-                ).order_by(ShopStockV2.BatchNumber).all()
-
-                remaining_qty = item['quantity']
-                item_batch_deductions = []
-                item_stock_ids = []
-                item_purchase_account = 0.0
-                item_livestock_deduction = 0.0
-
-                for batch in batches:
-                    if remaining_qty <= 0:
-                        break
-
-                    deduct_qty = min(batch.quantity, remaining_qty)
-                    batch.quantity -= deduct_qty
-                    remaining_qty -= deduct_qty
-                    item_batch_deductions.append((batch.BatchNumber, deduct_qty))
-                    item_stock_ids.append(str(batch.stockv2_id))
-
-                    inventory = InventoryV2.query.filter_by(inventoryV2_id=batch.inventoryv2_id).first()
-                    if inventory:
-                        item_purchase_account += inventory.unitCost * deduct_qty
-
-                    db.session.add(batch)
-
-                if remaining_qty > 0:
-                    livestock_entry = LiveStock.query.filter(
-                        LiveStock.shop_id == shop_id,
-                        func.lower(LiveStock.item_name) == item['item_name'].lower()
-                    ).first()
-
-                    if livestock_entry:
-                        if livestock_entry.current_quantity > 0:
-                            deduct_qty = min(livestock_entry.current_quantity, remaining_qty)
-                            livestock_entry.current_quantity -= deduct_qty
-                            livestock_entry.clock_out_quantity -= deduct_qty
-                            remaining_qty -= deduct_qty
-                            item_livestock_deduction = deduct_qty
-                            db.session.add(livestock_entry)
-                            livestock_deductions.append({
-                                'item_name': item['item_name'],
-                                'quantity': deduct_qty,
-                                'original_current': livestock_entry.current_quantity + deduct_qty,
-                                'new_current': livestock_entry.current_quantity
-                            })
-
-                if remaining_qty > 0:
-                    stock_processing_errors.append(
-                        f"Insufficient stock for {item['item_name']}. Needed {item['quantity']}, available {item['quantity'] - remaining_qty}"
-                    )
-                    continue
-
-                if item_batch_deductions:
-                    batch_deductions.append({
-                        'item_name': item['item_name'],
-                        'deductions': item_batch_deductions
-                    })
-                    stock_ids_used.extend(item_stock_ids)
-
-                purchase_account += item_purchase_account
-
-                sold_items.append({
-                    'item_name': item['item_name'],
-                    'quantity': item['quantity'],
-                    'metric': item['metric'],
-                    'unit_price': item['unit_price'],
-                    'total_price': item['total_price'],
-                    'BatchNumber': ", ".join(f"{bn} ({q})" for bn, q in item_batch_deductions) if item_batch_deductions else "From Livestock",
-                    'stockv2_id': item_stock_ids[0] if item_stock_ids else None,
-                    'Cost_of_sale': item['total_price'],
-                    'Purchase_account': item_purchase_account,
-                    'LivestockDeduction': item_livestock_deduction
-                })
-
-            if stock_processing_errors:
-                db.session.rollback()
-                return {'message': 'Stock processing failed', 'errors': stock_processing_errors}, 400
-
-        except Exception as e:
-            db.session.rollback()
-            return {'message': 'Stock processing failed', 'error': str(e)}, 500
-
-        # ===== PAYMENT PROCESSING =====
-        total_amount_paid = sum(float(pm['amount']) for pm in payment_methods) if status != "unpaid" else 0
-        sasapay_deposits = []
-
-        # Calculate total sale amount
-        total_sale_amount = sum(float(item['total_price']) for item in sold_items)
-        
-        # Check if balance is within 3% and no discount provided
-        auto_discount_applied = False
-        if balance > 0 and status == "paid":
-            balance_percentage = (balance / total_sale_amount) * 100
-            if balance_percentage <= 3.0:
-                has_discount = any(pm.get('discount', 0) > 0 for pm in payment_methods)
-                if not has_discount and len(payment_methods) == 1:
-                    payment_methods[0]['discount'] = balance
-                    auto_discount_applied = True
-                    balance = 0
-
-        # ===== TRACK SASAPAY PAYMENTS TO TRIGGER STK =====
-        sasapay_payments_to_push = []
-        
-        try:
-            # Create new sale without total_amount parameter
-            new_sale = Sales(
-                user_id=current_user_id,
-                shop_id=shop_id,
-                customer_name=data['customer_name'],
-                customer_number=data['customer_number'],
-                status=status,
-                delivery=delivery,
-                created_at=created_at,
-                balance=balance,
-                promocode=promocode,
-            )
-            db.session.add(new_sale)
-            db.session.flush()
-
-            # ===== CREDITOR BALANCE UPDATE =====
-            if creditor:
-                creditor.total_credit = (creditor.total_credit or 0) + total_sale_amount
-                creditor.credit_amount = (creditor.credit_amount or 0) + total_sale_amount
-                db.session.add(creditor)
-
-            for item in sold_items:
-                total_price = float(item['total_price'])
-                fractional_part = round(total_price - int(total_price), 2)
-
-                db.session.add(SoldItem(
-                    sales_id=new_sale.sales_id,
-                    item_name=item['item_name'],
-                    quantity=item['quantity'],
-                    metric=item['metric'],
-                    unit_price=item['unit_price'],
-                    total_price=total_price,
-                    BatchNumber=item['BatchNumber'],
-                    stockv2_id=item['stockv2_id'],
-                    Cost_of_sale=item['Cost_of_sale'],
-                    Purchase_account=item['Purchase_account'],
-                    LivestockDeduction=item['LivestockDeduction'],
-                    round_off=fractional_part
-                ))
-
-            for payment in payment_methods:
-                method = payment['method'].strip().lower()
-                amount = float(payment['amount'])
-                transaction_code = payment.get('transaction_code', 'N/A').strip().upper()
-                
-                discount_amount = 0
-                if 'discount' in payment:
-                    try:
-                        discount_amount = float(payment['discount'])
-                    except (ValueError, TypeError):
-                        discount_amount = 0
-
-                if method == 'sasapay' or method == 'sasapay deliveries':
-                    # Store SasaPay payment info for STK push
-                    sasapay_payments_to_push.append({
-                        'amount': amount,
-                        'phone_number': data['customer_number'],
-                        'customer_name': data['customer_name'],
-                        'method': method
-                    })
-                    
-                    # Don't add to bank account yet - will be added on callback
-                    # Record the payment method with pending status
-                    sales_payment = SalesPaymentMethods(
-                        sale_id=new_sale.sales_id,
-                        payment_method=method,
-                        amount_paid=0,  # Not paid yet, will be updated on callback
-                        transaction_code=f"PENDING_{new_sale.sales_id}_{int(datetime.utcnow().timestamp())}",
-                        discount=discount_amount,
-                        created_at=created_at
-                    )
-                    # Add status field if your model has it
-                    if hasattr(sales_payment, 'status'):
-                        sales_payment.status = 'pending'
-                    db.session.add(sales_payment)
-                    
-                else:
-                    # Handle other payment methods (cash, mpesa, bank, etc.)
-                    if method == 'cash' or method == 'mpesa' or method == 'bank' or method == 'not payed':
-                        if method != 'not payed':  # Don't add to bank for 'not payed'
-                            bank_id = shop_to_bank_mapping.get(shop_id)
-                            if bank_id:
-                                bank_account = BankAccount.query.get(bank_id)
-                                if bank_account:
-                                    previous_balance = bank_account.Account_Balance
-                                    bank_account.Account_Balance += amount
-                                    db.session.add(bank_account)
-
-                                    db.session.add(TranscationType(
-                                        Transaction_type="Debit",
-                                        Transaction_amount=amount,
-                                        From_account=f"{method.upper()} Sale #{new_sale.sales_id}",
-                                        To_account=bank_account.Account_name,
-                                        created_at=created_at
-                                    ))
-
-                    sales_payment = SalesPaymentMethods(
-                        sale_id=new_sale.sales_id,
-                        payment_method=method,
-                        amount_paid=amount,
-                        transaction_code=transaction_code if transaction_code != 'N/A' else 'none',
-                        discount=discount_amount,
-                        created_at=created_at
-                    )
-                    if hasattr(sales_payment, 'status'):
-                        sales_payment.status = 'completed'
-                    db.session.add(sales_payment)
-
-            # Add customer record
-            if data['customer_name'] or data['customer_number']:
-                db.session.add(Customers(
-                    customer_name=data['customer_name'],
-                    customer_number=data['customer_number'],
-                    shop_id=shop_id,
-                    sales_id=new_sale.sales_id,
-                    user_id=current_user_id,
-                    item=", ".join([item['item_name'] for item in items]),
-                    amount_paid=total_amount_paid,
-                    payment_method=", ".join(pm['method'] for pm in payment_methods),
-                    created_at=created_at
-                ))
-
-            db.session.commit()
-
-            # ===== TRIGGER STK PUSH FOR SASAPAY PAYMENTS USING THREAD POOL =====
-            stk_results = []
-            
-            # Import thread pool from app
-            from app import thread_pool
-            
-            for sasapay_payment in sasapay_payments_to_push:
-                # Use the thread pool to run the STK push
-                thread_pool.run_background_task(
-                    self._trigger_stk_push,
-                    new_sale.sales_id,
-                    sasapay_payment['amount'],
-                    sasapay_payment['phone_number'],
-                    sasapay_payment['customer_name']
-                )
-                
-                stk_results.append({
-                    'amount': sasapay_payment['amount'],
-                    'phone_number': sasapay_payment['phone_number'],
-                    'status': 'initiated',
-                    'message': 'STK push sent to customer phone'
-                })
-
-            # ===== JOURNAL SERVICE =====
-            from Server.Views.Services.journal_service import JournalService
-
-            try:
-                journal_result = JournalService.post_sale_journal(
-                    sale=new_sale,
-                    sold_items=sold_items,
-                    shop_id=shop_id,
-                    creditor_id=creditor_id,
-                    amount_paid=total_amount_paid
-                )
-                db.session.commit()
-            except Exception as e:
-                db.session.rollback()
-                return {
-                    "message": "Sale saved but journal posting failed",
-                    "error": str(e),
-                    "sale_id": new_sale.sales_id
-                }, 500
-
-            # ===== PREPARE RESPONSE =====
-            response_data = {
-                'message': 'Sale processed successfully',
-                'sale_id': new_sale.sales_id,
-                'financial': {
-                    'total': total_sale_amount,
-                    'paid': total_amount_paid,
-                    'balance': balance,
-                    'purchase_cost': purchase_account
-                },
-                'items': {
-                    'count': len(items),
-                    'details': sold_items
-                },
-                'stock_deductions': {
-                    'shop_stock': batch_deductions,
-                    'livestock': livestock_deductions
-                },
-                'payments': {
-                    'methods': [pm['method'] for pm in payment_methods],
-                    'sasapay_deposits': sasapay_deposits or "No SASAPAY deposits processed",
-                    'discounts_applied': [{'method': pm['method'], 'discount': float(pm.get('discount', 0))} for pm in payment_methods]
-                },
-                'delivery': delivery
-            }
-
-            # Add STK push info if SasaPay was used
-            if stk_results:
-                response_data['sasapay_stk'] = {
-                    'status': 'initiated',
-                    'payments': stk_results,
-                    'message': 'STK push has been sent to customer. Payment will be confirmed via callback.'
-                }
-
-            if auto_discount_applied:
-                response_data['auto_discount'] = {
-                    'applied': True,
-                    'amount': balance,
-                    'reason': f'Balance of {balance} ({balance_percentage:.2f}% of total) was within 3% threshold and converted to discount'
-                }
-
-            if creditor:
-                response_data['creditor'] = {
-                    'creditor_id': creditor.id,
-                    'creditor_name': creditor.name,
-                    'previous_total_credit': creditor.total_credit - total_sale_amount,
-                    'new_total_credit': creditor.total_credit,
-                    'previous_credit_amount': creditor.credit_amount - total_sale_amount,
-                    'new_credit_amount': creditor.credit_amount
-                }
-
-            return response_data, 201
-
-        except Exception as e:
-            db.session.rollback()
-            return {
-                'message': 'Transaction failed',
-                'error': str(e),
-                'debug_info': {
-                    'sale_id': new_sale.sales_id if new_sale else "Not created",
-                    'processed_payments': [pm['method'] for pm in payment_methods],
-                    'sasapay_attempts': sasapay_deposits,
-                    'delivery': delivery,
-                    'creditor_id': creditor_id,
-                    'auto_discount_applied': auto_discount_applied
-                }
-            }, 500
-    
-    def _trigger_stk_push(self, sale_id, amount, phone_number, customer_name):
-        """Background task to trigger STK push (runs in thread pool with app context)"""
-        from flask import current_app
-        from app import db
-        from Server.Models.Paymnetmethods import SalesPaymentMethods
-        import logging
-        
-        logger = logging.getLogger(__name__)
-        
-        try:
-            # Use the app's sasapay service
-            result = current_app.sasapay.initiate_stk_push(
-                phone_number=phone_number,
-                amount=amount,
-                sale_id=sale_id,
-                customer_name=customer_name
-            )
-            
-            if result.get('success'):
-                # Update the payment record with transaction reference
-                payment_record = SalesPaymentMethods.query.filter_by(
-                    sale_id=sale_id
-                ).filter(
-                    SalesPaymentMethods.transaction_code.like(f"PENDING_{sale_id}%")
-                ).first()
-                
-                if payment_record and result.get('transaction_reference'):
-                    payment_record.transaction_code = result['transaction_reference']
-                    db.session.commit()
-                    logger.info(f"✅ STK push initiated for sale {sale_id}: {result.get('transaction_reference')}")
-                else:
-                    logger.info(f"✅ STK push initiated for sale {sale_id} (no reference update needed)")
-            else:
-                logger.error(f"❌ STK push failed for sale {sale_id}: {result.get('error', 'Unknown error')}")
-                
-                # Optionally update payment record to indicate failure
-                payment_record = SalesPaymentMethods.query.filter_by(
-                    sale_id=sale_id
-                ).filter(
-                    SalesPaymentMethods.transaction_code.like(f"PENDING_{sale_id}%")
-                ).first()
-                
-                if payment_record and hasattr(payment_record, 'status'):
-                    payment_record.status = 'failed'
-                    db.session.commit()
-                    
-        except Exception as e:
-            logger.error(f"❌ Error in STK push background task for sale {sale_id}: {str(e)}")
-            import traceback
-            traceback.print_exc()
-
 # class AddSale(Resource):
 #     @jwt_required()
 #     def post(self):
@@ -588,7 +87,7 @@ class AddSale(Resource):
 #             status = data['status'].lower()
 #             balance = float(data.get('balance', 0))
 #             delivery = bool(data.get('delivery', 0))
-#             creditor_id = data.get('creditor_id')  # Get creditor_id if provided
+#             creditor_id = data.get('creditor_id')
 #             created_at = datetime.strptime(data['sale_date'], "%Y-%m-%d") if 'sale_date' in data else datetime.utcnow()
 
 #             if not isinstance(data['items'], list) or not data['items']:
@@ -635,7 +134,6 @@ class AddSale(Resource):
 #                 if not creditor:
 #                     return {'message': f'Creditor with ID {creditor_id} not found for this shop'}, 404
                 
-#                 # If creditor exists, ensure status is appropriate for credit sale
 #                 if status not in ["unpaid", "partially_paid"]:
 #                     return {'message': 'Creditor sales must have status "unpaid" or "partially paid"'}, 400
                     
@@ -769,15 +267,17 @@ class AddSale(Resource):
 #         if balance > 0 and status == "paid":
 #             balance_percentage = (balance / total_sale_amount) * 100
 #             if balance_percentage <= 3.0:
-#                 # Check if any payment method already has a discount
 #                 has_discount = any(pm.get('discount', 0) > 0 for pm in payment_methods)
 #                 if not has_discount and len(payment_methods) == 1:
-#                     # Auto-apply the balance as discount to the single payment method
 #                     payment_methods[0]['discount'] = balance
 #                     auto_discount_applied = True
-#                     balance = 0  # Zero out the balance since it's now a discount
+#                     balance = 0
 
+#         # ===== TRACK SASAPAY PAYMENTS TO TRIGGER STK =====
+#         sasapay_payments_to_push = []
+        
 #         try:
+#             # Create new sale without total_amount parameter
 #             new_sale = Sales(
 #                 user_id=current_user_id,
 #                 shop_id=shop_id,
@@ -788,23 +288,18 @@ class AddSale(Resource):
 #                 created_at=created_at,
 #                 balance=balance,
 #                 promocode=promocode,
-              
 #             )
 #             db.session.add(new_sale)
 #             db.session.flush()
 
 #             # ===== CREDITOR BALANCE UPDATE =====
 #             if creditor:
-#                 # Update creditor balances
 #                 creditor.total_credit = (creditor.total_credit or 0) + total_sale_amount
 #                 creditor.credit_amount = (creditor.credit_amount or 0) + total_sale_amount
-                
 #                 db.session.add(creditor)
 
 #             for item in sold_items:
 #                 total_price = float(item['total_price'])
-
-#                 # Extract decimal fraction
 #                 fractional_part = round(total_price - int(total_price), 2)
 
 #                 db.session.add(SoldItem(
@@ -827,50 +322,70 @@ class AddSale(Resource):
 #                 amount = float(payment['amount'])
 #                 transaction_code = payment.get('transaction_code', 'N/A').strip().upper()
                 
-#                 # ✅ Ensure discount defaults to 0 if not provided or invalid
-#                 discount = 0
+#                 discount_amount = 0
 #                 if 'discount' in payment:
 #                     try:
-#                         discount = float(payment['discount'])
+#                         discount_amount = float(payment['discount'])
 #                     except (ValueError, TypeError):
-#                         discount = 0  # Default to 0 if discount is invalid
+#                         discount_amount = 0
 
-#                 if method == 'sasapay':
-#                     bank_id = shop_to_bank_mapping.get(shop_id)
-#                     if bank_id:
-#                         bank_account = BankAccount.query.get(bank_id)
-#                         if bank_account:
-#                             previous_balance = bank_account.Account_Balance
-#                             bank_account.Account_Balance += amount
-#                             db.session.add(bank_account)
+#                 if method == 'sasapay' or method == 'sasapay deliveries':
+#                     # Store SasaPay payment info for STK push
+#                     sasapay_payments_to_push.append({
+#                         'amount': amount,
+#                         'phone_number': data['customer_number'],
+#                         'customer_name': data['customer_name'],
+#                         'method': method
+#                     })
+                    
+#                     # Don't add to bank account yet - will be added on callback
+#                     # Record the payment method with pending status
+#                     sales_payment = SalesPaymentMethods(
+#                         sale_id=new_sale.sales_id,
+#                         payment_method=method,
+#                         amount_paid=0,  # Not paid yet, will be updated on callback
+#                         transaction_code=f"PENDING_{new_sale.sales_id}_{int(datetime.utcnow().timestamp())}",
+#                         discount=discount_amount,
+#                         created_at=created_at
+#                     )
+#                     # Add status field if your model has it
+#                     if hasattr(sales_payment, 'status'):
+#                         sales_payment.status = 'pending'
+#                     db.session.add(sales_payment)
+                    
+#                 else:
+#                     # Handle other payment methods (cash, mpesa, bank, etc.)
+#                     if method == 'cash' or method == 'mpesa' or method == 'bank' or method == 'not payed':
+#                         if method != 'not payed':  # Don't add to bank for 'not payed'
+#                             bank_id = shop_to_bank_mapping.get(shop_id)
+#                             if bank_id:
+#                                 bank_account = BankAccount.query.get(bank_id)
+#                                 if bank_account:
+#                                     previous_balance = bank_account.Account_Balance
+#                                     bank_account.Account_Balance += amount
+#                                     db.session.add(bank_account)
 
-#                             db.session.add(TranscationType(
-#                                 Transaction_type="Debit",
-#                                 Transaction_amount=amount,
-#                                 From_account=f"SASAPAY Sale #{new_sale.sales_id}",
-#                                 To_account=bank_account.Account_name,
-#                                 created_at=created_at
-#                             ))
+#                                     db.session.add(TranscationType(
+#                                         Transaction_type="Debit",
+#                                         Transaction_amount=amount,
+#                                         From_account=f"{method.upper()} Sale #{new_sale.sales_id}",
+#                                         To_account=bank_account.Account_name,
+#                                         created_at=created_at
+#                                     ))
 
-#                             sasapay_deposits.append({
-#                                 'shop_id': shop_id,
-#                                 'bank_id': bank_id,
-#                                 'bank_account': bank_account.Account_name,
-#                                 'amount': amount,
-#                                 'previous_balance': previous_balance,
-#                                 'new_balance': bank_account.Account_Balance
-#                             })
+#                     sales_payment = SalesPaymentMethods(
+#                         sale_id=new_sale.sales_id,
+#                         payment_method=method,
+#                         amount_paid=amount,
+#                         transaction_code=transaction_code if transaction_code != 'N/A' else 'none',
+#                         discount=discount_amount,
+#                         created_at=created_at
+#                     )
+#                     if hasattr(sales_payment, 'status'):
+#                         sales_payment.status = 'completed'
+#                     db.session.add(sales_payment)
 
-#                 # ✅ Discount is now recorded in the DB (will be 0 if not provided)
-#                 db.session.add(SalesPaymentMethods(
-#                     sale_id=new_sale.sales_id,
-#                     payment_method=method,
-#                     amount_paid=amount,
-#                     transaction_code=transaction_code,
-#                     discount=discount,
-#                     created_at=created_at
-#                 ))
-
+#             # Add customer record
 #             if data['customer_name'] or data['customer_number']:
 #                 db.session.add(Customers(
 #                     customer_name=data['customer_name'],
@@ -885,6 +400,31 @@ class AddSale(Resource):
 #                 ))
 
 #             db.session.commit()
+
+#             # ===== TRIGGER STK PUSH FOR SASAPAY PAYMENTS USING THREAD POOL =====
+#             stk_results = []
+            
+#             # Import thread pool from app
+#             from app import thread_pool
+            
+#             for sasapay_payment in sasapay_payments_to_push:
+#                 # Use the thread pool to run the STK push
+#                 thread_pool.run_background_task(
+#                     self._trigger_stk_push,
+#                     new_sale.sales_id,
+#                     sasapay_payment['amount'],
+#                     sasapay_payment['phone_number'],
+#                     sasapay_payment['customer_name']
+#                 )
+                
+#                 stk_results.append({
+#                     'amount': sasapay_payment['amount'],
+#                     'phone_number': sasapay_payment['phone_number'],
+#                     'status': 'initiated',
+#                     'message': 'STK push sent to customer phone'
+#                 })
+
+#             # ===== JOURNAL SERVICE =====
 #             from Server.Views.Services.journal_service import JournalService
 
 #             try:
@@ -895,7 +435,6 @@ class AddSale(Resource):
 #                     creditor_id=creditor_id,
 #                     amount_paid=total_amount_paid
 #                 )
-
 #                 db.session.commit()
 #             except Exception as e:
 #                 db.session.rollback()
@@ -904,13 +443,13 @@ class AddSale(Resource):
 #                     "error": str(e),
 #                     "sale_id": new_sale.sales_id
 #                 }, 500
-            
 
+#             # ===== PREPARE RESPONSE =====
 #             response_data = {
 #                 'message': 'Sale processed successfully',
 #                 'sale_id': new_sale.sales_id,
 #                 'financial': {
-#                     'total': total_price,
+#                     'total': total_sale_amount,
 #                     'paid': total_amount_paid,
 #                     'balance': balance,
 #                     'purchase_cost': purchase_account
@@ -931,7 +470,14 @@ class AddSale(Resource):
 #                 'delivery': delivery
 #             }
 
-#             # Add auto-discount notification if applied
+#             # Add STK push info if SasaPay was used
+#             if stk_results:
+#                 response_data['sasapay_stk'] = {
+#                     'status': 'initiated',
+#                     'payments': stk_results,
+#                     'message': 'STK push has been sent to customer. Payment will be confirmed via callback.'
+#                 }
+
 #             if auto_discount_applied:
 #                 response_data['auto_discount'] = {
 #                     'applied': True,
@@ -939,7 +485,6 @@ class AddSale(Resource):
 #                     'reason': f'Balance of {balance} ({balance_percentage:.2f}% of total) was within 3% threshold and converted to discount'
 #                 }
 
-#             # Add creditor information to response if applicable
 #             if creditor:
 #                 response_data['creditor'] = {
 #                     'creditor_id': creditor.id,
@@ -966,6 +511,461 @@ class AddSale(Resource):
 #                     'auto_discount_applied': auto_discount_applied
 #                 }
 #             }, 500
+    
+#     def _trigger_stk_push(self, sale_id, amount, phone_number, customer_name):
+#         """Background task to trigger STK push (runs in thread pool with app context)"""
+#         from flask import current_app
+#         from app import db
+#         from Server.Models.Paymnetmethods import SalesPaymentMethods
+#         import logging
+        
+#         logger = logging.getLogger(__name__)
+        
+#         try:
+#             # Use the app's sasapay service
+#             result = current_app.sasapay.initiate_stk_push(
+#                 phone_number=phone_number,
+#                 amount=amount,
+#                 sale_id=sale_id,
+#                 customer_name=customer_name
+#             )
+            
+#             if result.get('success'):
+#                 # Update the payment record with transaction reference
+#                 payment_record = SalesPaymentMethods.query.filter_by(
+#                     sale_id=sale_id
+#                 ).filter(
+#                     SalesPaymentMethods.transaction_code.like(f"PENDING_{sale_id}%")
+#                 ).first()
+                
+#                 if payment_record and result.get('transaction_reference'):
+#                     payment_record.transaction_code = result['transaction_reference']
+#                     db.session.commit()
+#                     logger.info(f"✅ STK push initiated for sale {sale_id}: {result.get('transaction_reference')}")
+#                 else:
+#                     logger.info(f"✅ STK push initiated for sale {sale_id} (no reference update needed)")
+#             else:
+#                 logger.error(f"❌ STK push failed for sale {sale_id}: {result.get('error', 'Unknown error')}")
+                
+#                 # Optionally update payment record to indicate failure
+#                 payment_record = SalesPaymentMethods.query.filter_by(
+#                     sale_id=sale_id
+#                 ).filter(
+#                     SalesPaymentMethods.transaction_code.like(f"PENDING_{sale_id}%")
+#                 ).first()
+                
+#                 if payment_record and hasattr(payment_record, 'status'):
+#                     payment_record.status = 'failed'
+#                     db.session.commit()
+                    
+#         except Exception as e:
+#             logger.error(f"❌ Error in STK push background task for sale {sale_id}: {str(e)}")
+#             import traceback
+#             traceback.print_exc()
+
+class AddSale(Resource):
+    @jwt_required()
+    def post(self):
+        data = request.get_json()
+        current_user_id = get_jwt_identity()
+        new_sale = None
+
+        # ===== VALIDATION =====
+        required_fields = [
+            'shop_id', 'customer_name', 'customer_number',
+            'items', 'payment_methods', 'status', 'delivery'
+        ]
+        if not all(field in data for field in required_fields):
+            return {
+                'message': 'Missing required fields',
+                'missing': [f for f in required_fields if f not in data]
+            }, 400
+
+        try:
+            shop_id = int(data['shop_id'])
+            payment_methods = data['payment_methods']
+            promocode = data.get('promocode', '')
+            status = data['status'].lower()
+            balance = float(data.get('balance', 0))
+            delivery = bool(data.get('delivery', 0))
+            creditor_id = data.get('creditor_id')  # Get creditor_id if provided
+            created_at = datetime.strptime(data['sale_date'], "%Y-%m-%d") if 'sale_date' in data else datetime.utcnow()
+
+            if not isinstance(data['items'], list) or not data['items']:
+                return {'message': 'Items must be a non-empty list'}, 400
+
+            items = []
+            total_price = 0.0
+            total_quantity = 0.0
+            purchase_account = 0.0
+
+            for item in data['items']:
+                item_fields = ['item_name', 'quantity', 'metric', 'unit_price']
+                if not all(field in item for field in item_fields):
+                    return {
+                        'message': 'Missing required item fields',
+                        'missing': [f for f in item_fields if f not in item]
+                    }, 400
+
+                metric = item['metric'].strip().lower()
+                if metric not in ['item', 'kg', 'ltrs']:
+                    return {
+                        'message': f"Invalid metric '{metric}' for item '{item['item_name']}'. Must be one of: item, kg, ltrs",
+                        'invalid_item': item
+                    }, 400
+
+                items.append({
+                    'item_name': item['item_name'],
+                    'quantity': float(item['quantity']),
+                    'metric': metric,
+                    'unit_price': float(item['unit_price']),
+                    'total_price': float(item['total_price']) 
+                })
+                total_quantity += float(item['quantity'])
+
+        except (ValueError, KeyError, TypeError) as e:
+            return {'message': f'Invalid data format: {str(e)}'}, 400
+
+        # ===== CREDITOR VALIDATION =====
+        creditor = None
+        if creditor_id:
+            try:
+                creditor_id = int(creditor_id)
+                creditor = Creditors.query.filter_by(id=creditor_id, shop_id=shop_id).first()
+                if not creditor:
+                    return {'message': f'Creditor with ID {creditor_id} not found for this shop'}, 404
+                
+                # If creditor exists, ensure status is appropriate for credit sale
+                if status not in ["unpaid", "partially_paid"]:
+                    return {'message': 'Creditor sales must have status "unpaid" or "partially paid"'}, 400
+                    
+            except (ValueError, TypeError):
+                return {'message': 'Invalid creditor ID format'}, 400
+
+        # ===== PAYMENT METHOD VALIDATION =====
+        if status != "unpaid":
+            if not isinstance(payment_methods, list):
+                return {'message': 'Payment methods must be a list'}, 400
+
+            for pm in payment_methods:
+                if 'method' not in pm or 'amount' not in pm:
+                    return {'message': 'Each payment method must have "method" and "amount"'}, 400
+                try:
+                    float(pm['amount'])
+                except ValueError:
+                    return {'message': f'Invalid amount for payment method {pm["method"]}'}, 400
+
+        # ===== BANK MAPPING =====
+        shop_to_bank_mapping = {
+            1: 12, 2: 3, 3: 6, 4: 2, 5: 5, 6: 17,
+            7: 15, 8: 9, 10: 18, 11: 8, 12: 7,
+            14: 14, 16: 13, 19: 22
+        }
+        bank_id = shop_to_bank_mapping.get(shop_id, 11)
+
+        # ===== STOCK PROCESSING =====
+        stock_processing_errors = []
+        batch_deductions = []
+        stock_ids_used = []
+        sold_items = []
+        livestock_deductions = []
+
+        try:
+            for item in items:
+                batches = ShopStockV2.query.filter(
+                    ShopStockV2.itemname == item['item_name'],
+                    ShopStockV2.shop_id == shop_id,
+                    ShopStockV2.quantity > 0
+                ).order_by(ShopStockV2.BatchNumber).all()
+
+                remaining_qty = item['quantity']
+                item_batch_deductions = []
+                item_stock_ids = []
+                item_purchase_account = 0.0
+                item_livestock_deduction = 0.0
+
+                for batch in batches:
+                    if remaining_qty <= 0:
+                        break
+
+                    deduct_qty = min(batch.quantity, remaining_qty)
+                    batch.quantity -= deduct_qty
+                    remaining_qty -= deduct_qty
+                    item_batch_deductions.append((batch.BatchNumber, deduct_qty))
+                    item_stock_ids.append(str(batch.stockv2_id))
+
+                    inventory = InventoryV2.query.filter_by(inventoryV2_id=batch.inventoryv2_id).first()
+                    if inventory:
+                        item_purchase_account += inventory.unitCost * deduct_qty
+
+                    db.session.add(batch)
+
+                if remaining_qty > 0:
+                    livestock_entry = LiveStock.query.filter(
+                        LiveStock.shop_id == shop_id,
+                        func.lower(LiveStock.item_name) == item['item_name'].lower()
+                    ).first()
+
+                    if livestock_entry:
+                        if livestock_entry.current_quantity > 0:
+                            deduct_qty = min(livestock_entry.current_quantity, remaining_qty)
+                            livestock_entry.current_quantity -= deduct_qty
+                            livestock_entry.clock_out_quantity -= deduct_qty
+                            remaining_qty -= deduct_qty
+                            item_livestock_deduction = deduct_qty
+                            db.session.add(livestock_entry)
+                            livestock_deductions.append({
+                                'item_name': item['item_name'],
+                                'quantity': deduct_qty,
+                                'original_current': livestock_entry.current_quantity + deduct_qty,
+                                'new_current': livestock_entry.current_quantity
+                            })
+
+                if remaining_qty > 0:
+                    stock_processing_errors.append(
+                        f"Insufficient stock for {item['item_name']}. Needed {item['quantity']}, available {item['quantity'] - remaining_qty}"
+                    )
+                    continue
+
+                if item_batch_deductions:
+                    batch_deductions.append({
+                        'item_name': item['item_name'],
+                        'deductions': item_batch_deductions
+                    })
+                    stock_ids_used.extend(item_stock_ids)
+
+                purchase_account += item_purchase_account
+
+                sold_items.append({
+                    'item_name': item['item_name'],
+                    'quantity': item['quantity'],
+                    'metric': item['metric'],
+                    'unit_price': item['unit_price'],
+                    'total_price': item['total_price'],
+                    'BatchNumber': ", ".join(f"{bn} ({q})" for bn, q in item_batch_deductions) if item_batch_deductions else "From Livestock",
+                    'stockv2_id': item_stock_ids[0] if item_stock_ids else None,
+                    'Cost_of_sale': item['total_price'],
+                    'Purchase_account': item_purchase_account,
+                    'LivestockDeduction': item_livestock_deduction
+                })
+
+            if stock_processing_errors:
+                db.session.rollback()
+                return {'message': 'Stock processing failed', 'errors': stock_processing_errors}, 400
+
+        except Exception as e:
+            db.session.rollback()
+            return {'message': 'Stock processing failed', 'error': str(e)}, 500
+
+        # ===== PAYMENT PROCESSING =====
+        total_amount_paid = sum(float(pm['amount']) for pm in payment_methods) if status != "unpaid" else 0
+        sasapay_deposits = []
+
+        # Calculate total sale amount
+        total_sale_amount = sum(float(item['total_price']) for item in sold_items)
+        
+        # Check if balance is within 3% and no discount provided
+        auto_discount_applied = False
+        if balance > 0 and status == "paid":
+            balance_percentage = (balance / total_sale_amount) * 100
+            if balance_percentage <= 3.0:
+                # Check if any payment method already has a discount
+                has_discount = any(pm.get('discount', 0) > 0 for pm in payment_methods)
+                if not has_discount and len(payment_methods) == 1:
+                    # Auto-apply the balance as discount to the single payment method
+                    payment_methods[0]['discount'] = balance
+                    auto_discount_applied = True
+                    balance = 0  # Zero out the balance since it's now a discount
+
+        try:
+            new_sale = Sales(
+                user_id=current_user_id,
+                shop_id=shop_id,
+                customer_name=data['customer_name'],
+                customer_number=data['customer_number'],
+                status=status,
+                delivery=delivery,
+                created_at=created_at,
+                balance=balance,
+                promocode=promocode,
+              
+            )
+            db.session.add(new_sale)
+            db.session.flush()
+
+            # ===== CREDITOR BALANCE UPDATE =====
+            if creditor:
+                # Update creditor balances
+                creditor.total_credit = (creditor.total_credit or 0) + total_sale_amount
+                creditor.credit_amount = (creditor.credit_amount or 0) + total_sale_amount
+                
+                db.session.add(creditor)
+
+            for item in sold_items:
+                total_price = float(item['total_price'])
+
+                # Extract decimal fraction
+                fractional_part = round(total_price - int(total_price), 2)
+
+                db.session.add(SoldItem(
+                    sales_id=new_sale.sales_id,
+                    item_name=item['item_name'],
+                    quantity=item['quantity'],
+                    metric=item['metric'],
+                    unit_price=item['unit_price'],
+                    total_price=total_price,
+                    BatchNumber=item['BatchNumber'],
+                    stockv2_id=item['stockv2_id'],
+                    Cost_of_sale=item['Cost_of_sale'],
+                    Purchase_account=item['Purchase_account'],
+                    LivestockDeduction=item['LivestockDeduction'],
+                    round_off=fractional_part
+                ))
+
+            for payment in payment_methods:
+                method = payment['method'].strip().lower()
+                amount = float(payment['amount'])
+                transaction_code = payment.get('transaction_code', 'N/A').strip().upper()
+                
+                # ✅ Ensure discount defaults to 0 if not provided or invalid
+                discount = 0
+                if 'discount' in payment:
+                    try:
+                        discount = float(payment['discount'])
+                    except (ValueError, TypeError):
+                        discount = 0  # Default to 0 if discount is invalid
+
+                if method == 'sasapay':
+                    bank_id = shop_to_bank_mapping.get(shop_id)
+                    if bank_id:
+                        bank_account = BankAccount.query.get(bank_id)
+                        if bank_account:
+                            previous_balance = bank_account.Account_Balance
+                            bank_account.Account_Balance += amount
+                            db.session.add(bank_account)
+
+                            db.session.add(TranscationType(
+                                Transaction_type="Debit",
+                                Transaction_amount=amount,
+                                From_account=f"SASAPAY Sale #{new_sale.sales_id}",
+                                To_account=bank_account.Account_name,
+                                created_at=created_at
+                            ))
+
+                            sasapay_deposits.append({
+                                'shop_id': shop_id,
+                                'bank_id': bank_id,
+                                'bank_account': bank_account.Account_name,
+                                'amount': amount,
+                                'previous_balance': previous_balance,
+                                'new_balance': bank_account.Account_Balance
+                            })
+
+                # ✅ Discount is now recorded in the DB (will be 0 if not provided)
+                db.session.add(SalesPaymentMethods(
+                    sale_id=new_sale.sales_id,
+                    payment_method=method,
+                    amount_paid=amount,
+                    transaction_code=transaction_code,
+                    discount=discount,
+                    created_at=created_at
+                ))
+
+            if data['customer_name'] or data['customer_number']:
+                db.session.add(Customers(
+                    customer_name=data['customer_name'],
+                    customer_number=data['customer_number'],
+                    shop_id=shop_id,
+                    sales_id=new_sale.sales_id,
+                    user_id=current_user_id,
+                    item=", ".join([item['item_name'] for item in items]),
+                    amount_paid=total_amount_paid,
+                    payment_method=", ".join(pm['method'] for pm in payment_methods),
+                    created_at=created_at
+                ))
+
+            db.session.commit()
+            from Server.Views.Services.journal_service import JournalService
+
+            try:
+                journal_result = JournalService.post_sale_journal(
+                    sale=new_sale,
+                    sold_items=sold_items,
+                    shop_id=shop_id,
+                    creditor_id=creditor_id,
+                    amount_paid=total_amount_paid
+                )
+
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                return {
+                    "message": "Sale saved but journal posting failed",
+                    "error": str(e),
+                    "sale_id": new_sale.sales_id
+                }, 500
+            
+
+            response_data = {
+                'message': 'Sale processed successfully',
+                'sale_id': new_sale.sales_id,
+                'financial': {
+                    'total': total_price,
+                    'paid': total_amount_paid,
+                    'balance': balance,
+                    'purchase_cost': purchase_account
+                },
+                'items': {
+                    'count': len(items),
+                    'details': sold_items
+                },
+                'stock_deductions': {
+                    'shop_stock': batch_deductions,
+                    'livestock': livestock_deductions
+                },
+                'payments': {
+                    'methods': [pm['method'] for pm in payment_methods],
+                    'sasapay_deposits': sasapay_deposits or "No SASAPAY deposits processed",
+                    'discounts_applied': [{'method': pm['method'], 'discount': float(pm.get('discount', 0))} for pm in payment_methods]
+                },
+                'delivery': delivery
+            }
+
+            # Add auto-discount notification if applied
+            if auto_discount_applied:
+                response_data['auto_discount'] = {
+                    'applied': True,
+                    'amount': balance,
+                    'reason': f'Balance of {balance} ({balance_percentage:.2f}% of total) was within 3% threshold and converted to discount'
+                }
+
+            # Add creditor information to response if applicable
+            if creditor:
+                response_data['creditor'] = {
+                    'creditor_id': creditor.id,
+                    'creditor_name': creditor.name,
+                    'previous_total_credit': creditor.total_credit - total_sale_amount,
+                    'new_total_credit': creditor.total_credit,
+                    'previous_credit_amount': creditor.credit_amount - total_sale_amount,
+                    'new_credit_amount': creditor.credit_amount
+                }
+
+            return response_data, 201
+
+        except Exception as e:
+            db.session.rollback()
+            return {
+                'message': 'Transaction failed',
+                'error': str(e),
+                'debug_info': {
+                    'sale_id': new_sale.sales_id if new_sale else "Not created",
+                    'processed_payments': [pm['method'] for pm in payment_methods],
+                    'sasapay_attempts': sasapay_deposits,
+                    'delivery': delivery,
+                    'creditor_id': creditor_id,
+                    'auto_discount_applied': auto_discount_applied
+                }
+            }, 500
 
 def check_role(required_role):
     def wrapper(fn):
@@ -2995,11 +2995,9 @@ class ItemsSoldSummary(Resource):
     @jwt_required()
     def get(self, shop_id=None):
         try:
-            # Query params
-            start_date = request.args.get('start_date')  # format: 'YYYY-MM-DD'
-            end_date = request.args.get('end_date')      # format: 'YYYY-MM-DD'
+            start_date = request.args.get('start_date')
+            end_date = request.args.get('end_date')
 
-            # Parse and validate dates
             try:
                 if start_date:
                     start_date = datetime.strptime(start_date, '%Y-%m-%d')
@@ -3008,31 +3006,41 @@ class ItemsSoldSummary(Resource):
             except ValueError:
                 return {"error": "Invalid date format. Use YYYY-MM-DD"}, 400
 
-            # Base query
-            query = db.session.query(
-                SoldItem.item_name,
-                SoldItem.metric,
-                func.sum(SoldItem.quantity).label("total_sold")
-            ).join(Sales, SoldItem.sales_id == Sales.sales_id)
+            query = (
+                db.session.query(
+                    SoldItem.item_name,
+                    SoldItem.metric,
+                    func.sum(SoldItem.quantity).label("total_sold"),
+                    func.sum(SoldItem.total_price).label("total_amount"),
+                )
+                .join(Sales, SoldItem.sales_id == Sales.sales_id)
+            )
 
-            # Apply filters
             if shop_id is not None:
                 query = query.filter(Sales.shop_id == shop_id)
+
             if start_date:
                 query = query.filter(Sales.created_at >= start_date)
+
             if end_date:
                 query = query.filter(Sales.created_at <= end_date)
 
-            # Group and fetch
-            result = query.group_by(SoldItem.item_name, SoldItem.metric).all()
+            result = (
+                query.group_by(
+                    SoldItem.item_name,
+                    SoldItem.metric
+                )
+                .all()
+            )
 
             sold_items_summary = [
                 {
                     "item_name": item_name,
                     "metric": metric,
-                    "total_sold": round(total_sold, 2)
+                    "total_sold": round(float(total_sold or 0), 2),
+                    "amount_paid": round(float(total_amount or 0), 2),
                 }
-                for item_name, metric, total_sold in result
+                for item_name, metric, total_sold, total_amount in result
             ]
 
             response = {
