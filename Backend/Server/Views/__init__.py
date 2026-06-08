@@ -43,7 +43,9 @@ from Server.Views.Bankviews import (
 )
 
 from Server.Views.Expenses import (
-    AllExpenses, AddExpense, GetShopExpenses, ExpensesResources, TotalBalance,CreditPaymentResource,GetCreditorDetails,GetCreditors,DeleteCreditor,CreateExpenseCreditor,UpdateCreditor
+    AllExpenses, AddExpense, GetShopExpenses, ExpensesResources, TotalBalance,
+    CreditPaymentResource,GetCreditorDetails,GetCreditors,DeleteCreditor,CreateExpenseCreditor
+    ,UpdateCreditor,DistributeExpense
 )
 
 from Server.Views.Customersviews import (
@@ -199,8 +201,7 @@ from Server.Views.IncomeStatement import (IncomeStatement)
 from Server.Views.Balancesheet import (BalanceSheet)
 from Server.Views.DirajaAI import (RefreshSchema,AskAI)
 from Server.Views.Sasapyaviews import (
-    SasaPayBalanceResource,SasaPayChannelCodesResource,SasaPayTransactionStatementResource
-)
+    SasaPayBalanceResource,SasaPayChannelCodesResource,SasaPayTransactionStatementResource,TestSasaPayConnection,TestSasaPaySingleMerchant,TestNetworkConnectivity,SasaPaySingleBalanceResource)
 from Server.Views.Services.sasapay_callback import SasaPayCallbackResource
 
 api_endpoint = Blueprint('auth',__name__,url_prefix='/api/diraja')
@@ -278,6 +279,7 @@ api.add_resource(GetCreditorDetails, '/expense-creditors/<int:creditor_id>')
 api.add_resource(CreateExpenseCreditor, '/expense-creditors/create')
 api.add_resource(UpdateCreditor, '/expense-creditors/update/<int:creditor_id>')
 api.add_resource(DeleteCreditor, '/expense-creditors/delete/<int:creditor_id>')
+api.add_resource(DistributeExpense ,'/expenses/<expense_id>/distribute')
 
 # banks endpoint
 api.add_resource(AddBank, '/newbank')
@@ -618,6 +620,10 @@ api.add_resource(NotificationTypesResource, '/notifications/types')
 api.add_resource(SasaPayBalanceResource,"/sasapay/account")
 api.add_resource(SasaPayChannelCodesResource, "/channel-codes")
 api.add_resource(SasaPayTransactionStatementResource, "/sasapay/transactions")
+api.add_resource(TestNetworkConnectivity, '/test/network/connectivity')
+api.add_resource(SasaPaySingleBalanceResource, '/sasapay/balance')
 
 # Register the callback endpoint
 api.add_resource(SasaPayCallbackResource, '/api/sasapay/callback')
+api.add_resource(TestSasaPayConnection, '/test-connect')
+api.add_resource(TestSasaPaySingleMerchant, '/test-merchant')

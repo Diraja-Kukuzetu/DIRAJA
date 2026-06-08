@@ -1,5 +1,5 @@
 from flask_restful import Resource
-from Server.Models.Expenses import Expenses
+from Server.Models.Expenses import Expenses, ExpenseDistribution
 from Server.Models.Users import Users
 from Server.Models.Accounting.ExpensesLedger import ExpensesLedger
 from Server.Models.Shops import Shops
@@ -55,7 +55,10 @@ class AddExpense(Resource):
         paymentRef = data.get('paymentRef')
         comments = data.get('comments')
         created_at_str = data.get('created_at')
-      
+        
+        # Distribution data
+        distribute_to_shops = data.get('distribute_to_shops', [])  # List of {shop_id, quantity, notes}
+        is_distribution = data.get('is_distribution', False)  # Flag to indicate if this is a distribution
 
         # ===== Validations =====
         if not shop_id or not category or not source or not paymentRef:
@@ -66,7 +69,7 @@ class AddExpense(Resource):
             return {"message": "Amount paid cannot exceed total price"}, 400
 
         try:
-            created_at = datetime.strptime(created_at_str, "%Y-%m-%d")
+            created_at = datetime.strptime(created_at_str, "%Y-%m-%d") if created_at_str else datetime.now()
         except:
             return {"message": "Invalid date format. Use YYYY-MM-DD."}, 400
 
@@ -125,6 +128,8 @@ class AddExpense(Resource):
                         account_id=account.id,
                         Transaction_type_debit=amountPaid,
                         Transaction_type_credit=None,
+                        description=f"Expense payment for {item}",
+                        reference=paymentRef
                     )
                     db.session.add(transaction)
 
@@ -152,7 +157,8 @@ class AddExpense(Resource):
                 source=source,
                 paymentRef=paymentRef,
                 comments=comments,
-                payment_status=payment_status
+                payment_status=payment_status,
+                distribution_status='none'
             )
 
             db.session.add(new_expense)
@@ -170,13 +176,103 @@ class AddExpense(Resource):
                 )
                 db.session.add(credit_payment)
 
-            # ===== Step 6: Update creditor totals if creditor exists =====
+            # ===== Step 6: Handle Distribution if needed =====
+            distribution_results = []
+            if is_distribution and distribute_to_shops:
+                # Validate total distribution quantity
+                total_distributed_qty = sum(d.get('quantity', 0) for d in distribute_to_shops)
+                
+                if total_distributed_qty > quantity:
+                    db.session.rollback()
+                    return {
+                        "message": f"Total distribution quantity ({total_distributed_qty}) exceeds expense quantity ({quantity})"
+                    }, 400
+                
+                # Calculate per-unit price
+                per_unit_price = totalPrice / quantity if quantity > 0 else 0
+                
+                for dist in distribute_to_shops:
+                    target_shop_id = dist.get('shop_id')
+                    dist_quantity = dist.get('quantity', 0)
+                    dist_notes = dist.get('notes', '')
+                    
+                    if dist_quantity <= 0:
+                        continue
+                    
+                    # Calculate amount for this distribution
+                    dist_amount = dist_quantity * per_unit_price
+                    
+                    # Create new expense for the target shop
+                    distributed_expense = Expenses(
+                        shop_id=target_shop_id,
+                        creditor_id=creditor.creditor_id if creditor else None,
+                        item=item,
+                        description=f"{description} (Distributed from Shop {shop_id})",
+                        category=category,
+                        quantity=dist_quantity,
+                        totalPrice=dist_amount,
+                        amountPaid=dist_amount,  # Mark as paid immediately
+                        paidTo=paidTo,
+                        created_at=created_at,
+                        user_id=current_user_id,
+                        source=f"DISTRIBUTED_FROM_{new_expense.expense_id}",
+                        paymentRef=paymentRef,
+                        comments=f"Distributed from original expense #{new_expense.expense_id}. {dist_notes}" if dist_notes else f"Distributed from original expense #{new_expense.expense_id}",
+                        payment_status='paid',  # Distributed expenses are marked as paid
+                        distribution_status='received'
+                    )
+                    
+                    db.session.add(distributed_expense)
+                    db.session.flush()
+                    
+                    # Create distribution record
+                    distribution_record = ExpenseDistribution(
+                        original_expense_id=new_expense.expense_id,
+                        distributed_to_shop_id=target_shop_id,
+                        distributed_quantity=dist_quantity,
+                        distributed_amount=dist_amount,
+                        original_quantity_before=quantity,
+                        original_amount_before=totalPrice,
+                        distributed_by=current_user_id,
+                        notes=dist_notes
+                    )
+                    
+                    db.session.add(distribution_record)
+                    
+                    distribution_results.append({
+                        'to_shop_id': target_shop_id,
+                        'quantity': dist_quantity,
+                        'amount': dist_amount,
+                        'new_expense_id': distributed_expense.expense_id,
+                        'distribution_id': distribution_record.distribution_id
+                    })
+                
+                # Update original expense if partially or fully distributed
+                if total_distributed_qty >= quantity - 0.001:  # Fully distributed
+                    new_expense.distribution_status = 'fully_distributed'
+                    new_expense.source = f"DISTRIBUTED_{new_expense.source}" if not new_expense.source.startswith('DISTRIBUTED_') else new_expense.source
+                    new_expense.comments = f"[DISTRIBUTED] {new_expense.comments}" if new_expense.comments else "[DISTRIBUTED]"
+                    # Set remaining to zero
+                    new_expense.quantity = 0
+                    new_expense.totalPrice = 0
+                    new_expense.amountPaid = 0
+                    new_expense.payment_status = 'distributed'
+                else:
+                    new_expense.distribution_status = 'partial'
+                    # Reduce the original expense quantity and amount
+                    new_expense.quantity = quantity - total_distributed_qty
+                    new_expense.totalPrice = totalPrice - sum(d['amount'] for d in distribution_results)
+                    if new_expense.amountPaid > new_expense.totalPrice:
+                        new_expense.amountPaid = new_expense.totalPrice
+                    new_expense.update_payment_status()
+
+            # ===== Step 7: Update creditor totals if creditor exists =====
             if creditor:
                 creditor.update_totals()
 
             db.session.commit()  # Commit everything
 
-            # ===== Step 7: Post Journal Entry =====
+            # ===== Step 8: Post Journal Entry =====
             from Server.Views.Services.journal_service import ExpensesJournalService
 
             try:
@@ -200,6 +296,16 @@ class AddExpense(Resource):
                 "payment_status": payment_status,
                 "journal_entry": journal_result
             }
+
+            if is_distribution and distribution_results:
+                response_data["distribution"] = {
+                    "is_distribution": True,
+                    "distributed_to": distribution_results,
+                    "original_expense_updated": {
+                        "remaining_quantity": new_expense.quantity,
+                        "remaining_amount": new_expense.totalPrice
+                    }
+                }
 
             if creditor:
                 response_data["creditor"] = {
@@ -318,6 +424,7 @@ class AllExpenses(Resource):
                 "source": expense.source,
                 "paymentRef": expense.paymentRef,
                 "comments": expense.comments,
+                "distribution_status": expense.distribution_status,
                 "payment_summary": {
                     "total_payments": total_payments,
                     "total_paid": total_paid_from_payments,
@@ -340,6 +447,7 @@ class AllExpenses(Resource):
             "pagination": pagination_info,
             "total_amount_paid_all_expenses": total_amount_paid_all
         }), 200)
+
 
 class GetShopExpenses(Resource):
     @jwt_required()
@@ -364,6 +472,7 @@ class GetShopExpenses(Resource):
             "source": expense.source,
             "paymentRef": expense.paymentRef,
             "comments": expense.comments,
+            "distribution_status": expense.distribution_status,
             "created_at": expense.created_at.strftime('%Y-%m-%d %H:%M:%S') if expense.created_at else None
         } for expense in shopExpenses]
 
@@ -394,6 +503,20 @@ class ExpensesResources(Resource):
                 } for p in payments
             ]
             
+            # Get distribution history
+            distributions = ExpenseDistribution.query.filter_by(original_expense_id=expense_id).all()
+            distribution_history = [
+                {
+                    "distribution_id": d.distribution_id,
+                    "to_shop_id": d.distributed_to_shop_id,
+                    "to_shop_name": Shops.query.get(d.distributed_to_shop_id).shopname if Shops.query.get(d.distributed_to_shop_id) else "Unknown",
+                    "quantity": d.distributed_quantity,
+                    "amount": d.distributed_amount,
+                    "distributed_date": d.distributed_date.strftime('%Y-%m-%d %H:%M:%S'),
+                    "notes": d.notes
+                } for d in distributions
+            ]
+            
             return {
                 "expense_id": expense.expense_id,
                 "user_id": expense.user_id,
@@ -409,11 +532,13 @@ class ExpensesResources(Resource):
                 "amountPaid": expense.amountPaid,
                 "outstanding_balance": expense.outstanding_balance,
                 "payment_status": expense.payment_status,
+                "distribution_status": expense.distribution_status,
                 "source": expense.source,
                 "paymentRef": expense.paymentRef,
                 "comments": expense.comments,
                 "created_at": expense.created_at.strftime('%Y-%m-%d %H:%M:%S') if expense.created_at else None,
                 "payment_history": payment_history,
+                "distribution_history": distribution_history,
                 "payment_summary": {
                     "total_payments": len(payments),
                     "total_amount_paid": sum(p.amount for p in payments),
@@ -529,6 +654,9 @@ class ExpensesResources(Resource):
         # Delete related ledger entries
         ExpensesLedger.query.filter_by(expense_id=expense_id).delete()
 
+        # Delete related distributions
+        ExpenseDistribution.query.filter_by(original_expense_id=expense_id).delete()
+
         # Delete expense
         db.session.delete(expense)
         
@@ -603,7 +731,7 @@ class CreditPaymentResource(Resource):
 
         amount = data.get('amount')
         payment_ref = data.get('payment_ref')
-        payment_method = data.get('payment_method', 'Cash', 'Source')
+        payment_method = data.get('payment_method', 'Cash')
         notes = data.get('notes')                                   
         source = data.get('source')
 
@@ -704,6 +832,227 @@ class CreditPaymentResource(Resource):
         }), 200)
 
 
+# NEW DISTRIBUTION ENDPOINTS
+class DistributeExpense(Resource):
+    """Distribute an existing expense to multiple shops"""
+    @jwt_required()
+    @check_role('manager')
+    def post(self, expense_id):
+        data = request.get_json()
+        current_user_id = get_jwt_identity()
+        
+        original_expense = Expenses.query.get(expense_id)
+        if not original_expense:
+            return {"error": "Expense not found"}, 404
+        
+        distribute_to_shops = data.get('distribute_to_shops', [])
+        if not distribute_to_shops:
+            return {"error": "No distribution targets provided"}, 400
+        
+        # Validate total distribution quantity
+        total_distributed_qty = sum(d.get('quantity', 0) for d in distribute_to_shops)
+        
+        if total_distributed_qty > original_expense.quantity:
+            return {
+                "error": f"Total distribution quantity ({total_distributed_qty}) exceeds expense quantity ({original_expense.quantity})"
+            }, 400
+        
+        try:
+            # Calculate per-unit price
+            per_unit_price = original_expense.totalPrice / original_expense.quantity if original_expense.quantity > 0 else 0
+            
+            distribution_results = []
+            
+            for dist in distribute_to_shops:
+                target_shop_id = dist.get('shop_id')
+                dist_quantity = dist.get('quantity', 0)
+                dist_notes = dist.get('notes', '')
+                
+                if dist_quantity <= 0:
+                    continue
+                
+                # Calculate amount for this distribution
+                dist_amount = dist_quantity * per_unit_price
+                
+                # Create new expense for the target shop
+                distributed_expense = Expenses(
+                    shop_id=target_shop_id,
+                    creditor_id=original_expense.creditor_id,
+                    item=original_expense.item,
+                    description=f"{original_expense.description} (Distributed from Shop {original_expense.shop_id})",
+                    category=original_expense.category,
+                    quantity=dist_quantity,
+                    totalPrice=dist_amount,
+                    amountPaid=dist_amount,  # Mark as paid immediately
+                    paidTo=original_expense.paidTo,
+                    created_at=datetime.now(),
+                    user_id=current_user_id,
+                    source=f"DISTRIBUTED_FROM_{expense_id}",
+                    paymentRef=original_expense.paymentRef,
+                    comments=f"Distributed from original expense #{expense_id}. {dist_notes}" if dist_notes else f"Distributed from original expense #{expense_id}",
+                    payment_status='paid',
+                    distribution_status='received'
+                )
+                
+                db.session.add(distributed_expense)
+                db.session.flush()
+                
+                # Create distribution record
+                distribution_record = ExpenseDistribution(
+                    original_expense_id=expense_id,
+                    distributed_to_shop_id=target_shop_id,
+                    distributed_quantity=dist_quantity,
+                    distributed_amount=dist_amount,
+                    original_quantity_before=original_expense.quantity,
+                    original_amount_before=original_expense.totalPrice,
+                    distributed_by=current_user_id,
+                    notes=dist_notes
+                )
+                
+                db.session.add(distribution_record)
+                
+                distribution_results.append({
+                    'to_shop_id': target_shop_id,
+                    'quantity': dist_quantity,
+                    'amount': dist_amount,
+                    'new_expense_id': distributed_expense.expense_id,
+                    'distribution_id': distribution_record.distribution_id
+                })
+            
+            # Update original expense
+            remaining_quantity = original_expense.quantity - total_distributed_qty
+            remaining_amount = original_expense.totalPrice - sum(d['amount'] for d in distribution_results)
+            
+            if remaining_quantity <= 0.001:  # Fully distributed
+                original_expense.distribution_status = 'fully_distributed'
+                original_expense.quantity = 0
+                original_expense.totalPrice = 0
+                original_expense.amountPaid = 0
+                original_expense.payment_status = 'distributed'
+            else:
+                original_expense.distribution_status = 'partial'
+                original_expense.quantity = remaining_quantity
+                original_expense.totalPrice = remaining_amount
+                if original_expense.amountPaid > remaining_amount:
+                    original_expense.amountPaid = remaining_amount
+                original_expense.update_payment_status()
+            
+            db.session.commit()
+            
+            return {
+                "message": "Expense distributed successfully",
+                "original_expense_id": expense_id,
+                "original_expense_updated": {
+                    "remaining_quantity": original_expense.quantity,
+                    "remaining_amount": original_expense.totalPrice,
+                    "distribution_status": original_expense.distribution_status
+                },
+                "distributions": distribution_results
+            }, 200
+            
+        except Exception as e:
+            db.session.rollback()
+            return {"error": f"Failed to distribute expense: {str(e)}"}, 500
+
+
+class GetExpenseDistributions(Resource):
+    """Get all distributions for an expense"""
+    @jwt_required()
+    @check_role('manager')
+    def get(self, expense_id):
+        try:
+            expense = Expenses.query.get(expense_id)
+            if not expense:
+                return {"error": "Expense not found"}, 404
+            
+            distributions = ExpenseDistribution.query.filter_by(original_expense_id=expense_id).all()
+            
+            distribution_list = []
+            for dist in distributions:
+                target_shop = Shops.query.get(dist.distributed_to_shop_id)
+                distributor = Users.query.get(dist.distributed_by)
+                
+                distribution_list.append({
+                    "distribution_id": dist.distribution_id,
+                    "to_shop_id": dist.distributed_to_shop_id,
+                    "to_shop_name": target_shop.shopname if target_shop else "Unknown",
+                    "quantity": dist.distributed_quantity,
+                    "amount": dist.distributed_amount,
+                    "distributed_date": dist.distributed_date.strftime('%Y-%m-%d %H:%M:%S'),
+                    "distributed_by": distributor.username if distributor else "Unknown",
+                    "original_quantity_before": dist.original_quantity_before,
+                    "original_amount_before": dist.original_amount_before,
+                    "notes": dist.notes
+                })
+            
+            return {
+                "expense_id": expense_id,
+                "original_expense": {
+                    "shop_id": expense.shop_id,
+                    "shop_name": Shops.query.get(expense.shop_id).shopname if Shops.query.get(expense.shop_id) else "Unknown",
+                    "item": expense.item,
+                    "original_quantity": expense.quantity + sum(d.distributed_quantity for d in distributions),
+                    "current_quantity": expense.quantity,
+                    "distribution_status": expense.distribution_status
+                },
+                "distributions": distribution_list,
+                "total_distributed": len(distribution_list)
+            }, 200
+            
+        except Exception as e:
+            return {"error": str(e)}, 500
+
+
+class GetShopReceivedDistributions(Resource):
+    """Get all distributions received by a specific shop"""
+    @jwt_required()
+    @check_role('manager')
+    def get(self, shop_id):
+        try:
+            shop = Shops.query.get(shop_id)
+            if not shop:
+                return {"error": "Shop not found"}, 404
+            
+            # Get all expenses that were received as distributions
+            received_expenses = Expenses.query.filter_by(
+                shop_id=shop_id,
+                distribution_status='received'
+            ).filter(Expenses.source.like('DISTRIBUTED_FROM_%')).all()
+            
+            received_list = []
+            for expense in received_expenses:
+                # Extract original expense ID from source
+                original_id = expense.source.replace('DISTRIBUTED_FROM_', '')
+                
+                # Get distribution record
+                distribution = ExpenseDistribution.query.filter_by(
+                    original_expense_id=original_id,
+                    distributed_to_shop_id=shop_id
+                ).first()
+                
+                original_expense = Expenses.query.get(int(original_id)) if original_id.isdigit() else None
+                source_shop = Shops.query.get(original_expense.shop_id) if original_expense else None
+                
+                received_list.append({
+                    "expense_id": expense.expense_id,
+                    "original_expense_id": original_id,
+                    "source_shop_name": source_shop.shopname if source_shop else "Unknown",
+                    "item": expense.item,
+                    "quantity": expense.quantity,
+                    "amount": expense.totalPrice,
+                    "received_date": expense.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                    "distribution_notes": distribution.notes if distribution else None
+                })
+            
+            return {
+                "shop_id": shop_id,
+                "shop_name": shop.shopname,
+                "received_distributions": received_list,
+                "total_received": len(received_list)
+            }, 200
+            
+        except Exception as e:
+            return {"error": str(e)}, 500
 
 
 class GetCreditors(Resource):
@@ -902,7 +1251,7 @@ class UpdateCreditor(Resource):
             if 'is_active' in data:
                 creditor.is_active = data['is_active']
             
-            creditor.updated_at = datetime.datetime.utcnow()
+            creditor.updated_at = datetime.utcnow()
             db.session.commit()
             
             return make_response(jsonify({
@@ -941,7 +1290,7 @@ class DeleteCreditor(Resource):
             
             # Soft delete - just mark as inactive
             creditor.is_active = False
-            creditor.updated_at = datetime.datetime.utcnow()
+            creditor.updated_at = datetime.utcnow()
             db.session.commit()
             
             return make_response(jsonify({
