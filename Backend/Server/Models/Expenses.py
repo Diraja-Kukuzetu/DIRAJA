@@ -22,6 +22,7 @@ class Expenses(db.Model):
     comments = db.Column(db.String(100), nullable=True)
     paymentRef = db.Column(db.String(100), nullable=False)
     payment_status = db.Column(db.String(10), nullable=False, default='pending')
+    distribution_status = db.Column(db.String(20), nullable=False, default='none') 
     
     # Relationships
     users = db.relationship('Users', backref='expenses', lazy=True)
@@ -53,6 +54,32 @@ class Expenses(db.Model):
                 f"amountPaid='{self.amountPaid}', payment_status='{self.payment_status}', "
                 f"source='{self.source}', comments='{self.comments}')")
 
+
+class ExpenseDistribution(db.Model):
+    __tablename__ = "expense_distributions"
+    
+    distribution_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    original_expense_id = db.Column(db.Integer, db.ForeignKey('expenses.expense_id'), nullable=False)
+    distributed_to_shop_id = db.Column(db.Integer, db.ForeignKey('shops.shops_id'), nullable=False)
+    distributed_quantity = db.Column(db.Float, nullable=False)
+    distributed_amount = db.Column(db.Float, nullable=False)
+    original_quantity_before = db.Column(db.Float, nullable=False)
+    original_amount_before = db.Column(db.Float, nullable=False)
+    distributed_date = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
+    distributed_by = db.Column(db.Integer, db.ForeignKey('users.users_id'), nullable=True)
+    notes = db.Column(db.String(500), nullable=True)
+    
+    # Relationships
+    original_expense = db.relationship('Expenses', foreign_keys=[original_expense_id], backref='distributions')
+    target_shop = db.relationship('Shops', foreign_keys=[distributed_to_shop_id], backref='received_distributions')
+    distributor = db.relationship('Users', foreign_keys=[distributed_by], backref='expense_distributions')
+    
+    def __repr__(self):
+        return (f"ExpenseDistribution(distribution_id={self.distribution_id}, "
+                f"original_expense={self.original_expense_id}, "
+                f"to_shop={self.distributed_to_shop_id}, "
+                f"quantity={self.distributed_quantity}, "
+                f"amount={self.distributed_amount})")
 
 class CreditPayments(db.Model):
     __tablename__ = "credit_payments"
