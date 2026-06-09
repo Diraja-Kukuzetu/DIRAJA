@@ -67,13 +67,8 @@ from Server.Views.Sales import (
     SalesBalanceResource, TotalBalanceSummary,SasaPayPaymentStatusResource,
     UpdateSalePayment, GetUnpaidSales, PaymentMethodsResource,
     CapturePaymentResource, CreditHistoryResource, GetSingleSaleByShop,
-<<<<<<< HEAD
     SalesByEmployeeResource, GetSale, GetUnpaidSalesByClerk,GetSalesGraphData,
     TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport,ProductEarningsSummary,CategoryEarningsSummary, ItemsSoldSummary
-=======
-    SalesByEmployeeResource, GetSale, GetUnpaidSalesByClerk,
-    TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport,ProductEarningsSummary,CategoryEarningsSummary, ItemsSoldSummary, DeliverySalesSummary
->>>>>>> af6c6da (Delivery sales)
 )
 
 from Server.Views.ManagerDashbordViews import (
