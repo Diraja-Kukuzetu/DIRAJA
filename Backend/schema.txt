@@ -125,6 +125,20 @@ Columns:
 - comments (VARCHAR(100))
 - paymentRef (VARCHAR(100))
 - payment_status (VARCHAR(10))
+- distribution_status (VARCHAR(20))
+
+Table: expense_distributions
+Columns:
+- distribution_id (INTEGER)
+- original_expense_id (INTEGER)
+- distributed_to_shop_id (INTEGER)
+- distributed_quantity (FLOAT)
+- distributed_amount (FLOAT)
+- original_quantity_before (FLOAT)
+- original_amount_before (FLOAT)
+- distributed_date (DATETIME)
+- distributed_by (INTEGER)
+- notes (VARCHAR(500))
 
 Table: credit_payments
 Columns:
@@ -467,6 +481,9 @@ Relationships:
 - expenses.user_id = users.users_id
 - expenses.shop_id = shops.shops_id
 - expenses.creditor_id = expense_creditors.creditor_id
+- expense_distributions.original_expense_id = expenses.expense_id
+- expense_distributions.distributed_to_shop_id = shops.shops_id
+- expense_distributions.distributed_by = users.users_id
 - credit_payments.expense_id = expenses.expense_id
 - credit_payments.created_by = users.users_id
 - expense_creditors.user_id = users.users_id

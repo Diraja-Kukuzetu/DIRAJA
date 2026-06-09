@@ -141,7 +141,6 @@ class UserLogin(Resource):
 
         return make_response(jsonify(response_data), 200)
 
-
 class UsersResourceById(Resource):
 
     @jwt_required()
@@ -154,9 +153,8 @@ class UsersResourceById(Resource):
                 "users_id": user.users_id,
                 "username": user.username,
                 "email": user.email,
-                "password": user.password,  # Consider if you really want to return the password hash
                 "role": user.role,
-                "status": user.status  # Added status
+                "status": user.status
             }, 200
         else:
             return {"error": "User not found"}, 404
@@ -167,12 +165,6 @@ class UsersResourceById(Resource):
         user = Users.query.get(users_id)
 
         if user:
-            # Instead of hard delete, consider soft delete by updating status
-            # Uncomment the lines below for soft delete
-            # user.status = "former employee"
-            # db.session.commit()
-            # return {"message": f"User with id {users_id} marked as former employee"}, 200
-            
             # Hard delete (original)
             db.session.delete(user)
             db.session.commit()
@@ -196,7 +188,7 @@ class UsersResourceById(Resource):
         email = data.get("email")
         password = data.get("password")
         role = data.get("role")
-        status = data.get("status")  # Fixed: was incorrectly using data.status()
+        status = data.get("status")
 
         # Validate status if provided
         if status:
@@ -214,27 +206,6 @@ class UsersResourceById(Resource):
                     "error": f"Invalid role. Must be one of: {', '.join(valid_roles)}"
                 }, 400
 
-        # Validate password (if provided)
-        if password:
-            error_messages = []
-            
-            if len(password) < 8:
-                error_messages.append("Password must be at least 8 characters long.")
-            
-            if not re.search(r'[A-Z]', password):
-                error_messages.append("Password must contain at least one capital letter.")
-            
-            if not re.search(r'\d', password):
-                error_messages.append("Password must contain at least one number.")
-            
-            if error_messages:
-                return {"error": " ".join(error_messages)}, 400
-            
-            # Hash the password before saving
-            salt = bcrypt.gensalt()
-            hashed_password = bcrypt.hashpw(password.encode('utf-8'), salt)
-            user.password = hashed_password.decode('utf-8')
-
         # Update fields if provided
         if username:
             user.username = username
@@ -247,10 +218,16 @@ class UsersResourceById(Resource):
             user.role = role
         if status:
             user.status = status
+        if password:
+            # Let the model's validate_password method handle hashing
+            user.password = password
 
         # Save changes to the database
         try:
             db.session.commit()
+        except AssertionError as e:
+            db.session.rollback()
+            return {"error": str(e)}, 400
         except Exception as e:
             db.session.rollback()
             return {"error": f"Failed to update user: {str(e)}"}, 500
