@@ -94,18 +94,16 @@ class AddSpoiltStock(Resource):
     def post(self):
         data = request.get_json()
 
-        # Get clerk from JWT
         user_id = get_jwt_identity()
         clerk = Users.query.get(user_id)
         if not clerk:
             return {"message": "Invalid user"}, 400
 
-        # Required fields
         shop_id = data.get('shop_id')
         quantity = data.get('quantity')
         item = data.get('item')
-        unit = data.get('unit')  # kgs or count
-        disposal_method = data.get('disposal_method')  # depot or waste disposer
+        unit = data.get('unit')
+        disposal_method = data.get('disposal_method')
         collector_name = data.get('collector_name')
         comment = data.get('comment', '')
 
@@ -113,31 +111,34 @@ class AddSpoiltStock(Resource):
             return {"message": "Missing required fields"}, 400
 
         try:
-            # Convert quantity to float for safety
             quantity = float(quantity)
         except ValueError:
             return {"message": "Invalid quantity format"}, 400
 
-        # Find matching shop stock item(s), sorted by oldest batch first (FIFO)
+        # FIFO stock
         shop_stock_entries = ShopStockV2.query.filter_by(
             shop_id=shop_id,
             itemname=item
         ).order_by(ShopStockV2.BatchNumber).all()
 
-        # Find matching livestock entry
         livestock_entry = LiveStock.query.filter_by(
             shop_id=shop_id,
             item_name=item
         ).first()
 
         if not shop_stock_entries and not livestock_entry:
-            return {"message": f"Item '{item}' not found in shop {shop_id} stock or livestock"}, 400
+            return {"message": f"Item '{item}' not found in stock or livestock"}, 400
 
         remaining_to_deduct = quantity
-        batch_deductions = []  # Track which batches were deducted
+        batch_deductions = []
         livestock_deduction = 0.0
 
-        # First deduct from shop stock if available
+        # ✅ NEW: track inventory_id
+        inventory_id = None
+
+        # -----------------------------
+        # Deduct from Shop Stock (FIFO)
+        # -----------------------------
         for stock in shop_stock_entries:
             if remaining_to_deduct <= 0:
                 break
@@ -145,79 +146,91 @@ class AddSpoiltStock(Resource):
                 continue
 
             deduct_amount = min(stock.quantity, remaining_to_deduct)
+
             stock.quantity -= deduct_amount
             remaining_to_deduct -= deduct_amount
+
+            # ✅ capture inventory_id from first batch
+            if inventory_id is None:
+                inventory_id = stock.inventoryv2_id
+
             batch_deductions.append({
-                'batch': stock.BatchNumber,
-                'deducted': deduct_amount,
-                'remaining': stock.quantity
+                "batch": stock.BatchNumber,
+                "deducted": deduct_amount,
+                "remaining": stock.quantity
             })
+
             db.session.add(stock)
 
-        # If still remaining to deduct, try to deduct from livestock
+        # -----------------------------
+        # Deduct from Livestock
+        # -----------------------------
         if remaining_to_deduct > 0 and livestock_entry:
-            # Check if livestock has enough current quantity
             if livestock_entry.current_quantity > 0:
                 deduct_amount = min(livestock_entry.current_quantity, remaining_to_deduct)
+
                 livestock_entry.current_quantity -= deduct_amount
                 livestock_deduction = deduct_amount
                 remaining_to_deduct -= deduct_amount
+
                 db.session.add(livestock_entry)
 
+        # -----------------------------
+        # Validate stock availability
+        # -----------------------------
         if remaining_to_deduct > 0:
             db.session.rollback()
-            available = quantity - remaining_to_deduct
-            sources = []
-            if batch_deductions:
-                sources.append(f"shop stock: {sum(d['deducted'] for d in batch_deductions)}")
-            if livestock_deduction > 0:
-                sources.append(f"livestock: {livestock_deduction}")
-            
             return {
-                "message": f"Not enough stock to deduct spoilt quantity. Needed {quantity}, available {available} ({' + '.join(sources) if sources else 'none'})",
-                "available": available,
-                "sources": sources
+                "message": "Not enough stock to deduct spoilt quantity",
+                "available": quantity - remaining_to_deduct
             }, 400
 
-        # Record spoilt stock as PENDING (but inventory is already deducted)
+        # -----------------------------
+        # Create spoilt record
+        # -----------------------------
         record = SpoiltStock(
             clerk_id=user_id,
             shop_id=shop_id,
             item=item,
             quantity=quantity,
             unit=unit,
+            inventory_id=inventory_id,   # ✅ HERE IS THE FIX
             disposal_method=disposal_method,
             collector_name=collector_name,
             comment=comment,
-            status='pending',  # Set as pending - needs approval
+            status='pending',
             approved_by=None,
             approved_at=None,
             livestock_deduction=livestock_deduction
         )
 
-        # Store batch deduction information
+        # batch info
         if batch_deductions:
-            batches_info = ', '.join([f"Batch {d['batch']}: -{d['deducted']}{unit}" for d in batch_deductions])
-            record.batches_affected = batches_info
+            record.batches_affected = ", ".join([
+                f"Batch {d['batch']}: -{d['deducted']}{unit}"
+                for d in batch_deductions
+            ])
 
         db.session.add(record)
-        
+
         try:
             db.session.commit()
+
             return {
-                "message": "Spoilt stock deducted from inventory and recorded as pending approval",
+                "message": "Spoilt stock recorded successfully",
                 "details": {
                     "record_id": record.id,
                     "item": item,
                     "quantity": quantity,
                     "unit": unit,
+                    "inventory_id": inventory_id,   # ✅ returned too
                     "status": "pending",
-                    "disposal_method": disposal_method,
                     "batches_affected": batch_deductions,
                     "livestock_deduction": livestock_deduction,
                     "created_at": record.created_at.isoformat()
                 }
             }, 201
+
         except Exception as e:
             db.session.rollback()
             return {

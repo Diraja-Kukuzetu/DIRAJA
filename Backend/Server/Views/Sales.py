@@ -21,6 +21,7 @@ from sqlalchemy import func, or_
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import text
 from flask import jsonify, request, Response
 from functools import wraps
 from Server.Models.Creditors import Creditors
@@ -1247,6 +1248,115 @@ class GetSales(Resource):
         except Exception as e:
             current_app.logger.error(f"Unexpected error: {str(e)}")
             return {"error": "An unexpected error occurred."}, 500
+        
+class SalesReport(Resource):
+    @jwt_required()
+    def get(self):
+        try:
+            start_date = request.args.get("start_date")
+            end_date = request.args.get("end_date")
+
+            if not start_date or not end_date:
+                return {
+                    "error": "start_date and end_date are required. Format: YYYY-MM-DD"
+                }, 400
+
+            try:
+                datetime.strptime(start_date, "%Y-%m-%d")
+                datetime.strptime(end_date, "%Y-%m-%d")
+            except ValueError:
+                return {
+                    "error": "Invalid date format. Use YYYY-MM-DD"
+                }, 400
+
+            sql = text("""
+                SELECT 
+                    s.sales_id AS sale_id,
+                    s.created_at AS transaction_date,
+                    si.item_name,
+                    s.shop_id,
+                    sh.shopname,
+
+                    COALESCE(SUM(DISTINCT si.total_price), 0) AS sale_amount,
+
+                    COALESCE(SUM(DISTINCT spm.amount_paid), 0) AS amount_paid,
+
+                    s.status,
+
+                    COALESCE(SUM(DISTINCT csl.amount), 0) AS cost_of_sale
+
+                FROM sales s
+
+                LEFT JOIN sold_items si
+                    ON si.sales_id = s.sales_id
+
+                LEFT JOIN shops sh
+                    ON sh.shops_id = s.shop_id
+
+                LEFT JOIN sales_payment_methods spm
+                    ON spm.sale_id = s.sales_id
+
+                LEFT JOIN cost_of_sale_ledger csl
+                    ON csl.sales_id = s.sales_id
+
+                WHERE s.created_at >= :start_date
+                  AND s.created_at < DATE_ADD(:end_date, INTERVAL 1 DAY)
+
+                GROUP BY
+                    s.sales_id,
+                    s.created_at,
+                    si.item_name,
+                    s.shop_id,
+                    sh.shopname,
+                    s.status
+
+                ORDER BY s.created_at DESC
+            """)
+
+            result = db.session.execute(
+                sql,
+                {
+                    "start_date": start_date,
+                    "end_date": end_date
+                }
+            )
+
+            report_data = []
+
+            for row in result:
+                report_data.append({
+                    "sale_id": row.sale_id,
+                    "transaction_date": (
+                        row.transaction_date.strftime("%Y-%m-%d %H:%M:%S")
+                        if row.transaction_date else None
+                    ),
+                    "item_name": row.item_name,
+                    "shop_id": row.shop_id,
+                    "shopname": row.shopname,
+                    "sale_amount": float(row.sale_amount or 0),
+                    "amount_paid": float(row.amount_paid or 0),
+                    "status": row.status,
+                    "cost_of_sale": float(row.cost_of_sale or 0),
+                    "profit": float(
+                        (row.sale_amount or 0) -
+                        (row.cost_of_sale or 0)
+                    )
+                })
+
+            return {
+                "count": len(report_data),
+                "start_date": start_date,
+                "end_date": end_date,
+                "data": report_data
+            }, 200
+
+        except Exception as e:
+            current_app.logger.error(
+                f"Sales profitability report error: {str(e)}"
+            )
+            return {
+                "error": "Failed to generate report"
+            }, 500
 
 
 class GetSalesByShop(Resource):

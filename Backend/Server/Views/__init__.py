@@ -60,7 +60,7 @@ from Server.Views.employeeloanview import (
 )
 
 from Server.Views.Sales import (
-    AddSale, GetSales, GetSalesByShop, SalesResources, GetPaymentTotals,
+    AddSale, GetSales, GetSalesByShop, SalesResources, GetPaymentTotals,SalesReport,
     SalesBalanceResource, TotalBalanceSummary, 
     UpdateSalePayment, GetUnpaidSales, PaymentMethodsResource,
     CapturePaymentResource, CreditHistoryResource, GetSingleSaleByShop,
@@ -292,6 +292,7 @@ api.add_resource(GetCustomerById, '/customer/<int:customer_id>')
 #Sales 
 api.add_resource(AddSale, '/newsale')
 api.add_resource(GetSales, '/allsales')
+api.add_resource(SalesReport, '/sales-report')
 api.add_resource(GetSalesByShop,'/sales/shop/<int:shop_id>')
 api.add_resource(SalesResources,'/sale/<int:sales_id>')
 api.add_resource(GetPaymentTotals, '/get_payment_totals')
