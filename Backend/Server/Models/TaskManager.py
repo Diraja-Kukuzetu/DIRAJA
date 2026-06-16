@@ -10,7 +10,7 @@ class TaskManager(db.Model):
     task_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.users_id'), nullable=False)  # Assigner
     assignee_id = db.Column(db.Integer, db.ForeignKey('users.users_id'), nullable=False)  # Assignee
-    task = db.Column(db.String(255), nullable=False)
+    task = db.Column(db.JSON, nullable=False)
     assigned_date = db.Column(db.DateTime, default=datetime.datetime.utcnow, nullable=False)
     due_date = db.Column(db.DateTime, nullable=True)
     status = db.Column(db.String(50), default="Pending", nullable=False)
@@ -400,3 +400,13 @@ class TaskEvaluation(db.Model):
     def __repr__(self):
         return (f"TaskEvaluation(evaluation_id={self.evaluation_id}, task_id={self.task_id}, "
                 f"rating={self.rating}, created_at='{self.created_at}')")
+        
+class TaskCategory(db.Model):
+    __tablename__ = "task_category"
+
+    id = db.Column(db.Integer, primary_key=True)
+    category_name = db.Column(db.String(150), nullable=False)
+    
+
+    def __str__(self):
+        return f"{self.type} - {self.category_name}"

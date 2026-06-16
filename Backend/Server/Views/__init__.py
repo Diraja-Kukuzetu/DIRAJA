@@ -164,7 +164,7 @@ from Server.Views.PushSubscription import  (
 from Server.Views.TaskManagerViews import (
     # Task Management
     CreateTask, TaskResource, GetTasks, CompleteTask, GetUserTasks,TaskProgressResource,TaskStatsResource,TaskCommentResource,CommentResource,TaskEvaluationResource,
-    CancelRecurringTask,ProcessRecurringTasks
+    CancelRecurringTask,ProcessRecurringTasks,CreateTaskCategory,GetAllTaskCategories
 )
 from Server.Views.CookedItemsView import  (
     AddCookedItems
@@ -548,6 +548,8 @@ api.add_resource(ProcessCSV, '/process-csv')
 #TaskManager
 # Task Management Routes
 api.add_resource(CreateTask, "/newtask")
+api.add_resource(CreateTaskCategory, "/tasks/new-category")
+api.add_resource(GetAllTaskCategories, "/tasks/categories")
 api.add_resource(TaskResource, "/tasks/<int:task_id>")
 api.add_resource(GetTasks, "/alltasks")
 api.add_resource(GetUserTasks, "/mytasks/<int:user_id>")
