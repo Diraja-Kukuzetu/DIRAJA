@@ -163,7 +163,7 @@ def create_app(config_name):
     app.config.from_object(config_name)
 
     # Database
-    app.config["SQLALCHEMY_DATABASE_URI"] = "mysql+pymysql://root:MyNewPass@localhost/Diraja"
+    app.config["SQLALCHEMY_DATABASE_URI"] = 'mysql+pymysql://root:@localhost/Diraja'
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
     # JWT

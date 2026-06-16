@@ -677,8 +677,8 @@ class SpoiltJournalService:
             name="Inventory"
         ).first()
 
-        if not expense_account:
-            raise Exception("Stock Adjustment account not found")
+        # if not expense_account:
+        #     raise Exception("Stock Adjustment account not found")
 
         if not inventory_account:
             raise Exception("Inventory account not found")

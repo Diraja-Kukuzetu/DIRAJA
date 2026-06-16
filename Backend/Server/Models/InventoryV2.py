@@ -18,6 +18,7 @@ class InventoryV2(db.Model):
     unitCost = db.Column(db.Float, nullable=False)
     totalCost = db.Column(db.Float, nullable=False)
     amountPaid = db.Column(db.Float, nullable=False)
+    vat = db.Column(db.Float, nullable=False)
     unitPrice = db.Column(db.Float, nullable=False)
     BatchNumber = db.Column(db.String(150), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.users_id'))

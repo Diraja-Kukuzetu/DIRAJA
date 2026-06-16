@@ -352,6 +352,7 @@ Columns:
 - unitCost (FLOAT)
 - totalCost (FLOAT)
 - amountPaid (FLOAT)
+- vat (FLOAT)
 - unitPrice (FLOAT)
 - BatchNumber (VARCHAR(150))
 - user_id (INTEGER)
@@ -463,6 +464,11 @@ Columns:
 - rating (INTEGER)
 - comment (TEXT)
 - created_at (DATETIME)
+
+Table: task_category
+Columns:
+- id (INTEGER)
+- category_name (VARCHAR(150))
 
 
 

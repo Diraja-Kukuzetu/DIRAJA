@@ -2,7 +2,7 @@ from flask import request, jsonify
 from flask_restful import Resource
 from app import db
 import json
-from Server.Models.TaskManager import TaskManager,TaskComment,TaskEvaluation
+from Server.Models.TaskManager import TaskManager,TaskComment,TaskEvaluation,TaskCategory
 from Server.Models.PushSubscription import PushSubscription
 from pywebpush import webpush, WebPushException
 from Server.Models.Users import Users
@@ -161,6 +161,61 @@ class CreateTask(Resource):
                 print(f"Push sent to user {user_id} subscriber {sub.id}")
             except WebPushException as e:
                 print(f"Push failed for {sub.id}: {repr(e)}")
+
+class CreateTaskCategory(Resource):
+    def post(self):
+        try:
+            data = request.get_json()
+
+            category_name = data.get("category_name")
+
+            if not category_name:
+                return {
+                    "message": "category_name is required"
+                }, 400
+
+            # Check if category already exists
+            existing_category = TaskCategory.query.filter(
+                TaskCategory.category_name.ilike(category_name)
+            ).first()
+
+            if existing_category:
+                return {
+                    "message": "Task category already exists"
+                }, 409
+
+            category = TaskCategory(
+                category_name=category_name
+            )
+
+            db.session.add(category)
+            db.session.commit()
+
+            return {
+                "message": "Task category created successfully",
+                "data": {
+                    "id": category.id,
+                    "category_name": category.category_name
+                }
+            }, 201
+
+        except Exception as e:
+            db.session.rollback()
+            return {
+                "message": "Failed to create task category",
+                "error": str(e)
+            }, 500
+            
+class GetAllTaskCategories(Resource):
+    @jwt_required()
+    def get(self):
+        return [
+            {
+                "id": category.id,
+                "category_name": category.category_name
+            }
+            for category in TaskCategory.query.all()
+        ], 200
 
 
 class GetTasks(Resource):
