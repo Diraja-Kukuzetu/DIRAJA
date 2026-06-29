@@ -9,8 +9,9 @@ from flask_jwt_extended import jwt_required,get_jwt_identity
 from flask import jsonify,request,make_response
 from datetime import datetime
 from functools import wraps
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from sqlalchemy import case, func
+import calendar
 from sqlalchemy.exc import SQLAlchemyError
 
 def check_role(required_role):
@@ -366,52 +367,124 @@ class GetEmployeeLeaderboard(Resource):
     @jwt_required()
     def get(self):
         try:
-            start_date = datetime(2025, 10, 1)
+            # ==========================
+            # Date filtering
+            # ==========================
+            period = request.args.get("period")  # e.g. "this_month"
+            start_date_str = request.args.get("start_date")
+            end_date_str = request.args.get("end_date")
 
+            if period == "this_month":
+                today = date.today()
+
+                # First day of current month
+                start_date = datetime(today.year, today.month, 1)
+
+                # Last day of current month
+                last_day = calendar.monthrange(today.year, today.month)[1]
+                end_date = datetime(
+                    today.year,
+                    today.month,
+                    last_day,
+                    23,
+                    59,
+                    59
+                )
+
+            elif start_date_str and end_date_str:
+                start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
+                end_date = datetime.strptime(
+                    end_date_str,
+                    "%Y-%m-%d"
+                ).replace(
+                    hour=23,
+                    minute=59,
+                    second=59
+                )
+
+            else:
+                # Default range
+                start_date = datetime(2025, 10, 1)
+                end_date = datetime.utcnow()
+
+            # ==========================
             # Pagination params
+            # ==========================
             page = request.args.get("page", 1, type=int)
             per_page = request.args.get("per_page", 10, type=int)
 
-            # Subquery: total amount paid per sale
+            # ==========================
+            # Total amount paid per sale
+            # ==========================
             payments_subq = (
                 db.session.query(
                     SalesPaymentMethods.sale_id,
-                    func.coalesce(func.sum(SalesPaymentMethods.amount_paid), 0).label("amount_paid")
+                    func.coalesce(
+                        func.sum(SalesPaymentMethods.amount_paid),
+                        0
+                    ).label("amount_paid")
                 )
                 .group_by(SalesPaymentMethods.sale_id)
                 .subquery()
             )
 
-            # Expression: choose based on sale status
+            # ==========================
+            # Sale total expression
+            # ==========================
             total_amount_expr = case(
-                (Sales.status == "paid", func.coalesce(payments_subq.c.amount_paid, 0)),
-                (Sales.status == "unpaid", func.coalesce(Sales.balance, 0)),
+                (
+                    Sales.status == "paid",
+                    func.coalesce(payments_subq.c.amount_paid, 0)
+                ),
+                (
+                    Sales.status == "unpaid",
+                    func.coalesce(Sales.balance, 0)
+                ),
                 (
                     Sales.status == "partially_paid",
-                    func.coalesce(payments_subq.c.amount_paid, 0) + func.coalesce(Sales.balance, 0)
+                    func.coalesce(payments_subq.c.amount_paid, 0)
+                    + func.coalesce(Sales.balance, 0)
                 ),
                 else_=0
             )
 
-            # Base query (aggregated per employee)
+            # ==========================
+            # Base query
+            # ==========================
             base_query = (
                 db.session.query(
                     Sales.user_id,
                     func.count(Sales.sales_id).label("total_sales"),
-                    func.coalesce(func.sum(total_amount_expr), 0).label("total_amount")
+                    func.coalesce(
+                        func.sum(total_amount_expr),
+                        0
+                    ).label("total_amount")
                 )
-                .join(SoldItem, Sales.sales_id == SoldItem.sales_id)
-                .outerjoin(payments_subq, Sales.sales_id == payments_subq.c.sale_id)
-                .filter(Sales.created_at >= start_date)
+                .join(
+                    SoldItem,
+                    Sales.sales_id == SoldItem.sales_id
+                )
+                .outerjoin(
+                    payments_subq,
+                    Sales.sales_id == payments_subq.c.sale_id
+                )
+                .filter(
+                    Sales.created_at.between(start_date, end_date)
+                )
                 .group_by(Sales.user_id)
-                .order_by(func.sum(total_amount_expr).desc())
+                .order_by(
+                    func.sum(total_amount_expr).desc()
+                )
             )
 
-            # Total employees (for pagination)
+            # ==========================
+            # Pagination
+            # ==========================
             total_records = base_query.count()
-            total_pages = (total_records + per_page - 1) // per_page
+            total_pages = (
+                total_records + per_page - 1
+            ) // per_page
 
-            # Apply pagination
             sales = (
                 base_query
                 .offset((page - 1) * per_page)
@@ -422,6 +495,10 @@ class GetEmployeeLeaderboard(Resource):
             if not sales:
                 return make_response(jsonify({
                     "data": [],
+                    "filters": {
+                        "start_date": start_date.strftime("%Y-%m-%d"),
+                        "end_date": end_date.strftime("%Y-%m-%d")
+                    },
                     "pagination": {
                         "total": total_records,
                         "pages": total_pages,
@@ -431,18 +508,32 @@ class GetEmployeeLeaderboard(Resource):
                 }), 200)
 
             leaderboard = []
+
             for sale in sales:
-                user = Users.query.filter_by(users_id=sale.user_id).first()
-                employee_name = user.username if user else "Unknown Employee"
+                user = Users.query.filter_by(
+                    users_id=sale.user_id
+                ).first()
+
+                employee_name = (
+                    user.username
+                    if user
+                    else "Unknown Employee"
+                )
 
                 leaderboard.append({
                     "employee_name": employee_name,
                     "total_sales": f"{sale.total_sales:,}",
-                    "total_amount": f"{sale.total_amount:,.2f}" if sale.total_amount else "0.00"
+                    "total_amount": f"{sale.total_amount:,.2f}"
+                    if sale.total_amount
+                    else "0.00"
                 })
 
             return make_response(jsonify({
                 "data": leaderboard,
+                "filters": {
+                    "start_date": start_date.strftime("%Y-%m-%d"),
+                    "end_date": end_date.strftime("%Y-%m-%d")
+                },
                 "pagination": {
                     "total": total_records,
                     "pages": total_pages,

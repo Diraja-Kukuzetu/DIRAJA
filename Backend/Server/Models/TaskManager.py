@@ -9,7 +9,8 @@ class TaskManager(db.Model):
 
     task_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.users_id'), nullable=False)  # Assigner
-    assignee_id = db.Column(db.Integer, db.ForeignKey('users.users_id'), nullable=False)  # Assignee
+    assignee_id = db.Column(db.Integer, db.ForeignKey('users.users_id'), nullable=False)
+    assignee2_id = db.Column(db.Integer, db.ForeignKey('users.users_id'), nullable=True)# Assignee
     task = db.Column(db.JSON, nullable=False)
     assigned_date = db.Column(db.DateTime, default=datetime.datetime.utcnow, nullable=False)
     due_date = db.Column(db.DateTime, nullable=True)
@@ -31,6 +32,7 @@ class TaskManager(db.Model):
     # Relationships - using select lazy loading to allow eager loading
     assigner = db.relationship('Users', foreign_keys=[user_id], backref='assigned_tasks', lazy='select')
     assignee = db.relationship('Users', foreign_keys=[assignee_id], backref='received_tasks', lazy='select')
+    assignee2 = db.relationship('Users', foreign_keys=[assignee2_id])
     comments = db.relationship(
         'TaskComment', 
         backref='task', 
@@ -45,9 +47,17 @@ class TaskManager(db.Model):
         lazy='select',
         cascade='all, delete-orphan'
     )
+    shop_id = db.Column(
+        db.Integer,
+        db.ForeignKey('shops.shops_id'),
+        nullable=True
+    )
     
     # Self-referential relationship for recurring tasks
     parent_task = db.relationship('TaskManager', remote_side=[task_id], backref='child_tasks', foreign_keys=[parent_task_id])
+    
+    shop = db.relationship('Shops', backref='tasks', lazy='select')
+    
     
     @validates('priority')
     def validate_priority(self, key, priority):
@@ -202,6 +212,8 @@ class TaskManager(db.Model):
             "task": self.task,
             "priority": self.priority,
             "category": self.category,
+            "shop_id": self.shop_id,
+            "shopname": self.shop.shopname if self.shop else None,
             "status": self.status,
             "assigned_date": self.assigned_date.isoformat() if self.assigned_date else None,
             "due_date": self.due_date.isoformat() if self.due_date else None,

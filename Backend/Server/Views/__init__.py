@@ -67,7 +67,7 @@ from Server.Views.Sales import (
     UpdateSalePayment, GetUnpaidSales, PaymentMethodsResource,
     CapturePaymentResource, CreditHistoryResource, GetSingleSaleByShop,
     SalesByEmployeeResource, GetSale, GetUnpaidSalesByClerk,
-    TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport,ProductEarningsSummary,CategoryEarningsSummary, ItemsSoldSummary, DeliverySalesSummary
+    TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport,ProductEarningsSummary,CategoryEarningsSummary, ItemsSoldSummary, DeliverySalesSummary, CashAtHandByUser
 )
 
 from Server.Views.ManagerDashbordViews import (
@@ -407,6 +407,8 @@ api.add_resource(StockItem, '/stockitems/<int:item_id>')
 api.add_resource(CashSales, '/sales/cash/shops', '/sales/cash/sale/<int:sale_id>')
 api.add_resource(CashSalesByUser, '/sales/cash/user/<int:user_id>')
 api.add_resource(TotalCashSalesByUser, '/cashsaleperuser/<string:username>/<int:shop_id>')
+api.add_resource(CashAtHandByUser, '/users/cash-at-hand')
+
 
 #Cash Deposits
 api.add_resource(AddCashDeposit, '/cashdeposits/add')

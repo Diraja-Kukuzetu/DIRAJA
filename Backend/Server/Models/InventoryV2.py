@@ -90,3 +90,40 @@ class InventoryV2(db.Model):
 
     def __repr__(self):
         return f"InventoryV2(id={self.inventoryV2_id}, itemname='{self.itemname}', quantity={self.quantity}, BatchNumber='{self.BatchNumber}')"
+
+
+class InventoryPayment(db.Model):
+    __tablename__ = "inventory_payments"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+
+    # Inventory being paid for
+    inventory_id = db.Column(
+        db.Integer,
+        db.ForeignKey('inventoryV2.inventoryV2_id'),
+        nullable=False
+    )
+
+    # Payment details
+    amount_paid = db.Column(db.Float, nullable=False)
+    payment_reference = db.Column(db.String(255), nullable=False)
+
+    # Timestamp
+    created_at = db.Column(
+        db.DateTime,
+        server_default=db.func.now(),
+        nullable=False
+    )
+
+    # Relationship
+    inventory = db.relationship(
+        "InventoryV2",
+        backref=db.backref("payments", lazy=True, cascade="all, delete-orphan")
+    )
+
+    def __repr__(self):
+        return (
+            f"<InventoryPayment {self.id} - "
+            f"Inventory {self.inventory_id} - "
+            f"{self.amount_paid}>"
+        )

@@ -8,6 +8,7 @@ class SoldItem(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     sales_id = db.Column(db.Integer, db.ForeignKey('sales.sales_id'), nullable=False)
     item_name = db.Column(db.String(50), nullable=False)
+    item_id = db.Column(db.Integer, db.ForeignKey('stock_item.id'), nullable=False)
     quantity = db.Column(db.Float, nullable=False)
     metric = db.Column(db.String(10), nullable=False)
     unit_price = db.Column(db.Float, nullable=False)
@@ -21,6 +22,7 @@ class SoldItem(db.Model):
 
     # Updated relationship to point to ShopStockV2
     shop_stock = db.relationship('ShopStockV2', backref='sold_items', lazy=True)
+    stock_item = db.relationship('StockItems', backref='sold_items', lazy=True)
 
     @validates('metric')
     def validate_metric(self, key, metric):
