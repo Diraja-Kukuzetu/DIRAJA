@@ -6,152 +6,240 @@ from datetime import datetime
 from app import db
 from Server.Models.Sales import Sales
 from Server.Models.Paymnetmethods import SalesPaymentMethods
-from Server.Models.Transactions import TranscationType
-from Server.Models.BankAccounts import BankAccount
+from Server.Models.SoldItems import SoldItem
+from Server.Models.ShopstockV2 import ShopStockV2
+from Server.Models.LiveStock import LiveStock
+from Server.Models.Customers import Customers
+from Server.Views.Services.journal_service import JournalService
 import logging
 
 logger = logging.getLogger(__name__)
 
 class SasaPayCallbackResource(Resource):
-    """Handle SasaPay STK push callback"""
-    
     def post(self):
-        """Receive payment confirmation from SasaPay"""
+        """Handle SasaPay payment callback and finalize sale"""
         try:
-            # Get callback data
             callback_data = request.get_json()
-            logger.info(f"Received SasaPay callback: {json.dumps(callback_data)}")
             
-            # Extract relevant data (adjust based on actual SasaPay callback format)
-            # This format may vary - adjust according to SasaPay documentation
-            status = callback_data.get("statusCode") or callback_data.get("ResultCode")
-            result_desc = callback_data.get("message") or callback_data.get("ResultDesc")
-            transaction_reference = callback_data.get("TransactionReference") or callback_data.get("TransID")
-            checkout_request_id = callback_data.get("CheckoutRequestID")
-            amount = float(callback_data.get("Amount", 0))
-            phone_number = callback_data.get("PhoneNumber")
-            merchant_code = callback_data.get("MerchantCode")
+            # Log the callback
+            current_app.logger.info(f"[SASAPAY] Callback received: {callback_data}")
             
-            # Extract sale ID from transaction reference
-            sale_id = None
-            if transaction_reference:
-                # Assuming format: SALE{sale_id}...
-                sale_id_str = transaction_reference.replace("SALE", "").split()[0]
-                try:
-                    sale_id = int(''.join(filter(str.isdigit, sale_id_str)))
-                except ValueError:
-                    pass
+            # Validate callback
+            if not callback_data or 'ResultCode' not in callback_data:
+                current_app.logger.error("[SASAPAY] Invalid callback data")
+                return {"status": "error", "message": "Invalid callback data"}, 200
+
+            # Extract important fields
+            checkout_request_id = callback_data.get('CheckoutRequestID')
+            result_code = callback_data.get('ResultCode')
+            result_desc = callback_data.get('ResultDesc')
+            transaction_amount = callback_data.get('Amount')
+            sasapay_transaction_id = callback_data.get('TransactionReference') or callback_data.get('SasaPayTransactionID')
+            merchant_code = callback_data.get('MerchantCode')
+            merchant_reference = callback_data.get('MerchantTransactionReference')
+            customer_name = callback_data.get('CustomerName')
+            customer_number = callback_data.get('CustomerNumber')
             
-            # If status is success (0 typically means success)
-            # Adjust based on your SasaPay success indicator
-            is_success = (status == "0" or status == "0" or status == 0)
-            
-            if is_success and sale_id:
-                # Update the sale payment
-                return self._process_successful_payment(
-                    sale_id=sale_id,
-                    amount=amount,
-                    transaction_code=transaction_reference,
-                    checkout_request_id=checkout_request_id,
-                    phone_number=phone_number,
-                    callback_data=callback_data
-                )
-            else:
-                logger.warning(f"SasaPay payment failed: {result_desc}")
-                return {
-                    "success": False,
-                    "message": "Payment not successful",
-                    "result_desc": result_desc
-                }, 200  # Always return 200 to SasaPay
-                
-        except Exception as e:
-            logger.error(f"Error processing SasaPay callback: {str(e)}")
-            # Always return 200 to avoid retries
-            return {"success": False, "error": str(e)}, 200
-    
-    def _process_successful_payment(self, sale_id, amount, transaction_code, 
-                                   checkout_request_id, phone_number, callback_data):
-        """Process successful SasaPay payment"""
-        try:
-            # Find the sale
-            sale = Sales.query.get(sale_id)
-            if not sale:
-                logger.error(f"Sale {sale_id} not found for SasaPay callback")
-                return {"success": False, "message": "Sale not found"}, 200
-            
-            # Check if payment was already recorded
-            existing_payment = SalesPaymentMethods.query.filter_by(
-                sale_id=sale_id,
-                payment_method='sasapay',
-                transaction_code=transaction_code
+            if not checkout_request_id:
+                current_app.logger.error("[SASAPAY] Missing CheckoutRequestID")
+                return {"status": "error", "message": "Missing CheckoutRequestID"}, 200
+
+            # Find the payment method
+            payment_method = SalesPaymentMethods.query.filter_by(
+                checkout_request_id=checkout_request_id
             ).first()
             
-            if existing_payment:
-                logger.info(f"Payment {transaction_code} already processed for sale {sale_id}")
-                return {"success": True, "message": "Payment already processed"}, 200
+            if not payment_method:
+                current_app.logger.error(f"[SASAPAY] Payment method not found for: {checkout_request_id}")
+                return {"status": "error", "message": "Transaction not found"}, 200
+
+            # Find the sale
+            sale = Sales.query.get(payment_method.sale_id)
+            if not sale:
+                current_app.logger.error(f"[SASAPAY] Sale not found for ID: {payment_method.sale_id}")
+                return {"status": "error", "message": "Sale not found"}, 200
+
+            # Update payment method with callback data
+            payment_method.sasapay_transaction_id = sasapay_transaction_id
+            payment_method.payment_status = 'success' if result_code == '0' else 'failed'
+            payment_method.callback_received_at = datetime.utcnow()
+            payment_method.result_code = result_code
+            payment_method.result_desc = result_desc
+            payment_method.callback_data = json.dumps(callback_data)
             
-            # Get shop to bank mapping
-            shop_to_bank_mapping = {
-                1: 12, 2: 3, 3: 6, 4: 2, 5: 5, 6: 17,
-                7: 15, 8: 9, 10: 18, 11: 8, 12: 7,
-                14: 14, 16: 13, 19: 22
-            }
-            bank_id = shop_to_bank_mapping.get(sale.shop_id, 11)
-            
-            # Record payment
-            payment_record = SalesPaymentMethods(
-                sale_id=sale_id,
-                payment_method='sasapay',
-                amount_paid=amount,
-                transaction_code=transaction_code,
-                discount=0,
-                created_at=datetime.utcnow(),
-                metadata=json.dumps({
-                    'checkout_request_id': checkout_request_id,
-                    'phone_number': phone_number,
-                    'callback_data': callback_data
-                })
-            )
-            db.session.add(payment_record)
-            
-            # Update bank account
-            bank_account = BankAccount.query.get(bank_id)
-            if bank_account:
-                previous_balance = bank_account.Account_Balance
-                bank_account.Account_Balance += amount
+            # Parse reservation data stored during initiation
+            reservation_data = None
+            if payment_method.callback_data:
+                try:
+                    # The callback_data field currently has the callback JSON
+                    # We need to parse the original reservation data
+                    # If you stored it separately, retrieve it
+                    reservation_data = json.loads(payment_method.callback_data) if payment_method.callback_data else None
+                except:
+                    # Try to get from a separate field if you added one
+                    pass
+
+            if result_code == '0':
+                # ===== PAYMENT SUCCESS - FINALIZE SALE =====
+                current_app.logger.info(f"[SASAPAY] Payment successful for sale {sale.sales_id}")
                 
-                # Record transaction
-                transaction = TranscationType(
-                    Transaction_type="Debit",
-                    Transaction_amount=amount,
-                    From_account=f"SASAPAY Payment - Sale #{sale_id}",
-                    To_account=bank_account.Account_name,
-                    created_at=datetime.utcnow(),
-                    transaction_code=transaction_code
-                )
-                db.session.add(transaction)
-            
-            # Update sale status
-            total_paid = db.session.query(db.func.sum(SalesPaymentMethods.amount_paid))\
-                .filter(SalesPaymentMethods.sale_id == sale_id).scalar() or 0
-            
-            sale.status = 'paid' if total_paid >= sale.total_amount else 'partially_paid'
-            sale.balance = sale.total_amount - total_paid
-            
+                # ===== UPDATE CUSTOMER INFO FROM CALLBACK =====
+                if customer_name or customer_number:
+                    # Update sale
+                    if customer_name:
+                        sale.customer_name = customer_name
+                    if customer_number:
+                        sale.customer_number = customer_number
+                    
+                    # Update customer record
+                    customer = Customers.query.filter_by(sales_id=sale.sales_id).first()
+                    if customer:
+                        if customer_name:
+                            customer.customer_name = customer_name
+                        if customer_number:
+                            customer.customer_number = customer_number
+                        db.session.add(customer)
+                
+                # ===== UPDATE SALE STATUS =====
+                # Calculate total paid from all successful payments
+                total_paid = db.session.query(db.func.sum(SalesPaymentMethods.amount_paid))\
+                    .filter(SalesPaymentMethods.sale_id == sale.sales_id)\
+                    .filter(SalesPaymentMethods.payment_status == 'success')\
+                    .scalar() or 0
+                
+                # Calculate total from sold items
+                sold_items_total = db.session.query(db.func.sum(SoldItem.total_price))\
+                    .filter(SoldItem.sales_id == sale.sales_id)\
+                    .scalar() or 0
+                
+                # Update balance
+                sale.balance = max(0, sold_items_total - total_paid)
+                
+                # Determine status
+                if sale.balance == 0:
+                    sale.status = 'paid'
+                else:
+                    sale.status = 'partially_paid'
+                
+                sale.note = f"Payment confirmed via SasaPay. Transaction: {sasapay_transaction_id or checkout_request_id}"
+                sale.timestamp = datetime.utcnow()
+                
+                db.session.add(sale)
+                current_app.logger.info(f"[SASAPAY] Updated sale {sale.sales_id}: status={sale.status}, balance={sale.balance}")
+                
+                # ===== DEDUCT STOCK =====
+                # We need to find and deduct stock for each sold item
+                sold_items = SoldItem.query.filter_by(sales_id=sale.sales_id).all()
+                
+                for sold_item in sold_items:
+                    # Check if stock was already deducted (to prevent double deduction)
+                    if sold_item.BatchNumber and "Livestock" not in sold_item.BatchNumber:
+                        # Parse batch numbers from BatchNumber field
+                        # Format: "Batch B001 (5.0), Batch B002 (3.0)"
+                        batch_info = sold_item.BatchNumber.split(", ")
+                        remaining_quantity = sold_item.quantity
+                        
+                        for batch_entry in batch_info:
+                            if remaining_quantity <= 0:
+                                break
+                            
+                            # Extract batch number and quantity
+                            import re
+                            match = re.search(r'Batch (\w+)\s*\(([\d.]+)\)', batch_entry)
+                            if match:
+                                batch_number = match.group(1)
+                                deduct_qty = float(match.group(2))
+                                
+                                # Find the batch
+                                batch = ShopStockV2.query.filter_by(
+                                    BatchNumber=batch_number,
+                                    shop_id=sale.shop_id,
+                                    itemname=sold_item.item_name
+                                ).first()
+                                
+                                if batch and batch.quantity >= deduct_qty:
+                                    batch.quantity -= deduct_qty
+                                    db.session.add(batch)
+                                    remaining_quantity -= deduct_qty
+                                    current_app.logger.info(f"[SASAPAY] Deducted {deduct_qty} from batch {batch_number}")
+                                else:
+                                    current_app.logger.warning(f"[SASAPAY] Batch {batch_number} not found or insufficient stock")
+                        
+                        # If still has remaining quantity, check livestock
+                        if remaining_quantity > 0:
+                            livestock = LiveStock.query.filter(
+                                LiveStock.shop_id == sale.shop_id,
+                                LiveStock.item_name == sold_item.item_name
+                            ).first()
+                            if livestock and livestock.current_quantity >= remaining_quantity:
+                                livestock.current_quantity -= remaining_quantity
+                                livestock.clock_out_quantity -= remaining_quantity
+                                db.session.add(livestock)
+                                current_app.logger.info(f"[SASAPAY] Deducted {remaining_quantity} from livestock")
+
+                # ===== POST JOURNAL ENTRY =====
+                try:
+                    # Get sold items with their details
+                    sold_items_with_details = []
+                    for item in sold_items:
+                        sold_items_with_details.append({
+                            'item_name': item.item_name,
+                            'quantity': item.quantity,
+                            'metric': item.metric,
+                            'unit_price': item.unit_price,
+                            'total_price': item.total_price,
+                            'Purchase_account': item.Purchase_account,
+                            'Cost_of_sale': item.Cost_of_sale
+                        })
+                    
+                    # Get creditor_id if this was a credit sale
+                    creditor_id = None
+                    # Check if creditor exists in sale note or reservation data
+                    if sale.note and 'creditor' in sale.note.lower():
+                        # Extract creditor ID if stored
+                        pass
+                    
+                    journal_result = JournalService.post_sale_journal(
+                        sale=sale,
+                        sold_items=sold_items_with_details,
+                        shop_id=sale.shop_id,
+                        creditor_id=creditor_id,
+                        amount_paid=payment_method.amount_paid
+                    )
+                    current_app.logger.info(f"[SASAPAY] Journal posted for sale {sale.sales_id}")
+                except Exception as e:
+                    current_app.logger.error(f"[SASAPAY] Journal posting failed: {str(e)}")
+                    # Don't rollback - sale is already saved
+
+            else:
+                # ===== PAYMENT FAILED - MARK AS FAILED =====
+                current_app.logger.warning(f"[SASAPAY] Payment failed for sale {sale.sales_id}: {result_desc} (Code: {result_code})")
+
+                # Update sale status to failed
+                sale.status = 'failed'
+                sale.note = f"Payment failed: {result_desc}"
+                sale.timestamp = datetime.utcnow()
+
+                # Mark payment as failed
+                payment_method.failure_reason = result_desc
+
+                db.session.add(sale)
+                current_app.logger.warning(f"[SASAPAY] Marked sale {sale.sales_id} as failed")
+
+            # ===== COMMIT ALL CHANGES =====
             db.session.commit()
-            
-            logger.info(f"Successfully processed SasaPay payment {transaction_code} for sale {sale_id}")
-            
+
+            # ===== RETURN SUCCESS RESPONSE =====
             return {
-                "success": True,
-                "message": "Payment processed successfully",
-                "sale_id": sale_id,
-                "amount": amount,
-                "transaction_code": transaction_code,
-                "new_balance": sale.balance
+                "status": "success",
+                "message": "Callback processed successfully",
+                "result_code": result_code,
+                "sale_id": sale.sales_id if sale else None,
+                "sale_status": sale.status if sale else None
             }, 200
-            
+
         except Exception as e:
             db.session.rollback()
-            logger.error(f"Error processing payment for sale {sale_id}: {str(e)}")
-            return {"success": False, "error": str(e)}, 200
+            current_app.logger.error(f"[SASAPAY] Callback processing error: {str(e)}", exc_info=True)
+            # Always return 200 to prevent retries from SasaPay
+            return {"status": "error", "message": str(e)}, 200

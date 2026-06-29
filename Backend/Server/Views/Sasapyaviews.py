@@ -1471,3 +1471,262 @@ class SasaPaySingleBalanceResource(Resource):
         """Legacy method for compatibility - returns just the token"""
         result = self._get_access_token_with_details(base_url, client_id, client_secret)
         return result['access_token'] if result['success'] else None
+
+
+
+class SasaPayBusinessToBeneficiaryResource(Resource):
+    
+    @jwt_required()
+    def post(self):
+        """Transfer funds from one merchant to another merchant's beneficiary account (B2B)"""
+        
+        # Get request data
+        data = request.get_json()
+        
+        # Validate required fields
+        required_fields = [
+            'sender_merchant_code', 'receiver_merchant_code', 
+            'beneficiary_account_number', 'amount', 'callback_url'
+        ]
+        missing_fields = [field for field in required_fields if field not in data]
+        
+        if missing_fields:
+            return {
+                "error": f"Missing required fields: {', '.join(missing_fields)}",
+                "required_fields": required_fields
+            }, 400
+        
+        sender_merchant_code = data['sender_merchant_code']
+        receiver_merchant_code = data['receiver_merchant_code']
+        beneficiary_account_number = data['beneficiary_account_number']
+        amount = data['amount']
+        callback_url = data['callback_url']
+        
+        # Optional fields
+        transaction_reference = data.get('transaction_reference', self._generate_transaction_reference())
+        transaction_fee = data.get('transaction_fee', 0)
+        reason = data.get('reason', '')
+        
+        # Get current environment
+        sasapay_env = data.get('environment', os.getenv("SASAPAY_ENVIRONMENT", "sandbox"))
+        
+        # Get all merchant configurations with their unique credentials
+        merchants = self._get_all_merchant_configs(sasapay_env)
+        
+        # Find the sender merchant (must have credentials to authenticate)
+        sender_merchant = next((m for m in merchants if m['code'] == sender_merchant_code), None)
+        if not sender_merchant:
+            return {
+                "error": f"Sender merchant {sender_merchant_code} not found or not configured",
+                "available_merchants": [m['code'] for m in merchants],
+                "environment": sasapay_env
+            }, 404
+        
+        try:
+            current_app.logger.info(
+                f"Initiating B2B transfer from {sender_merchant_code} to {receiver_merchant_code} "
+                f"beneficiary {beneficiary_account_number} in {sasapay_env.upper()}"
+            )
+            print(f"\n{'='*60}")
+            print(f"[ENV] Environment: {sasapay_env.upper()}")
+            print(f"[TRANSFER] From: {sender_merchant['name']} ({sender_merchant_code})")
+            print(f"[TRANSFER] To Beneficiary: {beneficiary_account_number}")
+            print(f"[TRANSFER] Receiver Merchant: {receiver_merchant_code}")
+            print(f"[AMOUNT] {amount} KES")
+            print(f"[REF] Transaction Reference: {transaction_reference}")
+            print(f"{'='*60}")
+            
+            # STEP 1: Get access token using SENDER merchant's credentials
+            print(f"[1/2] Getting auth token for sender {sender_merchant_code}...")
+            access_token = self._get_access_token(
+                sender_merchant['base_url'], 
+                sender_merchant['client_id'], 
+                sender_merchant['client_secret']
+            )
+            
+            if not access_token:
+                print(f"[ERROR] Failed to obtain access token")
+                return {
+                    "error": "Authentication failed - Invalid client credentials for sender merchant",
+                    "merchant_code": sender_merchant_code,
+                    "environment": sasapay_env
+                }, 401
+            
+            print(f"[OK] Token obtained")
+            print(f"[2/2] Initiating B2B transfer...")
+            
+            # STEP 2: Make Business to Beneficiary request using the token
+            # Use the Business to Beneficiary endpoint as per documentation [citation:1]
+            b2b_url = f"{sender_merchant['base_url']}/transfers/business-to-beneficiary"
+            
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+            
+            payload = {
+                "TransactionReference": transaction_reference,
+                "SenderMerchantCode": sender_merchant_code,
+                "ReceiverMerchantCode": receiver_merchant_code,
+                "BeneficiaryAccountNumber": beneficiary_account_number,
+                "Amount": float(amount),
+                "TransactionFee": float(transaction_fee),
+                "Reason": reason,
+                "CallBackUrl": callback_url
+            }
+            
+            response = requests.post(
+                b2b_url,
+                json=payload,
+                headers=headers,
+                timeout=30
+            )
+            
+            # STEP 3: Process response
+            if response.status_code == 200:
+                response_data = response.json()
+                
+                if response_data.get('status') == True:
+                    print(f"[SUCCESS] Transfer initiated: {response_data.get('message')}")
+                    print(f"[CHECKOUT ID] {response_data.get('checkoutRequestId')}")
+                    
+                    return {
+                        "success": True,
+                        "sender_merchant_code": sender_merchant_code,
+                        "sender_merchant_name": sender_merchant['name'],
+                        "receiver_merchant_code": receiver_merchant_code,
+                        "beneficiary_account_number": beneficiary_account_number,
+                        "amount": float(amount),
+                        "currency": "KES",
+                        "transaction_reference": transaction_reference,
+                        "checkout_request_id": response_data.get('checkoutRequestId'),
+                        "merchant_request_id": response_data.get('merchantRequestID'),
+                        "message": response_data.get('message', 'Transaction is being processed'),
+                        "environment": sasapay_env,
+                        "status": "pending",
+                        "timestamp": datetime.utcnow().isoformat()
+                    }, 200
+                else:
+                    print(f"[FAILED] {response_data.get('message')}")
+                    return {
+                        "success": False,
+                        "sender_merchant_code": sender_merchant_code,
+                        "error": response_data.get('message', 'B2B transfer failed'),
+                        "environment": sasapay_env
+                    }, 400
+            else:
+                print(f"[ERROR] HTTP {response.status_code}: {response.text}")
+                current_app.logger.error(
+                    f"B2B transfer failed: HTTP {response.status_code} - {response.text}"
+                )
+                return {
+                    "success": False,
+                    "error": f"SasaPay API returned {response.status_code}",
+                    "details": response.text,
+                    "environment": sasapay_env
+                }, response.status_code
+                
+        except requests.exceptions.RequestException as e:
+            current_app.logger.error(f"Network error: {str(e)}")
+            return {
+                "error": "Failed to connect to SasaPay",
+                "details": str(e),
+                "environment": sasapay_env
+            }, 500
+        except Exception as e:
+            current_app.logger.error(f"Unexpected error: {str(e)}")
+            return {"error": str(e), "environment": sasapay_env}, 500
+    
+    def _generate_transaction_reference(self):
+        """Generate a unique transaction reference"""
+        import uuid
+        return f"B2B{datetime.utcnow().strftime('%Y%m%d%H%M%S')}{str(uuid.uuid4())[:8]}"
+    
+    def _get_all_merchant_configs(self, environment):
+        """Get all merchant configurations with their unique credentials from environment variables"""
+        merchants = []
+        
+        if environment == "production":
+            # Base URL for production
+            base_url = os.getenv("SASAPAY_PRODUCTION_BASE_URL", "https://api.sasapay.app/api/v1")
+            
+            # All production merchants
+            merchant_configs = [
+                {"code": "570257", "name": "Kuku Zetu - Mirema", "location": "Mirema", "type": "shop"},
+                {"code": "577960", "name": "Kuku Zetu - Lumumba Drive", "location": "Lumumba Drive", "type": "shop"},
+                {"code": "577480", "name": "Kuku Zetu - Zimmerman", "location": "Zimmerman", "type": "shop"},
+                {"code": "577668", "name": "Kukuzetu - Ngoingwa Stockist", "location": "Ngoingwa", "type": "stockist"},
+                {"code": "577666", "name": "KUKUZETU - TRM", "location": "Thika Road Mall", "type": "shop"},
+                {"code": "222333", "name": "Kukuzetu - Kasarani Equity", "location": "Kasarani", "type": "shop"},
+                {"code": "577123", "name": "Kukuzetu - Kasarani Maternity", "location": "Kasarani", "type": "shop"},
+                {"code": "577556", "name": "Kukuzetu - Turi", "location": "Turi", "type": "shop"}
+            ]
+            
+            for config in merchant_configs:
+                code = config['code']
+                
+                # Get unique credentials for this merchant
+                client_id = os.getenv(f"SASAPAY_MERCHANT_{code}_CLIENT_ID")
+                client_secret = os.getenv(f"SASAPAY_MERCHANT_{code}_CLIENT_SECRET")
+                
+                if client_id and client_secret:
+                    merchants.append({
+                        "code": code,
+                        "name": config['name'],
+                        "location": config['location'],
+                        "type": config['type'],
+                        "base_url": base_url,
+                        "client_id": client_id,
+                        "client_secret": client_secret
+                    })
+                else:
+                    print(f"[WARNING] Missing credentials for merchant {code}")
+        
+        else:  # sandbox environment
+            client_id = os.getenv("SASAPAY_SANDBOX_CLIENT_ID")
+            client_secret = os.getenv("SASAPAY_SANDBOX_CLIENT_SECRET")
+            base_url = os.getenv("SASAPAY_SANDBOX_BASE_URL", "https://sandbox.sasapay.app/api/v1")
+            
+            if client_id and client_secret:
+                merchants.append({
+                    "code": "600980",
+                    "name": "SasaPay Sandbox Merchant",
+                    "location": "Sandbox",
+                    "type": "test",
+                    "base_url": base_url,
+                    "client_id": client_id,
+                    "client_secret": client_secret
+                })
+        
+        return merchants
+    
+    def _get_access_token(self, base_url, client_id, client_secret):
+        """Get access token from SasaPay using specific merchant credentials"""
+        try:
+            token_url = f"{base_url}/auth/token/"
+            
+            params = {
+                'grant_type': 'client_credentials'
+            }
+            
+            response = requests.get(
+                token_url,
+                auth=HTTPBasicAuth(client_id, client_secret),
+                params=params,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if data.get('status') == True:
+                    access_token = data.get('access_token')
+                    if access_token:
+                        return access_token
+                        
+            return None
+            
+        except Exception as e:
+            current_app.logger.error(f"Exception getting token: {str(e)}")
+            return None

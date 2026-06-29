@@ -62,11 +62,11 @@ from Server.Views.employeeloanview import (
 )
 
 from Server.Views.Sales import (
-    AddSale, GetSales, GetSalesByShop, SalesResources, GetPaymentTotals,
-    SalesBalanceResource, TotalBalanceSummary, 
+    AddSale, SasaPaySaleResource , GetSales, GetSalesByShop, SalesResources, GetPaymentTotals,
+    SalesBalanceResource, TotalBalanceSummary,SasaPayPaymentStatusResource,
     UpdateSalePayment, GetUnpaidSales, PaymentMethodsResource,
     CapturePaymentResource, CreditHistoryResource, GetSingleSaleByShop,
-    SalesByEmployeeResource, GetSale, GetUnpaidSalesByClerk,
+    SalesByEmployeeResource, GetSale, GetUnpaidSalesByClerk,GetSalesGraphData,
     TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport,ProductEarningsSummary,CategoryEarningsSummary, ItemsSoldSummary
 )
 
@@ -201,7 +201,7 @@ from Server.Views.IncomeStatement import (IncomeStatement)
 from Server.Views.Balancesheet import (BalanceSheet)
 from Server.Views.DirajaAI import (RefreshSchema,AskAI)
 from Server.Views.Sasapyaviews import (
-    SasaPayBalanceResource,SasaPayChannelCodesResource,SasaPayTransactionStatementResource,TestSasaPayConnection,TestSasaPaySingleMerchant,TestNetworkConnectivity,SasaPaySingleBalanceResource)
+    SasaPayBalanceResource,SasaPayChannelCodesResource,SasaPayTransactionStatementResource,TestSasaPayConnection,TestSasaPaySingleMerchant,TestNetworkConnectivity,SasaPaySingleBalanceResource,SasaPayBusinessToBeneficiaryResource)
 from Server.Views.Services.sasapay_callback import SasaPayCallbackResource
 
 api_endpoint = Blueprint('auth',__name__,url_prefix='/api/diraja')
@@ -293,7 +293,10 @@ api.add_resource(GetCustomerById, '/customer/<int:customer_id>')
 
 #Sales 
 api.add_resource(AddSale, '/newsale')
+api.add_resource(SasaPaySaleResource, '/sasapay/sale')
+api.add_resource(SasaPayPaymentStatusResource,'/sasapay/payment/status/<string:checkout_request_id>')
 api.add_resource(GetSales, '/allsales')
+api.add_resource(GetSalesGraphData, '/graphs/sales-data')
 api.add_resource(GetSalesByShop,'/sales/shop/<int:shop_id>')
 api.add_resource(SalesResources,'/sale/<int:sales_id>')
 api.add_resource(GetPaymentTotals, '/get_payment_totals')
@@ -622,8 +625,9 @@ api.add_resource(SasaPayChannelCodesResource, "/channel-codes")
 api.add_resource(SasaPayTransactionStatementResource, "/sasapay/transactions")
 api.add_resource(TestNetworkConnectivity, '/test/network/connectivity')
 api.add_resource(SasaPaySingleBalanceResource, '/sasapay/balance')
+api.add_resource(SasaPayBusinessToBeneficiaryResource, '/sasapay/internal-transfer')
 
 # Register the callback endpoint
-api.add_resource(SasaPayCallbackResource, '/api/sasapay/callback')
+api.add_resource(SasaPayCallbackResource, '/sasapay/callback')
 api.add_resource(TestSasaPayConnection, '/test-connect')
 api.add_resource(TestSasaPaySingleMerchant, '/test-merchant')

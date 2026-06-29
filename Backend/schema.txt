@@ -213,6 +213,15 @@ Columns:
 - balance (FLOAT)
 - transaction_code (VARCHAR(100))
 - created_at (DATETIME)
+- checkout_request_id (VARCHAR(100))
+- merchant_code (VARCHAR(20))
+- sasapay_transaction_id (VARCHAR(100))
+- payment_status (VARCHAR(20))
+- result_code (VARCHAR(10))
+- result_desc (VARCHAR(500))
+- failure_reason (VARCHAR(500))
+- callback_received_at (DATETIME)
+- callback_data (TEXT)
 
 Table: sold_items
 Columns:

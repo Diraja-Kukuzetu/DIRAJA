@@ -91,7 +91,7 @@ class Sales(db.Model):
 
     @validates('status')
     def validate_status(self, key, status):
-        valid_status = ['paid', 'unpaid', 'partially_paid']
+        valid_status = ['paid', 'unpaid', 'partially_paid' , 'pending']
         if status is not None:
             assert status in valid_status, (
                 f"Invalid status. Must be one of: {', '.join(valid_status)}"
