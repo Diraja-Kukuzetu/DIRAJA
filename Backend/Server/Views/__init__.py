@@ -67,7 +67,9 @@ from Server.Views.Sales import (
     UpdateSalePayment, GetUnpaidSales, PaymentMethodsResource,
     CapturePaymentResource, CreditHistoryResource, GetSingleSaleByShop,
     SalesByEmployeeResource, GetSale, GetUnpaidSalesByClerk,GetSalesGraphData,
-    TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport,ProductEarningsSummary,CategoryEarningsSummary, ItemsSoldSummary
+    TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport,ProductEarningsSummary,CategoryEarningsSummary, ItemsSoldSummary, DeliverySalesSummary, CashAtHandByUser
+
+   
 )
 
 from Server.Views.ManagerDashbordViews import (
@@ -164,7 +166,7 @@ from Server.Views.PushSubscription import  (
 from Server.Views.TaskManagerViews import (
     # Task Management
     CreateTask, TaskResource, GetTasks, CompleteTask, GetUserTasks,TaskProgressResource,TaskStatsResource,TaskCommentResource,CommentResource,TaskEvaluationResource,
-    CancelRecurringTask,ProcessRecurringTasks
+    CancelRecurringTask,ProcessRecurringTasks,CreateTaskCategory,GetAllTaskCategories
 )
 from Server.Views.CookedItemsView import  (
     AddCookedItems
@@ -297,6 +299,7 @@ api.add_resource(SasaPaySaleResource, '/sasapay/sale')
 api.add_resource(SasaPayPaymentStatusResource,'/sasapay/payment/status/<string:checkout_request_id>')
 api.add_resource(GetSales, '/allsales')
 api.add_resource(GetSalesGraphData, '/graphs/sales-data')
+api.add_resource(SalesReport, '/sales-report')
 api.add_resource(GetSalesByShop,'/sales/shop/<int:shop_id>')
 api.add_resource(SalesResources,'/sale/<int:sales_id>')
 api.add_resource(GetPaymentTotals, '/get_payment_totals')
@@ -311,6 +314,7 @@ api.add_resource(CreditHistoryResource, "/credit-history")
 api.add_resource(GetSingleSaleByShop, "/sale/<int:shop_id>/<int:sales_id>")
 api.add_resource(GetUnpaidSalesByClerk, "/unpaidsales/clerk") 
 api.add_resource(ItemsSoldSummary, '/sold-items-summary', '/sold-items-summary/<int:shop_id>')
+api.add_resource(DeliverySalesSummary, '/delivery-sales-summary','/delivery-sales-summary/<int:shop_id>', '/sold-items-summary/<int:shop_id>')
 api.add_resource(ProductEarningsSummary, '/shops/<int:shop_id>/product-earnings', '/product-earnings')
 api.add_resource(CategoryEarningsSummary, "/category-earnings-summary", "/category-earnings-summary/<int:shop_id>")
 
@@ -408,6 +412,8 @@ api.add_resource(StockItem, '/stockitems/<int:item_id>')
 api.add_resource(CashSales, '/sales/cash/shops', '/sales/cash/sale/<int:sale_id>')
 api.add_resource(CashSalesByUser, '/sales/cash/user/<int:user_id>')
 api.add_resource(TotalCashSalesByUser, '/cashsaleperuser/<string:username>/<int:shop_id>')
+api.add_resource(CashAtHandByUser, '/users/cash-at-hand')
+
 
 #Cash Deposits
 api.add_resource(AddCashDeposit, '/cashdeposits/add')
@@ -549,6 +555,8 @@ api.add_resource(ProcessCSV, '/process-csv')
 #TaskManager
 # Task Management Routes
 api.add_resource(CreateTask, "/newtask")
+api.add_resource(CreateTaskCategory, "/tasks/new-category")
+api.add_resource(GetAllTaskCategories, "/tasks/categories")
 api.add_resource(TaskResource, "/tasks/<int:task_id>")
 api.add_resource(GetTasks, "/alltasks")
 api.add_resource(GetUserTasks, "/mytasks/<int:user_id>")

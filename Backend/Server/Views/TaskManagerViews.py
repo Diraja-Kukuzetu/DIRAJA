@@ -2,10 +2,11 @@ from flask import request, jsonify
 from flask_restful import Resource
 from app import db
 import json
-from Server.Models.TaskManager import TaskManager,TaskComment,TaskEvaluation
+from Server.Models.TaskManager import TaskManager,TaskComment,TaskEvaluation,TaskCategory
 from Server.Models.PushSubscription import PushSubscription
 from pywebpush import webpush, WebPushException
 from Server.Models.Users import Users
+from Server.Models.Shops import Shops
 from functools import wraps
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from flask import request, make_response
@@ -68,7 +69,7 @@ class CreateTask(Resource):
                     try:
                         due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d")
                     except ValueError:
-                        return {"error": f"Invalid date format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS"}, 400
+                        return {"error": "Invalid date format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS"}, 400
 
             # Recurring task fields
             is_recurring = data.get('is_recurring', False)
@@ -76,7 +77,7 @@ class CreateTask(Resource):
             recurrence_interval = data.get('recurrence_interval', 1)
             recurrence_end_date_str = data.get('recurrence_end_date')
             max_recurrences = data.get('max_recurrences')
-            
+
             # Validate recurring task settings
             if is_recurring:
                 if not recurrence_pattern:
@@ -85,18 +86,25 @@ class CreateTask(Resource):
                     return {"error": "Invalid recurrence pattern"}, 400
                 if recurrence_interval < 1:
                     return {"error": "Recurrence interval must be at least 1"}, 400
-            
+
             # Parse recurrence end date
             recurrence_end_date = None
             if recurrence_end_date_str:
                 try:
-                    recurrence_end_date = datetime.datetime.strptime(recurrence_end_date_str, "%Y-%m-%d")
+                    recurrence_end_date = datetime.datetime.strptime(
+                        recurrence_end_date_str, "%Y-%m-%d"
+                    )
                 except ValueError:
                     return {"error": "Invalid recurrence end date format. Use YYYY-MM-DD"}, 400
 
+            shop_id = data.get("shop_id")
+            assignee2_id = data.get("assignee2_id")
+
             new_task = TaskManager(
                 user_id=current_user_id,
+                shop_id=shop_id,
                 assignee_id=data.get("assignee_id"),
+                assignee2_id=assignee2_id,
                 task=data.get("task"),
                 priority=priority,
                 category=category,
@@ -115,9 +123,21 @@ class CreateTask(Resource):
             db.session.add(new_task)
             db.session.commit()
 
-            # Send push notification to the assignee
+            # Send push notification to the primary assignee
             if new_task.assignee_id:
-                self.send_push_to_user(new_task.assignee_id, new_task.task, new_task.priority)
+                self.send_push_to_user(
+                    new_task.assignee_id,
+                    new_task.task,
+                    new_task.priority
+                )
+
+            # Send push notification to the secondary assignee
+            if new_task.assignee2_id:
+                self.send_push_to_user(
+                    new_task.assignee2_id,
+                    new_task.task,
+                    new_task.priority
+                )
 
             return {
                 "message": "Task created successfully",
@@ -162,42 +182,104 @@ class CreateTask(Resource):
             except WebPushException as e:
                 print(f"Push failed for {sub.id}: {repr(e)}")
 
+class CreateTaskCategory(Resource):
+    def post(self):
+        try:
+            data = request.get_json()
+
+            category_name = data.get("category_name")
+
+            if not category_name:
+                return {
+                    "message": "category_name is required"
+                }, 400
+
+            # Check if category already exists
+            existing_category = TaskCategory.query.filter(
+                TaskCategory.category_name.ilike(category_name)
+            ).first()
+
+            if existing_category:
+                return {
+                    "message": "Task category already exists"
+                }, 409
+
+            category = TaskCategory(
+                category_name=category_name
+            )
+
+            db.session.add(category)
+            db.session.commit()
+
+            return {
+                "message": "Task category created successfully",
+                "data": {
+                    "id": category.id,
+                    "category_name": category.category_name
+                }
+            }, 201
+
+        except Exception as e:
+            db.session.rollback()
+            return {
+                "message": "Failed to create task category",
+                "error": str(e)
+            }, 500
+            
+class GetAllTaskCategories(Resource):
+    @jwt_required()
+    def get(self):
+        return [
+            {
+                "id": category.id,
+                "category_name": category.category_name
+            }
+            for category in TaskCategory.query.all()
+        ], 200
+
 
 class GetTasks(Resource):
     @jwt_required()
     @check_role('manager')
     def get(self):
-        category    = request.args.get('category')
-        status      = request.args.get('status')
-        priority    = request.args.get('priority')
-        assignee_id = request.args.get('assignee_id')
- 
-        query = TaskManager.query.options(
-            joinedload(TaskManager.assigner),
-            joinedload(TaskManager.assignee),
-        )
- 
-        if category:
-            query = query.filter(TaskManager.category == category)
-        if status:
-            query = query.filter(TaskManager.status == status)
-        if priority:
-            query = query.filter(TaskManager.priority == priority)
-        if assignee_id:
-            query = query.filter(TaskManager.assignee_id == assignee_id)
- 
-        tasks = query.order_by(
-            TaskManager.due_date.desc(),
-            TaskManager.priority.desc()
-        ).all()
- 
-        if not tasks:
-            return {"message": "No tasks found"}, 404
- 
-        return {
-            "tasks": [task.to_dict(include_recurrence_info=True) for task in tasks],  # ← changed
-            "total_count": len(tasks),
-        }, 200
+        try:
+            category = request.args.get('category')
+            status = request.args.get('status')
+            priority = request.args.get('priority')
+            assignee_id = request.args.get('assignee_id')
+
+            query = TaskManager.query.options(
+                joinedload(TaskManager.assigner),
+                joinedload(TaskManager.assignee),
+                joinedload(TaskManager.shop),
+            )
+
+            if category:
+                query = query.filter(TaskManager.category == category)
+            if status:
+                query = query.filter(TaskManager.status == status)
+            if priority:
+                query = query.filter(TaskManager.priority == priority)
+            if assignee_id:
+                query = query.filter(TaskManager.assignee_id == assignee_id)
+
+            tasks = query.order_by(
+                TaskManager.due_date.desc(),
+                TaskManager.priority.desc()
+            ).all()
+
+            if not tasks:
+                return {"message": "No tasks found"}, 404
+
+            return {
+                "tasks": [task.to_dict(include_recurrence_info=True) for task in tasks],
+                "total_count": len(tasks),
+            }, 200
+        
+        except Exception as e:
+            # Log the error
+            print(f"Error in GetTasks: {str(e)}")
+            return {"error": str(e), "message": "Failed to fetch tasks"}, 500
 
 
 
@@ -218,6 +300,7 @@ class GetUserTasks(Resource):
         # Build query
         query = TaskManager.query.options(
             joinedload(TaskManager.assigner),
+            joinedload(TaskManager.shop),
             joinedload(TaskManager.assignee)
         ).filter(TaskManager.assignee_id == target_user_id)
         
@@ -726,6 +809,7 @@ class TaskResource(Resource):
             joinedload(TaskManager.assignee),
             joinedload(TaskManager.comments).joinedload(TaskComment.user),
             joinedload(TaskManager.evaluation),
+            joinedload(TaskManager.shop),
             joinedload(TaskManager.child_tasks)
         ).get(task_id)
         
@@ -857,6 +941,7 @@ class TaskResource(Resource):
             updated_task = TaskManager.query.options(
                 joinedload(TaskManager.assigner),
                 joinedload(TaskManager.assignee),
+                joinedload(TaskManager.shop),
                 joinedload(TaskManager.comments).joinedload(TaskComment.user),
                 joinedload(TaskManager.evaluation),
                 joinedload(TaskManager.child_tasks)

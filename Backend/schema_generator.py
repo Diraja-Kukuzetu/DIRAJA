@@ -22,7 +22,8 @@ def generate_relationships():
     for table in db.metadata.tables.values():
         for column in table.columns:
             for fk in column.foreign_keys:
-                output += f"- {table.name}.{column.name} = {fk.column.table.name}.{fk.column.name}\n"
+                target = fk.target_fullname
+                output += f"- {table.name}.{column.name} → {target}\n"
 
     return output
 
