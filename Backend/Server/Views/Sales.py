@@ -119,6 +119,17 @@ class AddSale(Resource):
                         'message': f"Invalid metric '{metric}' for item '{item['item_name']}'. Must be one of: item, kg, ltrs",
                         'invalid_item': item
                     }, 400
+                    
+                stock_item = StockItems.query.filter_by(
+                    item_name=item['item_name']
+                ).first()
+
+                if not stock_item:
+                    return {
+                        "message": f"Item '{item['item_name']}' not found in stock"
+                    }, 400
+
+                item_id = stock_item.id
 
                 # ===== GET STOCK ITEM AND ETIMS CODE =====
                 stock_item = StockItems.query.filter_by(
@@ -318,6 +329,7 @@ class AddSale(Resource):
                 # Build sold item with references
                 sold_item = {
                     'item_name': item['item_name'],
+                    'item_id': item['item_id'],
                     'quantity': item['quantity'],
                     'metric': item['metric'],
                     'unit_price': item['unit_price'],
@@ -386,6 +398,7 @@ class AddSale(Resource):
                 sold_item = SoldItem(
                     sales_id=new_sale.sales_id,
                     item_name=item['item_name'],
+                    item_id=item['item_id'],
                     quantity=item['quantity'],
                     metric=item['metric'],
                     unit_price=item['unit_price'],
@@ -2368,11 +2381,6 @@ class CashSalesByUser(Resource):
                     "user_id": sale.user_id,
                     "shop_id": sale.shop_id,
                     "customer_name": sale.customer_name,
-                    "item_name": sale.item_name,
-                    "quantity": sale.quantity,
-                    "metric": sale.metric,
-                    "unit_price": sale.unit_price,
-                    "total_price": sale.total_price,
                     "amount_paid": p.amount_paid,
                     "balance": p.balance,
                     "transaction_code": p.transaction_code,
@@ -2451,7 +2459,120 @@ class TotalCashSalesByUser(Resource):
                 "details": str(e)
             }, 500
 
+class CashAtHandByUser(Resource):
+    @jwt_required()
+    def get(self):
+        try:
+            # Starting point for cash tracking
+            start_datetime = datetime(2026, 4, 22, 0, 0, 0)
 
+            # Current date and time
+            now = datetime.now()
+
+            users = Users.query.all()
+
+            results = []
+
+            for user in users:
+
+                # Get shop name through User -> Employee -> Shop relationship
+                shop_name = (
+                    user.employees.shops.shopname
+                    if user.employees and user.employees.shops
+                    else None
+                )
+
+                # Total cash sales up to this moment
+                total_cash_sales = (
+                    db.session.query(
+                        func.coalesce(
+                            func.sum(SalesPaymentMethods.amount_paid), 0
+                        )
+                    )
+                    .join(
+                        Sales,
+                        Sales.sales_id == SalesPaymentMethods.sale_id
+                    )
+                    .filter(
+                        Sales.user_id == user.users_id
+                    )
+                    .filter(
+                        SalesPaymentMethods.payment_method == "cash"
+                    )
+                    .filter(
+                        Sales.created_at >= start_datetime
+                    )
+                    .filter(
+                        Sales.created_at <= now
+                    )
+                    .scalar()
+                )
+
+                # Total deposits up to this moment
+                total_deposits = (
+                    db.session.query(
+                        func.coalesce(
+                            func.sum(CashDeposits.amount), 0
+                        )
+                    )
+                    .filter(
+                        CashDeposits.user_id == user.users_id
+                    )
+                    .filter(
+                        CashDeposits.created_at >= start_datetime
+                    )
+                    .filter(
+                        CashDeposits.created_at <= now
+                    )
+                    .scalar()
+                )
+
+                # Current cash at hand
+                cash_at_hand = max(
+                    0,
+                    float(total_cash_sales) - float(total_deposits)
+                )
+
+                results.append({
+                    "user_id": user.users_id,
+                    "username": user.username,
+                    "shop_name": shop_name,
+                    "cash_sales": float(total_cash_sales),
+                    "deposits": float(total_deposits),
+                    "cash_at_hand": cash_at_hand
+                })
+
+            # Sort by highest cash at hand
+            results.sort(
+                key=lambda x: x["cash_at_hand"],
+                reverse=True
+            )
+
+            # Total cash at hand across all users
+            total_cash_at_hand = sum(
+                user["cash_at_hand"] for user in results
+            )
+
+            return {
+                "generated_at": now.isoformat(),
+                "tracking_from": start_datetime.isoformat(),
+                "total_cash_at_hand": round(total_cash_at_hand, 2),
+                "users": results
+            }, 200
+
+        except SQLAlchemyError as e:
+            db.session.rollback()
+
+            return {
+                "error": "Failed to calculate cash at hand",
+                "details": str(e)
+            }, 500
+
+        except Exception as e:
+            return {
+                "error": "Unexpected error",
+                "details": str(e)
+            }, 500
 
 
 class GenerateSalesReport(Resource):

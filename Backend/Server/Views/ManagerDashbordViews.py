@@ -8,6 +8,7 @@ from Server.Models.Users import Users
 from Server.Models.Paymnetmethods import SalesPaymentMethods
 from Server.Models.Shops import Shops
 from Server.Models.Shopstock import ShopStock
+from Server.Models.StockItems import StockItems
 from Server.Models.Sales import Sales
 from Server.Models.Stock import Stock
 from Server.Models.SoldItems import SoldItem
@@ -508,6 +509,7 @@ class TotalAmountPaidPerShop(Resource):
             results = []
             overall_paid = overall_unpaid = overall_delivery_sales = overall_transaction_count = 0
             overall_payment_totals = {"sasapay": 0, "cash": 0, "not_payed": 0}
+            overall_category_totals = {}  # Will hold totals per category across all shops
 
             for shop in shops:
                 shop_id = shop.shops_id
@@ -559,6 +561,35 @@ class TotalAmountPaidPerShop(Resource):
 
                 overall_payment_totals["not_payed"] += float(total_unpaid)
 
+                # Category breakdown for this shop
+                category_summary = {}
+                
+                # Query to get total sales per category for this shop
+                category_sales = db.session.query(
+                    StockItems.category,
+                    func.sum(SoldItem.total_price)
+                ).join(
+                    SoldItem, SoldItem.item_id == StockItems.id
+                ).join(
+                    Sales, Sales.sales_id == SoldItem.sales_id
+                ).filter(
+                    Sales.shop_id == shop_id,
+                    Sales.created_at.between(start_date, end_date)
+                ).group_by(
+                    StockItems.category
+                ).all()
+
+                for category, total in category_sales:
+                    category_name = category if category else "uncategorized"
+                    amount = float(total or 0)
+                    category_summary[category_name] = f"Ksh {amount:,.2f}"
+                    
+                    # Add to overall category totals
+                    if category_name in overall_category_totals:
+                        overall_category_totals[category_name] += amount
+                    else:
+                        overall_category_totals[category_name] = amount
+
                 total_sales = total_paid + total_unpaid
 
                 # Comparison
@@ -598,10 +629,16 @@ class TotalAmountPaidPerShop(Resource):
                     "delivery_sales": f"Ksh {delivery_sales:,.2f}",
                     "transaction_count": transaction_count,
                     "payment_breakdown": payment_summary,
+                    "category_breakdown": category_summary,  # New field for category breakdown
                     "comparison": comparison
                 })
 
             overall_total_sales = overall_paid + overall_unpaid
+
+            # Format overall category totals
+            formatted_category_totals = {}
+            for category, total in overall_category_totals.items():
+                formatted_category_totals[category] = f"Ksh {total:,.2f}"
 
             summary = {
                 "overall_total_sales": f"Ksh {overall_total_sales:,.2f}",
@@ -615,6 +652,7 @@ class TotalAmountPaidPerShop(Resource):
                     "cash": f"Ksh {overall_payment_totals['cash']:,.2f}",
                     "not_payed": f"Ksh {overall_payment_totals['not_payed']:,.2f}"
                 },
+                "overall_category_breakdown": formatted_category_totals,  # New field for category totals
                 "transaction_count": overall_transaction_count
             }
 

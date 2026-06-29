@@ -388,6 +388,14 @@ Columns:
 - received_timestamp (DATETIME)
 - updated_at (DATETIME)
 
+Table: inventory_payments
+Columns:
+- id (INTEGER)
+- inventory_id (INTEGER)
+- amount_paid (FLOAT)
+- payment_reference (VARCHAR(255))
+- created_at (DATETIME)
+
 Table: shop_stock_v2
 Columns:
 - stockv2_id (INTEGER)
@@ -447,7 +455,8 @@ Columns:
 - task_id (INTEGER)
 - user_id (INTEGER)
 - assignee_id (INTEGER)
-- task (VARCHAR(255))
+- assignee2_id (INTEGER)
+- task (JSON)
 - assigned_date (DATETIME)
 - due_date (DATETIME)
 - status (VARCHAR(50))
@@ -462,6 +471,7 @@ Columns:
 - parent_task_id (INTEGER)
 - recurrence_count (INTEGER)
 - max_recurrences (INTEGER)
+- shop_id (INTEGER)
 
 Table: task_comments
 Columns:
@@ -532,6 +542,10 @@ Relationships:
 - supplier_history.supplier_id → suppliers.supplier_id
 - supplier_history.inventory_id → inventoryV2.inventoryV2_id
 - inventoryV2.user_id → users.users_id
+<<<<<<< HEAD
+=======
+- inventory_payments.inventory_id → inventoryV2.inventoryV2_id
+>>>>>>> 1ece5c2 (Added category sales grouping, Added payment tabble for inventory, Added spoilt stock feature for inventory)
 - shop_stock_v2.shop_id → shops.shops_id
 - shop_stock_v2.transferv2_id → transfers.transfer_id
 - shop_stock_v2.inventoryv2_id → inventoryV2.inventoryV2_id
@@ -541,7 +555,13 @@ Relationships:
 - permission.user_id → users.users_id
 - task_manager.user_id → users.users_id
 - task_manager.assignee_id → users.users_id
+<<<<<<< HEAD
 - task_manager.parent_task_id → task_manager.task_id
+=======
+- task_manager.assignee2_id → users.users_id
+- task_manager.parent_task_id → task_manager.task_id
+- task_manager.shop_id → shops.shops_id
+>>>>>>> 1ece5c2 (Added category sales grouping, Added payment tabble for inventory, Added spoilt stock feature for inventory)
 - task_comments.task_id → task_manager.task_id
 - task_comments.user_id → users.users_id
 - task_comments.parent_comment_id → task_comments.comment_id

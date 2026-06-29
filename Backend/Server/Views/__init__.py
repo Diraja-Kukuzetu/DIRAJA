@@ -67,8 +67,8 @@ from Server.Views.Sales import (
     SalesBalanceResource, TotalBalanceSummary,SasaPayPaymentStatusResource,
     UpdateSalePayment, GetUnpaidSales, PaymentMethodsResource,
     CapturePaymentResource, CreditHistoryResource, GetSingleSaleByShop,
-    SalesByEmployeeResource, GetSale, GetUnpaidSalesByClerk,GetSalesGraphData,
-    TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport,ProductEarningsSummary,CategoryEarningsSummary, ItemsSoldSummary
+    SalesByEmployeeResource, GetSale, GetUnpaidSalesByClerk,
+    TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport,ProductEarningsSummary,CategoryEarningsSummary, ItemsSoldSummary, DeliverySalesSummary, CashAtHandByUser
 )
 
 from Server.Views.ManagerDashbordViews import (
@@ -437,6 +437,8 @@ api.add_resource(ETimsReferenceResource, '/etims-reference')
 api.add_resource(CashSales, '/sales/cash/shops', '/sales/cash/sale/<int:sale_id>')
 api.add_resource(CashSalesByUser, '/sales/cash/user/<int:user_id>')
 api.add_resource(TotalCashSalesByUser, '/cashsaleperuser/<string:username>/<int:shop_id>')
+api.add_resource(CashAtHandByUser, '/users/cash-at-hand')
+
 
 #Cash Deposits
 api.add_resource(AddCashDeposit, '/cashdeposits/add')
