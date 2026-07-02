@@ -201,7 +201,8 @@ from Server.Views.IncomeStatement import (IncomeStatement)
 from Server.Views.Balancesheet import (BalanceSheet)
 from Server.Views.DirajaAI import (RefreshSchema,AskAI)
 from Server.Views.Sasapyaviews import (
-    SasaPayBalanceResource,SasaPayChannelCodesResource,SasaPayTransactionStatementResource,TestSasaPayConnection,TestSasaPaySingleMerchant,TestNetworkConnectivity,SasaPaySingleBalanceResource,SasaPayBusinessToBeneficiaryResource)
+    SasaPayBalanceResource,SasaPayChannelCodesResource,SasaPayTransactionStatementResource,TestSasaPayConnection,TestSasaPaySingleMerchant,TestNetworkConnectivity,
+    SasaPaySingleBalanceResource,SasaPayBusinessToBeneficiaryResource,SasaPayTransferResource,SasaPayTransferStatusResource)
 from Server.Views.Services.sasapay_callback import SasaPayCallbackResource
 
 api_endpoint = Blueprint('auth',__name__,url_prefix='/api/diraja')
@@ -622,6 +623,8 @@ api.add_resource(NotificationTypesResource, '/notifications/types')
 # api.add_resource(SasaPayBalanceResource,"/sasapay/balance")
 api.add_resource(SasaPayBalanceResource,"/sasapay/account")
 api.add_resource(SasaPayChannelCodesResource, "/channel-codes")
+api.add_resource(SasaPayTransferResource, '/sasapay/transfer')
+api.add_resource(SasaPayTransferStatusResource, '/sasapay/transfer/status')
 api.add_resource(SasaPayTransactionStatementResource, "/sasapay/transactions")
 api.add_resource(TestNetworkConnectivity, '/test/network/connectivity')
 api.add_resource(SasaPaySingleBalanceResource, '/sasapay/balance')

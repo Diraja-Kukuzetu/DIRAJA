@@ -1730,3 +1730,388 @@ class SasaPayBusinessToBeneficiaryResource(Resource):
         except Exception as e:
             current_app.logger.error(f"Exception getting token: {str(e)}")
             return None
+
+
+class SasaPayTransferResource(Resource):
+    """
+    Endpoint to transfer funds from a merchant account to a customer
+    """
+    
+    @jwt_required()
+    def post(self):
+        """Initiate a B2C transfer from a merchant account"""
+        
+        # Get request data
+        data = request.get_json()
+        
+        if not data:
+            return {
+                "error": "Missing request body",
+                "message": "Please provide transfer details"
+            }, 400
+        
+        # Validate required fields
+        required_fields = ['merchant_code', 'amount', 'receiver_number', 'reason']
+        missing_fields = [field for field in required_fields if field not in data]
+        
+        if missing_fields:
+            return {
+                "error": "Missing required fields",
+                "missing_fields": missing_fields,
+                "required_fields": required_fields
+            }, 400
+        
+        merchant_code = data['merchant_code']
+        amount = str(data['amount'])
+        receiver_number = data['receiver_number']
+        reason = data['reason']
+        currency = data.get('currency', 'KES')
+        channel = data.get('channel', '0')  # 0 = SasaPay by default
+        callback_url = data.get('callback_url')
+        
+        # Get current environment
+        sasapay_env = os.getenv("SASAPAY_ENVIRONMENT", "sandbox")
+        
+        # Get merchant configuration
+        merchant = self._get_merchant_config(merchant_code, sasapay_env)
+        
+        if not merchant:
+            return {
+                "error": f"Merchant {merchant_code} not found or not configured",
+                "environment": sasapay_env
+            }, 404
+        
+        try:
+            current_app.logger.info(
+                f"Processing B2C transfer for merchant {merchant_code} "
+                f"in {sasapay_env.upper()} environment"
+            )
+            
+            print(f"\n{'='*60}")
+            print(f"[ENV] Environment: {sasapay_env.upper()}")
+            print(f"[MERCHANT] Code: {merchant_code}, Name: {merchant['name']}")
+            print(f"[TRANSFER] Amount: {amount} {currency}")
+            print(f"[RECEIVER] {receiver_number}")
+            print(f"{'='*60}")
+            
+            # STEP 1: Get access token using merchant's credentials
+            print("\n[1/3] Getting access token...")
+            access_token = self._get_access_token(
+                merchant['base_url'],
+                merchant['client_id'],
+                merchant['client_secret']
+            )
+            
+            if not access_token:
+                print("[ERROR] Failed to obtain access token")
+                return {
+                    "error": "Authentication failed",
+                    "message": "Could not obtain access token for merchant"
+                }, 401
+            
+            print("[OK] Token obtained successfully")
+            
+            # STEP 2: Initiate B2C transfer
+            print("\n[2/3] Initiating B2C transfer...")
+            transfer_result = self._initiate_b2c_transfer(
+                base_url=merchant['base_url'],
+                access_token=access_token,
+                merchant_code=merchant_code,
+                amount=amount,
+                currency=currency,
+                receiver_number=receiver_number,
+                channel=channel,
+                reason=reason,
+                callback_url=callback_url
+            )
+            
+            if not transfer_result:
+                print("[ERROR] Transfer initiation failed")
+                return {
+                    "error": "Transfer failed",
+                    "message": "Could not initiate B2C transfer"
+                }, 500
+            
+            print("[OK] Transfer initiated successfully")
+            
+            # STEP 3: Format and return response
+            print("\n[3/3] Formatting response...")
+            
+            return self._format_transfer_response(
+                transfer_result,
+                merchant_code,
+                merchant['name'],
+                amount,
+                currency,
+                receiver_number
+            ), 200
+            
+        except Exception as e:
+            current_app.logger.error(f"B2C transfer error: {str(e)}")
+            return {
+                "error": "Transfer processing error",
+                "message": str(e),
+                "environment": sasapay_env
+            }, 500
+    
+    def _get_merchant_config(self, merchant_code, environment):
+        """Get merchant configuration by merchant code"""
+        
+        if environment == "production":
+            base_url = os.getenv("SASAPAY_PRODUCTION_BASE_URL", "https://api.sasapay.app/api/v1")
+            
+            # Merchant configurations (centralized)
+            merchant_configs = {
+                "570257": {"name": "Kuku Zetu - Mirema", "location": "Mirema", "type": "shop"},
+                "577960": {"name": "Kuku Zetu - Lumumba Drive", "location": "Lumumba Drive", "type": "shop"},
+                "577480": {"name": "Kuku Zetu - Zimmerman", "location": "Zimmerman", "type": "shop"},
+                "577668": {"name": "Kukuzetu - Ngoingwa Stockist", "location": "Ngoingwa", "type": "stockist"},
+                "577666": {"name": "KUKUZETU - TRM", "location": "Thika Road Mall", "type": "shop"},
+                "222333": {"name": "Kukuzetu - Kasarani Equity", "location": "Kasarani", "type": "shop"},
+                "577123": {"name": "Kukuzetu - Kasarani Maternity", "location": "Kasarani", "type": "shop"},
+                "577556": {"name": "Kukuzetu - Turi", "location": "Turi", "type": "shop"}
+            }
+            
+            if merchant_code in merchant_configs:
+                config = merchant_configs[merchant_code]
+                
+                # Get unique credentials for this merchant
+                client_id = os.getenv(f"SASAPAY_MERCHANT_{merchant_code}_CLIENT_ID")
+                client_secret = os.getenv(f"SASAPAY_MERCHANT_{merchant_code}_CLIENT_SECRET")
+                
+                if client_id and client_secret:
+                    return {
+                        "code": merchant_code,
+                        "name": config['name'],
+                        "location": config['location'],
+                        "type": config['type'],
+                        "base_url": base_url,
+                        "client_id": client_id,
+                        "client_secret": client_secret
+                    }
+        
+        else:  # sandbox environment
+            client_id = os.getenv("SASAPAY_SANDBOX_CLIENT_ID")
+            client_secret = os.getenv("SASAPAY_SANDBOX_CLIENT_SECRET")
+            base_url = os.getenv("SASAPAY_SANDBOX_BASE_URL", "https://sandbox.sasapay.app/api/v1")
+            
+            if client_id and client_secret and merchant_code == "600980":
+                return {
+                    "code": "600980",
+                    "name": "SasaPay Sandbox Merchant",
+                    "location": "Sandbox",
+                    "type": "test",
+                    "base_url": base_url,
+                    "client_id": client_id,
+                    "client_secret": client_secret
+                }
+        
+        return None
+    
+    def _get_access_token(self, base_url, client_id, client_secret):
+        """Get access token from SasaPay using merchant credentials"""
+        try:
+            token_url = f"{base_url}/auth/token/"
+            
+            params = {'grant_type': 'client_credentials'}
+            
+            response = requests.get(
+                token_url,
+                auth=HTTPBasicAuth(client_id, client_secret),
+                params=params,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if data.get('status') == True:
+                    return data.get('access_token')
+            
+            current_app.logger.error(f"Token fetch failed: {response.status_code}")
+            return None
+            
+        except Exception as e:
+            current_app.logger.error(f"Exception getting token: {str(e)}")
+            return None
+    
+    def _initiate_b2c_transfer(self, base_url, access_token, merchant_code, amount, 
+                               currency, receiver_number, channel, reason, callback_url):
+        """Initiate B2C transfer using SasaPay API"""
+        try:
+            b2c_url = f"{base_url}/payments/b2c/"
+            
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+            
+            # Generate unique transaction reference
+            merchant_transaction_ref = str(uuid.uuid4())[:8]
+            
+            payload = {
+                "MerchantCode": merchant_code,
+                "MerchantTransactionReference": merchant_transaction_ref,
+                "Amount": str(amount),
+                "Currency": currency,
+                "ReceiverNumber": receiver_number,
+                "Channel": channel,
+                "Reason": reason
+            }
+            
+            # Add callback URL if provided
+            if callback_url:
+                payload["CallBackURL"] = callback_url
+            
+            current_app.logger.info(f"B2C Payload: {json.dumps(payload)}")
+            
+            response = requests.post(
+                b2c_url,
+                headers=headers,
+                json=payload,
+                timeout=60
+            )
+            
+            if response.status_code in [200, 201]:
+                response_data = response.json()
+                
+                if response_data.get('status') == True:
+                    return response_data
+                else:
+                    current_app.logger.error(f"B2C API error: {response_data}")
+                    return None
+            else:
+                current_app.logger.error(f"B2C HTTP error: {response.status_code}")
+                return None
+                
+        except Exception as e:
+            current_app.logger.error(f"Error initiating B2C transfer: {str(e)}")
+            return None
+    
+    def _format_transfer_response(self, transfer_result, merchant_code, merchant_name, 
+                                  amount, currency, receiver_number):
+        """Format the transfer response with clear structure"""
+        
+        response_data = {
+            "success": True,
+            "transaction": {
+                "status": transfer_result.get('status', False),
+                "b2c_request_id": transfer_result.get('B2CRequestID'),
+                "conversation_id": transfer_result.get('ConversationID'),
+                "originator_conversation_id": transfer_result.get('OriginatorConversationID'),
+                "response_code": transfer_result.get('ResponseCode'),
+                "response_description": transfer_result.get('ResponseDescription'),
+                "transaction_charges": transfer_result.get('TransactionCharges', '0.00'),
+                "detail": transfer_result.get('detail')
+            },
+            "merchant": {
+                "code": merchant_code,
+                "name": merchant_name
+            },
+            "payment": {
+                "amount": amount,
+                "currency": currency,
+                "receiver_number": receiver_number
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        print(f"\n{'='*60}")
+        print("[TRANSFER RESPONSE]")
+        print(f"  Status: {transfer_result.get('status')}")
+        print(f"  B2C Request ID: {transfer_result.get('B2CRequestID')}")
+        print(f"  Response Description: {transfer_result.get('ResponseDescription')}")
+        print(f"{'='*60}")
+        
+        return response_data
+
+
+class SasaPayTransferStatusResource(Resource):
+    """
+    Endpoint to check the status of a B2C transfer
+    """
+    
+    @jwt_required()
+    def get(self, transaction_id=None):
+        """
+        Check the status of a B2C transfer
+        
+        Query parameters:
+        - merchant_code: Required
+        - transaction_id: Either B2CRequestID, ConversationID, or MerchantTransactionReference
+        """
+        
+        merchant_code = request.args.get('merchant_code')
+        transaction_id = transaction_id or request.args.get('transaction_id')
+        
+        if not merchant_code:
+            return {"error": "merchant_code is required"}, 400
+        
+        if not transaction_id:
+            return {"error": "transaction_id is required"}, 400
+        
+        # Get environment and merchant config
+        sasapay_env = os.getenv("SASAPAY_ENVIRONMENT", "sandbox")
+        
+        from Server.Views.Sasapyaviews  import SasaPayBalanceResource
+        balance_resource = SasaPayBalanceResource()
+        merchant = balance_resource._get_merchant_config(merchant_code, sasapay_env)
+        
+        if not merchant:
+            return {
+                "error": f"Merchant {merchant_code} not found",
+                "environment": sasapay_env
+            }, 404
+        
+        try:
+            # Get access token
+            access_token = balance_resource._get_access_token(
+                merchant['base_url'],
+                merchant['client_id'],
+                merchant['client_secret']
+            )
+            
+            if not access_token:
+                return {"error": "Authentication failed"}, 401
+            
+            # Query transaction status
+            status_url = f"{merchant['base_url']}/payments/status/"
+            
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+            
+            # Try different lookup methods
+            payload = {
+                "MerchantCode": merchant_code,
+                "B2CRequestID": transaction_id
+            }
+            
+            response = requests.post(
+                status_url,
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                return {
+                    "success": True,
+                    "transaction_status": response.json(),
+                    "merchant_code": merchant_code,
+                    "environment": sasapay_env,
+                    "timestamp": datetime.utcnow().isoformat()
+                }, 200
+            else:
+                return {
+                    "error": "Status check failed",
+                    "status_code": response.status_code,
+                    "message": response.text
+                }, response.status_code
+                
+        except Exception as e:
+            current_app.logger.error(f"Status check error: {str(e)}")
+            return {"error": str(e)}, 500
