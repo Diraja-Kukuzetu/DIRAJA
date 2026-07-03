@@ -38,7 +38,8 @@ import logging
 from math import modf
 import threading
 from Server.Views.Services.sasapay_service import SasaPayPaymentService
-
+from Server.Views.Services.etims_sale_service import etims_sale_service
+from Server.Views.Services.journal_service import JournalService
 from flask import send_file
 from io import BytesIO
 
@@ -91,7 +92,7 @@ class AddSale(Resource):
             status = data['status'].lower()
             balance = float(data.get('balance', 0))
             delivery = bool(data.get('delivery', 0))
-            creditor_id = data.get('creditor_id')  # Get creditor_id if provided
+            creditor_id = data.get('creditor_id')
             created_at = datetime.strptime(data['sale_date'], "%Y-%m-%d") if 'sale_date' in data else datetime.utcnow()
 
             if not isinstance(data['items'], list) or not data['items']:
@@ -101,6 +102,7 @@ class AddSale(Resource):
             total_price = 0.0
             total_quantity = 0.0
             purchase_account = 0.0
+            etims_items_data = []  # For eTims sync
 
             for item in data['items']:
                 item_fields = ['item_name', 'quantity', 'metric', 'unit_price']
@@ -117,14 +119,51 @@ class AddSale(Resource):
                         'invalid_item': item
                     }, 400
 
-                items.append({
+                # ===== GET STOCK ITEM AND ETIMS CODE =====
+                # Find the stock item by name and shop
+                stock_item = StockItems.query.filter_by(
+                    item_name=item['item_name'],
+                    shop_id=shop_id
+                ).first()
+
+                if not stock_item:
+                    logger.warning(f"Item '{item['item_name']}' not found in StockItems for shop {shop_id}")
+                    # Continue but warn - the sale will still process
+                
+                # Get eTims item code if available
+                etims_item_code = None
+                if stock_item and stock_item.etims_synced:
+                    etims_item_code = stock_item.etims_item_code
+                    logger.info(f"✅ Found eTims code {etims_item_code} for '{item['item_name']}'")
+                else:
+                    logger.warning(f"⚠️  No eTims code found for '{item['item_name']}'")
+
+                # Build item data with stock reference
+                item_data = {
                     'item_name': item['item_name'],
                     'quantity': float(item['quantity']),
                     'metric': metric,
                     'unit_price': float(item['unit_price']),
-                    'total_price': float(item['total_price']) 
+                    'total_price': float(item['total_price']),
+                    'stock_item_id': stock_item.id if stock_item else None,
+                    'etims_item_code': etims_item_code,
+                    'stock_item': stock_item  # Keep reference for later
+                }
+                items.append(item_data)
+                
+                # Store for eTims sync
+                etims_items_data.append({
+                    'item_name': item['item_name'],
+                    'quantity': float(item['quantity']),
+                    'metric': metric,
+                    'unit_price': float(item['unit_price']),
+                    'total_price': float(item['total_price']),
+                    'etims_item_code': etims_item_code,
+                    'stock_item_id': stock_item.id if stock_item else None
                 })
+                
                 total_quantity += float(item['quantity'])
+                total_price += float(item['total_price'])
 
         except (ValueError, KeyError, TypeError) as e:
             return {'message': f'Invalid data format: {str(e)}'}, 400
@@ -138,7 +177,6 @@ class AddSale(Resource):
                 if not creditor:
                     return {'message': f'Creditor with ID {creditor_id} not found for this shop'}, 404
                 
-                # If creditor exists, ensure status is appropriate for credit sale
                 if status not in ["unpaid", "partially_paid"]:
                     return {'message': 'Creditor sales must have status "unpaid" or "partially paid"'}, 400
                     
@@ -175,11 +213,21 @@ class AddSale(Resource):
 
         try:
             for item in items:
-                batches = ShopStockV2.query.filter(
-                    ShopStockV2.itemname == item['item_name'],
-                    ShopStockV2.shop_id == shop_id,
-                    ShopStockV2.quantity > 0
-                ).order_by(ShopStockV2.BatchNumber).all()
+                # Use the stock_item_id if available
+                if item.get('stock_item_id'):
+                    # Process from ShopStockV2 using stock_item_id
+                    batches = ShopStockV2.query.filter(
+                        ShopStockV2.itemname == item['item_name'],
+                        ShopStockV2.shop_id == shop_id,
+                        ShopStockV2.quantity > 0
+                    ).order_by(ShopStockV2.BatchNumber).all()
+                else:
+                    # Fallback: search by item name
+                    batches = ShopStockV2.query.filter(
+                        ShopStockV2.itemname == item['item_name'],
+                        ShopStockV2.shop_id == shop_id,
+                        ShopStockV2.quantity > 0
+                    ).order_by(ShopStockV2.BatchNumber).all()
 
                 remaining_qty = item['quantity']
                 item_batch_deductions = []
@@ -233,13 +281,16 @@ class AddSale(Resource):
                 if item_batch_deductions:
                     batch_deductions.append({
                         'item_name': item['item_name'],
+                        'stock_item_id': item.get('stock_item_id'),
+                        'etims_item_code': item.get('etims_item_code'),
                         'deductions': item_batch_deductions
                     })
                     stock_ids_used.extend(item_stock_ids)
 
                 purchase_account += item_purchase_account
 
-                sold_items.append({
+                # Build sold item with references
+                sold_item = {
                     'item_name': item['item_name'],
                     'quantity': item['quantity'],
                     'metric': item['metric'],
@@ -247,10 +298,13 @@ class AddSale(Resource):
                     'total_price': item['total_price'],
                     'BatchNumber': ", ".join(f"{bn} ({q})" for bn, q in item_batch_deductions) if item_batch_deductions else "From Livestock",
                     'stockv2_id': item_stock_ids[0] if item_stock_ids else None,
+                    'stock_item_id': item.get('stock_item_id'),
+                    'etims_item_code': item.get('etims_item_code'),
                     'Cost_of_sale': item['total_price'],
                     'Purchase_account': item_purchase_account,
                     'LivestockDeduction': item_livestock_deduction
-                })
+                }
+                sold_items.append(sold_item)
 
             if stock_processing_errors:
                 db.session.rollback()
@@ -264,23 +318,20 @@ class AddSale(Resource):
         total_amount_paid = sum(float(pm['amount']) for pm in payment_methods) if status != "unpaid" else 0
         sasapay_deposits = []
 
-        # Calculate total sale amount
         total_sale_amount = sum(float(item['total_price']) for item in sold_items)
         
-        # Check if balance is within 3% and no discount provided
         auto_discount_applied = False
         if balance > 0 and status == "paid":
             balance_percentage = (balance / total_sale_amount) * 100
             if balance_percentage <= 3.0:
-                # Check if any payment method already has a discount
                 has_discount = any(pm.get('discount', 0) > 0 for pm in payment_methods)
                 if not has_discount and len(payment_methods) == 1:
-                    # Auto-apply the balance as discount to the single payment method
                     payment_methods[0]['discount'] = balance
                     auto_discount_applied = True
-                    balance = 0  # Zero out the balance since it's now a discount
+                    balance = 0
 
         try:
+            # ===== CREATE LOCAL SALE =====
             new_sale = Sales(
                 user_id=current_user_id,
                 shop_id=shop_id,
@@ -291,26 +342,22 @@ class AddSale(Resource):
                 created_at=created_at,
                 balance=balance,
                 promocode=promocode,
-              
             )
             db.session.add(new_sale)
             db.session.flush()
 
             # ===== CREDITOR BALANCE UPDATE =====
             if creditor:
-                # Update creditor balances
                 creditor.total_credit = (creditor.total_credit or 0) + total_sale_amount
                 creditor.credit_amount = (creditor.credit_amount or 0) + total_sale_amount
-                
                 db.session.add(creditor)
 
+            # ===== CREATE SOLD ITEMS WITH REFERENCES =====
             for item in sold_items:
                 total_price = float(item['total_price'])
-
-                # Extract decimal fraction
                 fractional_part = round(total_price - int(total_price), 2)
 
-                db.session.add(SoldItem(
+                sold_item = SoldItem(
                     sales_id=new_sale.sales_id,
                     item_name=item['item_name'],
                     quantity=item['quantity'],
@@ -319,24 +366,27 @@ class AddSale(Resource):
                     total_price=total_price,
                     BatchNumber=item['BatchNumber'],
                     stockv2_id=item['stockv2_id'],
+                    stock_item_id=item.get('stock_item_id'),  # Link to StockItems
+                    etims_item_code=item.get('etims_item_code'),  # Store eTims code
                     Cost_of_sale=item['Cost_of_sale'],
                     Purchase_account=item['Purchase_account'],
                     LivestockDeduction=item['LivestockDeduction'],
                     round_off=fractional_part
-                ))
+                )
+                db.session.add(sold_item)
 
+            # ===== PAYMENT METHODS =====
             for payment in payment_methods:
                 method = payment['method'].strip().lower()
                 amount = float(payment['amount'])
                 transaction_code = payment.get('transaction_code', 'N/A').strip().upper()
                 
-                # ✅ Ensure discount defaults to 0 if not provided or invalid
                 discount = 0
                 if 'discount' in payment:
                     try:
                         discount = float(payment['discount'])
                     except (ValueError, TypeError):
-                        discount = 0  # Default to 0 if discount is invalid
+                        discount = 0
 
                 if method == 'sasapay':
                     bank_id = shop_to_bank_mapping.get(shop_id)
@@ -364,7 +414,6 @@ class AddSale(Resource):
                                 'new_balance': bank_account.Account_Balance
                             })
 
-                # ✅ Discount is now recorded in the DB (will be 0 if not provided)
                 db.session.add(SalesPaymentMethods(
                     sale_id=new_sale.sales_id,
                     payment_method=method,
@@ -374,6 +423,7 @@ class AddSale(Resource):
                     created_at=created_at
                 ))
 
+            # ===== CUSTOMER RECORD =====
             if data['customer_name'] or data['customer_number']:
                 db.session.add(Customers(
                     customer_name=data['customer_name'],
@@ -387,9 +437,10 @@ class AddSale(Resource):
                     created_at=created_at
                 ))
 
+            # ===== COMMIT LOCAL SALE FIRST =====
             db.session.commit()
-            from Server.Views.Services.journal_service import JournalService
 
+            # ===== JOURNAL POSTING =====
             try:
                 journal_result = JournalService.post_sale_journal(
                     sale=new_sale,
@@ -398,7 +449,6 @@ class AddSale(Resource):
                     creditor_id=creditor_id,
                     amount_paid=total_amount_paid
                 )
-
                 db.session.commit()
             except Exception as e:
                 db.session.rollback()
@@ -407,8 +457,50 @@ class AddSale(Resource):
                     "error": str(e),
                     "sale_id": new_sale.sales_id
                 }, 500
-            
 
+            # ===== CREATE ETIMS SALE RECORD (PENDING SYNC) =====
+            etims_success = False
+            etims_result = None
+            
+            try:
+                # Check if we have eTims codes for all items
+                has_etims_codes = all(item.get('etims_item_code') for item in etims_items_data)
+                
+                if has_etims_codes:
+                    # Prepare data for eTims sale record
+                    etims_sale_data = {
+                        'items': etims_items_data,
+                        'customer_name': data['customer_name'],
+                        'customer_number': data['customer_number'],
+                        'sale_date': data.get('sale_date'),
+                        'payment_methods': payment_methods,
+                        'shop_id': shop_id
+                    }
+                    
+                    # Create eTims sale record (pending)
+                    etims_success, etims_result = etims_sale_service.create_etims_sale_from_sale(
+                        etims_sale_data,
+                        new_sale.sales_id,
+                        shop_id
+                    )
+                    
+                    if etims_success:
+                        logger.info(f"✅ eTims sale record created: {etims_result.get('etims_sale', {}).get('trader_invoice_no')}")
+                    else:
+                        logger.warning(f"⚠️  Failed to create eTims sale record: {etims_result.get('error') if etims_result else 'Unknown error'}")
+                else:
+                    missing_etims_items = [item['item_name'] for item in etims_items_data if not item.get('etims_item_code')]
+                    logger.warning(f"⚠️  Skipping eTims record - missing eTims codes for: {missing_etims_items}")
+                    etims_result = {
+                        'error': f'Missing eTims codes for: {", ".join(missing_etims_items)}',
+                        'skipped': True
+                    }
+                    
+            except Exception as e:
+                logger.error(f"Error creating eTims sale record: {str(e)}")
+                etims_result = {'error': str(e), 'skipped': True}
+
+            # ===== BUILD RESPONSE =====
             response_data = {
                 'message': 'Sale processed successfully',
                 'sale_id': new_sale.sales_id,
@@ -431,7 +523,14 @@ class AddSale(Resource):
                     'sasapay_deposits': sasapay_deposits or "No SASAPAY deposits processed",
                     'discounts_applied': [{'method': pm['method'], 'discount': float(pm.get('discount', 0))} for pm in payment_methods]
                 },
-                'delivery': delivery
+                'delivery': delivery,
+                # Add eTims info
+                'etims': {
+                    'record_created': etims_success,
+                    'status': 'pending' if etims_success else 'skipped',
+                    'trader_invoice_no': etims_result.get('etims_sale', {}).get('trader_invoice_no') if etims_success else None,
+                    'message': etims_result.get('message', 'Sale will be published during bulk sync') if etims_success else etims_result.get('error', 'No eTims record created')
+                }
             }
 
             # Add auto-discount notification if applied
@@ -469,6 +568,8 @@ class AddSale(Resource):
                     'auto_discount_applied': auto_discount_applied
                 }
             }, 500
+
+
 
 def check_role(required_role):
     def wrapper(fn):

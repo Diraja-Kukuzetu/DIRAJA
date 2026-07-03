@@ -4,7 +4,11 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from app import db
 from Server.Models.Users import Users
 from Server.Models.StockItems import StockItems
+from Server.Views.Services.etims_services import etims_service
 from functools import wraps
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def check_role(required_role):
@@ -24,15 +28,14 @@ class PostStockItem(Resource):
     @jwt_required()
     @check_role('manager')
     def post(self):
+        """
+        POST /api/diraja/add-stock-items
+        Create a new stock item and sync to eTims
+        """
         data = request.get_json()
 
+        # Validate required fields
         item_name = data.get('item_name')
-        item_code = data.get('item_code')
-        unit_price = data.get('unit_price')
-        pack_price = data.get('pack_price')
-        pack_quantity = data.get('pack_quantity')
-        category = data.get('category')  # ✅ New field
-
         if not item_name:
             return {"message": "item_name is required."}, 400
 
@@ -41,35 +44,41 @@ class PostStockItem(Resource):
         if existing:
             return {"message": "This item already exists."}, 409
 
-        new_item = StockItems(
-            item_name=item_name,
-            item_code=item_code,
-            unit_price=unit_price,
-            pack_price=pack_price,
-            pack_quantity=pack_quantity,
-            category=category  # ✅ Save category
-        )
+        # Prepare data for service (using YOUR field names)
+        stock_item_data = {
+            'item_name': item_name,
+            'item_code': data.get('item_code'),
+            'unit_price': data.get('unit_price'),
+            'pack_price': data.get('pack_price'),
+            'pack_quantity': data.get('pack_quantity'),
+            'category': data.get('category'),
+            # eTims fields (using YOUR field names)
+            'org_country_code': data.get('org_country_code', 'KE'),
+            'item_type_code': data.get('item_type_code', '1'),
+            'tax_code': data.get('tax_code', 'A'),
+            'qty_unit_code': data.get('qty_unit_code', 'U'),
+            'pkg_unit_code': data.get('pkg_unit_code', 'CT'),
+            'item_class_code': data.get('item_class_code', '99000000'),
+            'initial_stock': data.get('initial_stock', 0)
+        }
 
-        db.session.add(new_item)
-        db.session.commit()
+        # ✅ Use eTims service to create and sync
+        # The service will handle the field name mapping
+        success, result = etims_service.create_and_sync_item(stock_item_data)
 
-        return {
-            "message": "Stock item created successfully.",
-            "stock_item": {
-                "id": new_item.id,
-                "item_name": new_item.item_name,
-                "item_code": new_item.item_code,
-                "unit_price": new_item.unit_price,
-                "pack_price": new_item.pack_price,
-                "pack_quantity": new_item.pack_quantity,
-                "category": new_item.category
-            }
-        }, 201
+        if not success:
+            return {"message": result.get('error', 'Failed to create item')}, 400
+
+        return result, 201
 
 
 class GetAllStockItems(Resource):
     @jwt_required()
     def get(self):
+        """
+        GET /stock-items
+        Get all stock items with eTims sync status
+        """
         items = StockItems.query.all()
         result = []
 
@@ -81,7 +90,10 @@ class GetAllStockItems(Resource):
                 "unit_price": item.unit_price,
                 "pack_price": item.pack_price,
                 "pack_quantity": item.pack_quantity,
-                "category": item.category
+                "category": item.category,
+                "etims_synced": item.etims_synced,
+                "etims_item_code": item.etims_item_code,
+                "etims_sync_date": item.etims_sync_date.isoformat() if item.etims_sync_date else None
             })
 
         return {"stock_items": result}, 200
@@ -91,7 +103,10 @@ class StockItem(Resource):
     @jwt_required()
     @check_role('manager')
     def get(self, item_id=None):
-        """Retrieve a single stock item by ID or all items if no ID is provided."""
+        """
+        GET /stock-items/<item_id>
+        Get a single stock item
+        """
         if item_id:
             item = StockItems.query.get(item_id)
             if not item:
@@ -104,7 +119,10 @@ class StockItem(Resource):
                 "unit_price": item.unit_price,
                 "pack_price": item.pack_price,
                 "pack_quantity": item.pack_quantity,
-                "category": item.category
+                "category": item.category,
+                "etims_synced": item.etims_synced,
+                "etims_item_code": item.etims_item_code,
+                "etims_sync_date": item.etims_sync_date.isoformat() if item.etims_sync_date else None
             }, 200
 
         # If no item_id provided, return all items
@@ -117,7 +135,9 @@ class StockItem(Resource):
                 "unit_price": item.unit_price,
                 "pack_price": item.pack_price,
                 "pack_quantity": item.pack_quantity,
-                "category": item.category
+                "category": item.category,
+                "etims_synced": item.etims_synced,
+                "etims_item_code": item.etims_item_code
             }
             for item in items
         ], 200
@@ -125,53 +145,174 @@ class StockItem(Resource):
     @jwt_required()
     @check_role('manager')
     def put(self, item_id):
-        """Update an existing stock item by item_id."""
+        """
+        PUT /stock-items/<item_id>
+        Update a stock item and sync to eTims
+        """
         data = request.get_json()
         
         if not data:
             return {"message": "No input data provided"}, 400
 
-        item = StockItems.query.get(item_id)
-        if not item:
-            return {"message": "Item not found."}, 404
+        # Use eTims service to update and sync
+        success, result = etims_service.update_and_sync_item(item_id, data)
 
-        try:
-            item.item_name = data.get('item_name', item.item_name)
-            item.item_code = data.get('item_code', item.item_code)
-            item.unit_price = float(data.get('unit_price', item.unit_price))
-            item.pack_price = float(data.get('pack_price', item.pack_price))
-            item.pack_quantity = int(data.get('pack_quantity', item.pack_quantity))
-            item.category = data.get('category', item.category)  # ✅ Update category
-            
-            db.session.commit()
-            db.session.refresh(item)
-            
-            return {
-                "message": "Stock item updated successfully.",
-                "stock_item": {
-                    "id": item.id,
-                    "item_name": item.item_name,
-                    "item_code": item.item_code,
-                    "unit_price": item.unit_price,
-                    "pack_price": item.pack_price,
-                    "pack_quantity": item.pack_quantity,
-                    "category": item.category
-                }
-            }, 200
-            
-        except Exception as e:
-            db.session.rollback()
-            return {"message": f"Error updating item: {str(e)}"}, 500
+        if not success:
+            return {"message": result.get('error', 'Failed to update item')}, 400
+
+        return result, 200
 
     @jwt_required()
     @check_role('manager')
     def delete(self, item_id):
-        """Delete a stock item by item_id."""
-        item = StockItems.query.get(item_id)
-        if not item:
-            return {"message": "Item not found."}, 404
+        """
+        DELETE /stock-items/<item_id>
+        Delete a stock item from local and eTims
+        """
+        # Use eTims service to delete
+        success, result = etims_service.delete_and_sync_item(item_id)
 
-        db.session.delete(item)
-        db.session.commit()
+        if not success:
+            return {"message": result.get('error', 'Failed to delete item')}, 400
 
-        return {"message": "Stock item deleted successfully."}, 200
+        return result, 200
+
+
+# ==========================================================
+# NEW RESOURCE: Sync Items to eTims
+# ==========================================================
+
+class SyncAllItemsResource(Resource):
+    @jwt_required()
+    @check_role('manager')
+    def post(self):
+        """
+        POST /stock-items/sync-all
+        Sync all unsynced items to eTims
+        """
+        try:
+            results = etims_service.sync_all_unsynced_items()
+            
+            return {
+                "message": "Bulk sync completed",
+                "results": results
+            }, 200
+            
+        except Exception as e:
+            logger.error(f"Error in bulk sync: {str(e)}")
+            return {"message": f"Error during sync: {str(e)}"}, 500
+
+
+# ==========================================================
+# NEW RESOURCE: Sync Single Item
+# ==========================================================
+
+class SyncSingleItemResource(Resource):
+    @jwt_required()
+    @check_role('manager')
+    def post(self, item_id):
+        """
+        POST /stock-items/<item_id>/sync
+        Sync a single item to eTims
+        """
+        try:
+            item = StockItems.query.get(item_id)
+            if not item:
+                return {"message": "Item not found."}, 404
+
+            if item.etims_synced:
+                return {
+                    "message": "Item already synced to eTims",
+                    "etims_item_code": item.etims_item_code
+                }, 400
+
+            success, result = etims_service.sync_item_to_etims(item)
+
+            if not success:
+                return {"message": result.get('error', 'Failed to sync item')}, 400
+
+            return result, 200
+            
+        except Exception as e:
+            logger.error(f"Error syncing item: {str(e)}")
+            return {"message": f"Error syncing item: {str(e)}"}, 500
+
+
+# ==========================================================
+# NEW RESOURCE: Get eTims Items
+# ==========================================================
+
+class ETimsItemsResource(Resource):
+    @jwt_required()
+    def get(self):
+        """
+        GET /etims-items
+        Fetch all items from eTims
+        """
+        try:
+            response = etims_service.get_items()
+            
+            if response['success']:
+                # Enrich with local data
+                data = response['data']
+                if isinstance(data, list):
+                    for etims_item in data:
+                        item_code = etims_item.get('itemCode') or etims_item.get('code')
+                        if item_code:
+                            local_item = StockItems.query.filter_by(
+                                etims_item_code=item_code
+                            ).first()
+                            if local_item:
+                                etims_item['local_item_id'] = local_item.id
+                                etims_item['local_item_name'] = local_item.item_name
+                
+                return {
+                    "success": True,
+                    "data": data,
+                    "count": len(data) if isinstance(data, list) else 0
+                }, 200
+            else:
+                return {
+                    "success": False,
+                    "error": response.get('error', 'Failed to fetch eTims items')
+                }, response.get('status_code', 500)
+                
+        except Exception as e:
+            logger.error(f"Error fetching eTims items: {str(e)}")
+            return {"message": str(e)}, 500
+
+
+# ==========================================================
+# NEW RESOURCE: Get Reference Codes
+# ==========================================================
+
+class ETimsReferenceResource(Resource):
+    @jwt_required()
+    def get(self):
+        """
+        GET /etims-reference
+        Fetch all reference codes from eTims (countries, currencies, etc.)
+        """
+        try:
+            countries = etims_service.get_countries()
+            currencies = etims_service.get_currencies()
+            qty_units = etims_service.get_qty_unit_codes()
+            pkg_units = etims_service.get_pkg_unit_codes()
+            item_codes = etims_service.get_item_codes()
+            branches = etims_service.get_branches()
+            
+            return {
+                "success": True,
+                "data": {
+                    "countries": countries.get('data', []) if countries['success'] else [],
+                    "currencies": currencies.get('data', []) if currencies['success'] else [],
+                    "qty_units": qty_units.get('data', []) if qty_units['success'] else [],
+                    "pkg_units": pkg_units.get('data', []) if pkg_units['success'] else [],
+                    "item_codes": item_codes.get('data', []) if item_codes['success'] else [],
+                    "branches": branches.get('data', []) if branches['success'] else []
+                }
+            }, 200
+            
+        except Exception as e:
+            logger.error(f"Error fetching reference codes: {str(e)}")
+            return {"message": str(e)}, 500

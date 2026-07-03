@@ -98,7 +98,7 @@ from Server.Views.SpoiltStock import (
 )
 
 from Server.Views.StockItems import (
-    PostStockItem, GetAllStockItems, StockItem
+    PostStockItem, GetAllStockItems, StockItem, SyncAllItemsResource,SyncSingleItemResource,ETimsItemsResource,ETimsReferenceResource
 )
 
 from Server.Views.CashDepositviews import (
@@ -204,6 +204,16 @@ from Server.Views.Sasapyaviews import (
     SasaPayBalanceResource,SasaPayChannelCodesResource,SasaPayTransactionStatementResource,TestSasaPayConnection,TestSasaPaySingleMerchant,TestNetworkConnectivity,
     SasaPaySingleBalanceResource,SasaPayBusinessToBeneficiaryResource,SasaPayTransferResource,SasaPayTransferStatusResource)
 from Server.Views.Services.sasapay_callback import SasaPayCallbackResource
+from Server.Views.ETimsSale import  (
+    BulkPublishSalesResource,
+    PublishSingleSaleResource,
+    GetETimsSalesResource,
+    GetETimsSaleStatusResource,
+    RetryFailedSalesResource,
+    GetETimsSaleStatsResource
+)
+
+
 
 api_endpoint = Blueprint('auth',__name__,url_prefix='/api/diraja')
 api = Api(api_endpoint)
@@ -404,6 +414,13 @@ api.add_resource(SpoiltValue, "/spoilt-value")
 api.add_resource(PostStockItem, '/add-stock-items')
 api.add_resource(GetAllStockItems, '/stockitems')
 api.add_resource(StockItem, '/stockitems/<int:item_id>')
+# eTims sync routes
+api.add_resource(SyncAllItemsResource, '/stock-items/sync-all')
+api.add_resource(SyncSingleItemResource, '/stock-items/<int:item_id>/sync')
+    
+# eTims routes
+api.add_resource(ETimsItemsResource, '/etims-items')
+api.add_resource(ETimsReferenceResource, '/etims-reference')
 
 #Cash sales
 api.add_resource(CashSales, '/sales/cash/shops', '/sales/cash/sale/<int:sale_id>')
@@ -634,3 +651,12 @@ api.add_resource(SasaPayBusinessToBeneficiaryResource, '/sasapay/internal-transf
 api.add_resource(SasaPayCallbackResource, '/sasapay/callback')
 api.add_resource(TestSasaPayConnection, '/test-connect')
 api.add_resource(TestSasaPaySingleMerchant, '/test-merchant')
+
+
+# eTims Sale routes
+api.add_resource(BulkPublishSalesResource, '/etims-sales/bulk-publish')
+api.add_resource(PublishSingleSaleResource, '/etims-sales/<int:sale_id>/publish')
+api.add_resource(GetETimsSalesResource, '/etims-sales')
+api.add_resource(GetETimsSaleStatusResource, '/etims-sales/<int:sale_id>/status')
+api.add_resource(RetryFailedSalesResource, '/etims-sales/retry-failed')
+api.add_resource(GetETimsSaleStatsResource, '/etims-sales/stats')
