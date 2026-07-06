@@ -98,7 +98,7 @@ from Server.Views.SpoiltStock import (
 )
 
 from Server.Views.StockItems import (
-    PostStockItem, GetAllStockItems, StockItem
+    PostStockItem, GetAllStockItems, StockItem,SyncAllItemsResource,SyncSingleItemResource,ETimsItemsResource,ETimsReferenceResource
 )
 
 from Server.Views.CashDepositviews import (
@@ -404,6 +404,14 @@ api.add_resource(SpoiltValue, "/spoilt-value")
 api.add_resource(PostStockItem, '/add-stock-items')
 api.add_resource(GetAllStockItems, '/stockitems')
 api.add_resource(StockItem, '/stockitems/<int:item_id>')
+
+# eTims sync routes
+api.add_resource(SyncAllItemsResource, '/api/diraja/stock-items/sync-all')
+api.add_resource(SyncSingleItemResource, '/api/diraja/stock-items/<int:item_id>/sync')
+
+api.add_resource(ETimsItemsResource, '/api/diraja/etims-items')
+api.add_resource(ETimsReferenceResource, '/api/diraja/etims-reference')
+
 
 #Cash sales
 api.add_resource(CashSales, '/sales/cash/shops', '/sales/cash/sale/<int:sale_id>')
