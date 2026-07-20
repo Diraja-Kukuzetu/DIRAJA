@@ -5,7 +5,8 @@ api_endpoint = Blueprint
 
 # add all file inputs 
 from Server.Views.Usersviews import (
-    CountUsers, Addusers, UsersResourceById, UserLogin, GetAllUsers,PostShopReport
+    CountUsers, Addusers, UsersResourceById, UserLogin, GetAllUsers,PostShopReport,
+    UserLoginWith2FA,Resend2FACode,Enable2FA,Disable2FA,Get2FAStatus,VerifyBackupCode,TestEmail
 )
 
 from Server.Views.Shopsviews import (
@@ -210,7 +211,7 @@ from Server.Views.ETimsSale import  (
     GetETimsSalesResource,
     GetETimsSaleStatusResource,
     RetryFailedSalesResource,
-    GetETimsSaleStatsResource
+    GetETimsSaleStatsResource,GetETimsSaleReceiptResource
 )
 
 
@@ -224,6 +225,8 @@ api = Api(api_endpoint)
 api.add_resource(Report, '/send-report')
 
 api.add_resource(PushSubscribe ,'/subscribe')
+# Register the route
+api.add_resource(TestEmail, '/test-email')
 
 # users endpoints 
 api.add_resource(CountUsers, '/countusers')
@@ -233,6 +236,13 @@ api.add_resource(UsersResourceById, '/user/<int:users_id>')
 api.add_resource(UserLogin, '/login')
 api.add_resource(PostShopReport, "/shop-reports")
 
+# 2FA Routes
+api.add_resource(UserLoginWith2FA, '/verify-2fa')
+api.add_resource(Resend2FACode, '/resend-2fa')
+api.add_resource(Enable2FA, '/user/2fa/enable')
+api.add_resource(Disable2FA, '/user/2fa/disable')
+api.add_resource(Get2FAStatus, '/user/2fa/status')
+api.add_resource(VerifyBackupCode, '/verify-backup-code')
     
 # shops endpoints 
 api.add_resource(AddShops, '/newshop')
@@ -660,3 +670,4 @@ api.add_resource(GetETimsSalesResource, '/etims-sales')
 api.add_resource(GetETimsSaleStatusResource, '/etims-sales/<int:sale_id>/status')
 api.add_resource(RetryFailedSalesResource, '/etims-sales/retry-failed')
 api.add_resource(GetETimsSaleStatsResource, '/etims-sales/stats')
+api.add_resource(GetETimsSaleReceiptResource, '/etims-sales/<int:sale_id>/receipt')

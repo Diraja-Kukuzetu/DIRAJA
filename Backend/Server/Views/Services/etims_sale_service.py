@@ -41,8 +41,7 @@ class ETimsSaleService:
             for item in sale_data.get('items', []):
                 # Find the eTims item code for this item
                 stock_item = StockItems.query.filter_by(
-                    item_name=item.get('item_name'),
-                    shop_id=shop_id
+                    item_name=item.get('item_name')
                 ).first()
                 
                 # Check if we have an eTims code
@@ -67,8 +66,7 @@ class ETimsSaleService:
                     'amount': item_total,
                     'discount_amount': 0,
                     'tax_amount': 0,
-                    'taxable_amount': item_total,
-                    'stock_item_id': stock_item.id if stock_item else None
+                    'taxable_amount': item_total
                 })
             
             if not etims_items:
@@ -131,6 +129,7 @@ class ETimsSaleService:
             
             # Add eTims sale items
             for item in etims_items:
+                # ✅ FIX: Remove stock_item_id from ETimsSaleItem creation
                 etims_item = ETimsSaleItem(
                     etims_sale_id=etims_sale.id,
                     item_code=item['item_code'],
@@ -141,8 +140,7 @@ class ETimsSaleService:
                     amount=item['amount'],
                     discount_amount=item.get('discount_amount', 0),
                     tax_amount=item.get('tax_amount', 0),
-                    taxable_amount=item.get('taxable_amount', item['amount']),
-                    stock_item_id=item.get('stock_item_id')
+                    taxable_amount=item.get('taxable_amount', item['amount'])
                 )
                 db.session.add(etims_item)
             

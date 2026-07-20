@@ -12,6 +12,11 @@ Columns:
 - employee_id (INTEGER)
 - created_at (DATETIME)
 - status (VARCHAR(10))
+- two_factor_enabled (BOOLEAN)
+- two_factor_secret (VARCHAR(255))
+- two_factor_verified (BOOLEAN)
+- two_factor_setup_date (DATETIME)
+- backup_codes (JSON)
 
 Table: shops
 Columns:
@@ -228,6 +233,7 @@ Columns:
 - id (INTEGER)
 - sales_id (INTEGER)
 - item_name (VARCHAR(50))
+- item_id (INTEGER)
 - quantity (FLOAT)
 - metric (VARCHAR(10))
 - unit_price (FLOAT)
@@ -238,6 +244,7 @@ Columns:
 - Cost_of_sale (FLOAT)
 - Purchase_account (FLOAT)
 - LivestockDeduction (FLOAT)
+- etims_item_code (VARCHAR(50))
 
 Table: transfers
 Columns:
@@ -476,62 +483,63 @@ Columns:
 
 
 Relationships:
-- users.employee_id = employees.employee_id
-- sales.user_id = users.users_id
-- sales.shop_id = shops.shops_id
-- bank.sales_id = sales.sales_id
-- customers.shop_id = shops.shops_id
-- customers.sales_id = sales.sales_id
-- customers.user_id = users.users_id
-- employees.shop_id = shops.shops_id
-- employeesLoan.employee_id = employees.employee_id
-- stock.shop_id = shops.shops_id
-- expenses.user_id = users.users_id
-- expenses.shop_id = shops.shops_id
-- expenses.creditor_id = expense_creditors.creditor_id
-- expense_distributions.original_expense_id = expenses.expense_id
-- expense_distributions.distributed_to_shop_id = shops.shops_id
-- expense_distributions.distributed_by = users.users_id
-- credit_payments.expense_id = expenses.expense_id
-- credit_payments.created_by = users.users_id
-- expense_creditors.user_id = users.users_id
-- inventory.user_id = users.users_id
-- shop_stock.shop_id = shops.shops_id
-- shop_stock.transfer_id = transfers.transfer_id
-- shop_stock.inventory_id = inventory.inventory_id
-- sales_payment_methods.sale_id = sales.sales_id
-- sold_items.sales_id = sales.sales_id
-- sold_items.stockv2_id = shop_stock_v2.stockv2_id
-- transfers.shop_id = shops.shops_id
-- transfers.inventory_id = inventory.inventory_id
-- transfers.user_id = users.users_id
-- LiveStock.shop_id = shops.shops_id
-- shoptransfers.shop_id = shops.shops_id
-- system_stock_transfer.shops_id = shops.shops_id
-- system_stock_transfer.users_id = users.users_id
-- system_stock_transfer.inventory_id = inventory.inventory_id
-- bank_account.chart_account_id = chart_of_accounts.id
-- banking_transaction.account_id = bank_account.id
-- sales_department.user_id = users.users_id
-- sales_department.shop_id = shops.shops_id
-- supplier_history.supplier_id = suppliers.supplier_id
-- supplier_history.inventory_id = inventoryV2.inventoryV2_id
-- inventoryV2.user_id = users.users_id
-- shop_stock_v2.shop_id = shops.shops_id
-- shop_stock_v2.transferv2_id = transfers.transfer_id
-- shop_stock_v2.inventoryv2_id = inventoryV2.inventoryV2_id
-- expense_items.category_id = expense_category.id
-- stock_reports.shop_id = shops.shops_id
-- stock_reports.user_id = users.users_id
-- permission.user_id = users.users_id
-- task_manager.user_id = users.users_id
-- task_manager.assignee_id = users.users_id
-- task_manager.parent_task_id = task_manager.task_id
-- task_comments.task_id = task_manager.task_id
-- task_comments.user_id = users.users_id
-- task_comments.parent_comment_id = task_comments.comment_id
-- task_evaluations.task_id = task_manager.task_id
-- task_evaluations.evaluator_id = users.users_id
+- users.employee_id → employees.employee_id
+- sales.user_id → users.users_id
+- sales.shop_id → shops.shops_id
+- bank.sales_id → sales.sales_id
+- customers.shop_id → shops.shops_id
+- customers.sales_id → sales.sales_id
+- customers.user_id → users.users_id
+- employees.shop_id → shops.shops_id
+- employeesLoan.employee_id → employees.employee_id
+- stock.shop_id → shops.shops_id
+- expenses.user_id → users.users_id
+- expenses.shop_id → shops.shops_id
+- expenses.creditor_id → expense_creditors.creditor_id
+- expense_distributions.original_expense_id → expenses.expense_id
+- expense_distributions.distributed_to_shop_id → shops.shops_id
+- expense_distributions.distributed_by → users.users_id
+- credit_payments.expense_id → expenses.expense_id
+- credit_payments.created_by → users.users_id
+- expense_creditors.user_id → users.users_id
+- inventory.user_id → users.users_id
+- shop_stock.shop_id → shops.shops_id
+- shop_stock.transfer_id → transfers.transfer_id
+- shop_stock.inventory_id → inventory.inventory_id
+- sales_payment_methods.sale_id → sales.sales_id
+- sold_items.sales_id → sales.sales_id
+- sold_items.item_id → stock_item.id
+- sold_items.stockv2_id → shop_stock_v2.stockv2_id
+- transfers.shop_id → shops.shops_id
+- transfers.inventory_id → inventory.inventory_id
+- transfers.user_id → users.users_id
+- LiveStock.shop_id → shops.shops_id
+- shoptransfers.shop_id → shops.shops_id
+- system_stock_transfer.shops_id → shops.shops_id
+- system_stock_transfer.users_id → users.users_id
+- system_stock_transfer.inventory_id → inventory.inventory_id
+- bank_account.chart_account_id → chart_of_accounts.id
+- banking_transaction.account_id → bank_account.id
+- sales_department.user_id → users.users_id
+- sales_department.shop_id → shops.shops_id
+- supplier_history.supplier_id → suppliers.supplier_id
+- supplier_history.inventory_id → inventoryV2.inventoryV2_id
+- inventoryV2.user_id → users.users_id
+- shop_stock_v2.shop_id → shops.shops_id
+- shop_stock_v2.transferv2_id → transfers.transfer_id
+- shop_stock_v2.inventoryv2_id → inventoryV2.inventoryV2_id
+- expense_items.category_id → expense_category.id
+- stock_reports.shop_id → shops.shops_id
+- stock_reports.user_id → users.users_id
+- permission.user_id → users.users_id
+- task_manager.user_id → users.users_id
+- task_manager.assignee_id → users.users_id
+- task_manager.parent_task_id → task_manager.task_id
+- task_comments.task_id → task_manager.task_id
+- task_comments.user_id → users.users_id
+- task_comments.parent_comment_id → task_comments.comment_id
+- task_evaluations.task_id → task_manager.task_id
+- task_evaluations.evaluator_id → users.users_id
 
 
 

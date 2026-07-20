@@ -3,7 +3,7 @@ from flask import request, jsonify, make_response
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app import db
 from Server.Models.Users import Users
-from Server.Models.StockItems import StockItems
+from Server.Models.StockItems import StockItems, EtimsItem
 from Server.Views.Services.etims_services import etims_service
 from functools import wraps
 import logging
@@ -44,7 +44,12 @@ class PostStockItem(Resource):
         if existing:
             return {"message": "This item already exists."}, 409
 
-        # Prepare data for service (using YOUR field names)
+        # Validate stock_type
+        stock_type = data.get('stock_type', 'Product')
+        if stock_type not in ['Service', 'Product']:
+            return {"message": "stock_type must be either 'Service' or 'Product'"}, 400
+
+        # Prepare data for service
         stock_item_data = {
             'item_name': item_name,
             'item_code': data.get('item_code'),
@@ -52,7 +57,8 @@ class PostStockItem(Resource):
             'pack_price': data.get('pack_price'),
             'pack_quantity': data.get('pack_quantity'),
             'category': data.get('category'),
-            # eTims fields (using YOUR field names)
+            'stock_item_type': stock_type,  # Changed from 'stock_type' to 'stock_item_type'
+            # eTims fields
             'org_country_code': data.get('org_country_code', 'KE'),
             'item_type_code': data.get('item_type_code', '1'),
             'tax_code': data.get('tax_code', 'A'),
@@ -62,8 +68,7 @@ class PostStockItem(Resource):
             'initial_stock': data.get('initial_stock', 0)
         }
 
-        # ✅ Use eTims service to create and sync
-        # The service will handle the field name mapping
+        # Use eTims service to create and sync
         success, result = etims_service.create_and_sync_item(stock_item_data)
 
         if not success:
@@ -91,6 +96,7 @@ class GetAllStockItems(Resource):
                 "pack_price": item.pack_price,
                 "pack_quantity": item.pack_quantity,
                 "category": item.category,
+                "stock_type": item.stock_item_type,  # Changed from item.stock_type to item.stock_item_type
                 "etims_synced": item.etims_synced,
                 "etims_item_code": item.etims_item_code,
                 "etims_sync_date": item.etims_sync_date.isoformat() if item.etims_sync_date else None
@@ -120,6 +126,7 @@ class StockItem(Resource):
                 "pack_price": item.pack_price,
                 "pack_quantity": item.pack_quantity,
                 "category": item.category,
+                "stock_type": item.stock_item_type,  # Changed from item.stock_type to item.stock_item_type
                 "etims_synced": item.etims_synced,
                 "etims_item_code": item.etims_item_code,
                 "etims_sync_date": item.etims_sync_date.isoformat() if item.etims_sync_date else None
@@ -136,6 +143,7 @@ class StockItem(Resource):
                 "pack_price": item.pack_price,
                 "pack_quantity": item.pack_quantity,
                 "category": item.category,
+                "stock_type": item.stock_item_type,  # Changed from item.stock_type to item.stock_item_type
                 "etims_synced": item.etims_synced,
                 "etims_item_code": item.etims_item_code
             }
@@ -153,6 +161,13 @@ class StockItem(Resource):
         
         if not data:
             return {"message": "No input data provided"}, 400
+
+        # Validate stock_type if provided (frontend sends 'stock_type', we need to map to 'stock_item_type')
+        if 'stock_type' in data:
+            if data['stock_type'] not in ['Service', 'Product']:
+                return {"message": "stock_type must be either 'Service' or 'Product'"}, 400
+            # Map frontend 'stock_type' to model field 'stock_item_type'
+            data['stock_item_type'] = data.pop('stock_type')
 
         # Use eTims service to update and sync
         success, result = etims_service.update_and_sync_item(item_id, data)
@@ -247,39 +262,54 @@ class ETimsItemsResource(Resource):
     def get(self):
         """
         GET /etims-items
-        Fetch all items from eTims
+        Fetch all items from the EtimsItem model (locally stored eTims items)
         """
         try:
-            response = etims_service.get_items()
+            # Query all eTims items from local database
+            etims_items = EtimsItem.query.order_by(EtimsItem.created_at.desc()).all()
             
-            if response['success']:
-                # Enrich with local data
-                data = response['data']
-                if isinstance(data, list):
-                    for etims_item in data:
-                        item_code = etims_item.get('itemCode') or etims_item.get('code')
-                        if item_code:
-                            local_item = StockItems.query.filter_by(
-                                etims_item_code=item_code
-                            ).first()
-                            if local_item:
-                                etims_item['local_item_id'] = local_item.id
-                                etims_item['local_item_name'] = local_item.item_name
+            # Format the response
+            data = []
+            for item in etims_items:
+                # Get local stock item if exists
+                local_item = None
+                if item.local_item_id:
+                    local_item = StockItems.query.get(item.local_item_id)
                 
-                return {
-                    "success": True,
-                    "data": data,
-                    "count": len(data) if isinstance(data, list) else 0
-                }, 200
-            else:
-                return {
-                    "success": False,
-                    "error": response.get('error', 'Failed to fetch eTims items')
-                }, response.get('status_code', 500)
+                data.append({
+                    "id": item.id,
+                    "itemCode": item.item_code,
+                    "code": item.item_code,
+                    "name": item.name,
+                    "orgCountryCode": item.org_country_code,
+                    "unitPrice": item.unit_price,
+                    "itemTypeCode": item.item_type_code,
+                    "taxCode": item.tax_code,
+                    "qtyUnitCode": item.qty_unit_code,
+                    "pkgUnitCode": item.pkg_unit_code,
+                    "itemClassCode": item.item_class_code,
+                    "stock": item.stock,
+                    "local_item_id": item.local_item_id,
+                    "local_item_name": local_item.item_name if local_item else None,
+                    "local_stock_type": local_item.stock_item_type if local_item else None,  # Changed to stock_item_type
+                    "created_at": item.created_at.isoformat() if item.created_at else None,
+                    "updated_at": item.updated_at.isoformat() if item.updated_at else None
+                })
+            
+            return {
+                "success": True,
+                "data": data,
+                "count": len(data),
+                "message": f"Retrieved {len(data)} eTims items from local database"
+            }, 200
                 
         except Exception as e:
             logger.error(f"Error fetching eTims items: {str(e)}")
-            return {"message": str(e)}, 500
+            return {
+                "success": False,
+                "error": str(e),
+                "message": "Failed to fetch eTims items"
+            }, 500
 
 
 # ==========================================================
@@ -316,3 +346,51 @@ class ETimsReferenceResource(Resource):
         except Exception as e:
             logger.error(f"Error fetching reference codes: {str(e)}")
             return {"message": str(e)}, 500
+
+
+# ==========================================================
+# NEW RESOURCE: Get Items by Type
+# ==========================================================
+
+class StockItemsByTypeResource(Resource):
+    @jwt_required()
+    def get(self, stock_type):
+        """
+        GET /stock-items/type/<stock_type>
+        Get all stock items filtered by type (Service or Product)
+        """
+        # Validate stock_type
+        if stock_type not in ['Service', 'Product']:
+            return {"message": "stock_type must be either 'Service' or 'Product'"}, 400
+        
+        try:
+            # Filter by stock_item_type (model field name)
+            items = StockItems.query.filter_by(stock_item_type=stock_type).all()
+            
+            result = []
+            for item in items:
+                result.append({
+                    "id": item.id,
+                    "item_name": item.item_name,
+                    "item_code": item.item_code,
+                    "unit_price": item.unit_price,
+                    "pack_price": item.pack_price,
+                    "pack_quantity": item.pack_quantity,
+                    "category": item.category,
+                    "stock_type": item.stock_item_type,  # Return as 'stock_type' for frontend consistency
+                    "etims_synced": item.etims_synced,
+                    "etims_item_code": item.etims_item_code,
+                    "etims_sync_date": item.etims_sync_date.isoformat() if item.etims_sync_date else None
+                })
+            
+            return {
+                "success": True,
+                "data": result,
+                "count": len(result),
+                "stock_type": stock_type,
+                "message": f"Retrieved {len(result)} {stock_type} items"
+            }, 200
+            
+        except Exception as e:
+            logger.error(f"Error fetching items by type: {str(e)}")
+            return {"message": f"Error fetching items: {str(e)}"}, 500

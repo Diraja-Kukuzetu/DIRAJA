@@ -120,14 +120,13 @@ class AddSale(Resource):
                     }, 400
 
                 # ===== GET STOCK ITEM AND ETIMS CODE =====
-                # Find the stock item by name and shop
+                # ✅ FIX: Remove shop_id filter - search by item_name only
                 stock_item = StockItems.query.filter_by(
-                    item_name=item['item_name'],
-                    shop_id=shop_id
+                    item_name=item['item_name']
                 ).first()
 
                 if not stock_item:
-                    logger.warning(f"Item '{item['item_name']}' not found in StockItems for shop {shop_id}")
+                    logger.warning(f"Item '{item['item_name']}' not found in StockItems")
                     # Continue but warn - the sale will still process
                 
                 # Get eTims item code if available
@@ -145,7 +144,7 @@ class AddSale(Resource):
                     'metric': metric,
                     'unit_price': float(item['unit_price']),
                     'total_price': float(item['total_price']),
-                    'stock_item_id': stock_item.id if stock_item else None,
+                    'item_id': stock_item.id if stock_item else None,
                     'etims_item_code': etims_item_code,
                     'stock_item': stock_item  # Keep reference for later
                 }
@@ -159,7 +158,7 @@ class AddSale(Resource):
                     'unit_price': float(item['unit_price']),
                     'total_price': float(item['total_price']),
                     'etims_item_code': etims_item_code,
-                    'stock_item_id': stock_item.id if stock_item else None
+                    'item_id': stock_item.id if stock_item else None
                 })
                 
                 total_quantity += float(item['quantity'])
@@ -213,21 +212,12 @@ class AddSale(Resource):
 
         try:
             for item in items:
-                # Use the stock_item_id if available
-                if item.get('stock_item_id'):
-                    # Process from ShopStockV2 using stock_item_id
-                    batches = ShopStockV2.query.filter(
-                        ShopStockV2.itemname == item['item_name'],
-                        ShopStockV2.shop_id == shop_id,
-                        ShopStockV2.quantity > 0
-                    ).order_by(ShopStockV2.BatchNumber).all()
-                else:
-                    # Fallback: search by item name
-                    batches = ShopStockV2.query.filter(
-                        ShopStockV2.itemname == item['item_name'],
-                        ShopStockV2.shop_id == shop_id,
-                        ShopStockV2.quantity > 0
-                    ).order_by(ShopStockV2.BatchNumber).all()
+                # Process from ShopStockV2 using shop_id
+                batches = ShopStockV2.query.filter(
+                    ShopStockV2.itemname == item['item_name'],
+                    ShopStockV2.shop_id == shop_id,
+                    ShopStockV2.quantity > 0
+                ).order_by(ShopStockV2.BatchNumber).all()
 
                 remaining_qty = item['quantity']
                 item_batch_deductions = []
@@ -281,7 +271,7 @@ class AddSale(Resource):
                 if item_batch_deductions:
                     batch_deductions.append({
                         'item_name': item['item_name'],
-                        'stock_item_id': item.get('stock_item_id'),
+                        'item_id': item.get('item_id'),
                         'etims_item_code': item.get('etims_item_code'),
                         'deductions': item_batch_deductions
                     })
@@ -298,7 +288,7 @@ class AddSale(Resource):
                     'total_price': item['total_price'],
                     'BatchNumber': ", ".join(f"{bn} ({q})" for bn, q in item_batch_deductions) if item_batch_deductions else "From Livestock",
                     'stockv2_id': item_stock_ids[0] if item_stock_ids else None,
-                    'stock_item_id': item.get('stock_item_id'),
+                    'item_id': item.get('item_id'),
                     'etims_item_code': item.get('etims_item_code'),
                     'Cost_of_sale': item['total_price'],
                     'Purchase_account': item_purchase_account,
@@ -366,7 +356,7 @@ class AddSale(Resource):
                     total_price=total_price,
                     BatchNumber=item['BatchNumber'],
                     stockv2_id=item['stockv2_id'],
-                    stock_item_id=item.get('stock_item_id'),  # Link to StockItems
+                    item_id=item.get('item_id'),  # Link to StockItems
                     etims_item_code=item.get('etims_item_code'),  # Store eTims code
                     Cost_of_sale=item['Cost_of_sale'],
                     Purchase_account=item['Purchase_account'],
@@ -568,8 +558,7 @@ class AddSale(Resource):
                     'auto_discount_applied': auto_discount_applied
                 }
             }, 500
-
-
+        
 
 def check_role(required_role):
     def wrapper(fn):

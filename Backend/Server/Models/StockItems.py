@@ -9,6 +9,10 @@ class StockItems(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     item_name = db.Column(db.String(150), nullable=False)
+    type = db.Column(
+        db.Enum("eggs", "chicken", "farmers choice", "others", name="stock_category"),
+        nullable=True
+    )
     item_code = db.Column(db.String(150), nullable=True)  # Your internal code
     unit_price = db.Column(db.Float, nullable=True)
     pack_price = db.Column(db.Float, nullable=True)
@@ -18,6 +22,13 @@ class StockItems(db.Model):
     category = db.Column(
         db.Enum("eggs", "chicken", "farmers choice", "others", name="stock_category"),
         nullable=True
+    )
+
+    # ✅ NEW: Stock Type column (Service or Product)
+    stock_item_type = db.Column(
+        db.Enum("Service", "Product", name="stock_type_enum"),
+        nullable=False,
+        default="Product"
     )
 
     # ============ NEW eTims Fields ============
@@ -40,15 +51,18 @@ class StockItems(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def __str__(self):
-        return f"{self.item_name} - {self.category or 'Uncategorized'}"
+        return f"{self.item_name} - {self.category or 'Uncategorized'} ({self.stock_type})"
 
     def to_etims_payload(self):
         """Convert StockItems model to eTims API payload"""
+        # Adjust item_type_code based on stock_type
+        item_type = "2" if self.stock_type == "Service" else "1"  # 2=Service, 1=Goods
+        
         return {
             "name": self.item_name,
             "orgCountryCode": self.org_country_code or "KE",
             "unitPrice": float(self.unit_price or 0),
-            "itemTypeCode": self.item_type_code or "1",
+            "itemTypeCode": item_type,  # Auto-set based on stock_type
             "taxCode": self.tax_code or "A",
             "qtyUnitCode": self.qty_unit_code or "U",
             "pkgUnitCode": self.pkg_unit_code or "CT",

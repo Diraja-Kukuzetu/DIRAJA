@@ -163,7 +163,7 @@ def create_app(config_name):
     app.config.from_object(config_name)
 
     # Database
-    app.config["SQLALCHEMY_DATABASE_URI"] = "mysql+pymysql://root:MyNewPass@localhost/Diraja"
+    app.config["SQLALCHEMY_DATABASE_URI"] = "mysql+pymysql://admin:MyNewPass@localhost/Diraja"
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
     # JWT
@@ -173,13 +173,13 @@ def create_app(config_name):
     )
 
     # Mail
-    app.config['MAIL_SERVER'] = 'mail.kulima.co.ke'
+    app.config['MAIL_SERVER'] = 'mail.diraja.online'
     app.config['MAIL_PORT'] = 465
-    app.config['MAIL_USERNAME'] = 'kukuzetureports@kulima.co.ke'
+    app.config['MAIL_USERNAME'] = 'no-reply@diraja.online'
     app.config['MAIL_PASSWORD'] = os.getenv("MAIL_PASSWORD")
     app.config['MAIL_USE_SSL'] = True
     app.config['MAIL_USE_TLS'] = False
-    app.config['MAIL_DEFAULT_SENDER'] = 'kukuzetureports@kulima.co.ke'
+    app.config['MAIL_DEFAULT_SENDER'] = 'no-reply@diraja.online'
 
     # VAPID
     app.config['VAPID_PUBLIC_KEY'] = os.getenv("VAPID_PUBLIC_KEY")

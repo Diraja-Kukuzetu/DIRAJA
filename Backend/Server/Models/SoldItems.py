@@ -19,6 +19,7 @@ class SoldItem(db.Model):
     Cost_of_sale = db.Column(db.Float, nullable=False)
     Purchase_account = db.Column(db.Float, nullable=False)
     LivestockDeduction = db.Column(db.Float, default=0.0)
+    etims_item_code = db.Column(db.String(50), nullable=True)
 
     # Updated relationship to point to ShopStockV2
     shop_stock = db.relationship('ShopStockV2', backref='sold_items', lazy=True)

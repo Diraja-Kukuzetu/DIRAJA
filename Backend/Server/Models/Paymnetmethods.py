@@ -26,8 +26,6 @@ class SalesPaymentMethods(db.Model):
     callback_received_at = db.Column(db.DateTime, nullable=True)
     callback_data = db.Column(db.Text, nullable=True)  # Store full callback JSON
     
-    # Relationships
-    sale = db.relationship('Sales', backref='payment_methods')
 
     # Validation for payment method
     @validates('payment_method')
