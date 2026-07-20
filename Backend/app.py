@@ -173,13 +173,13 @@ def create_app(config_name):
     )
 
     # Mail
-    app.config['MAIL_SERVER'] = 'mail.diraja.online'
+    app.config['MAIL_SERVER'] = 'mail.kukuzetu.co.ke'
     app.config['MAIL_PORT'] = 465
-    app.config['MAIL_USERNAME'] = 'no-reply@diraja.online'
+    app.config['MAIL_USERNAME'] = 'no-reply@kukuzetu.co.ke'
     app.config['MAIL_PASSWORD'] = os.getenv("MAIL_PASSWORD")
     app.config['MAIL_USE_SSL'] = True
     app.config['MAIL_USE_TLS'] = False
-    app.config['MAIL_DEFAULT_SENDER'] = 'no-reply@diraja.online'
+    app.config['MAIL_DEFAULT_SENDER'] = 'no-reply@kukuzetu.co.ke'
 
     # VAPID
     app.config['VAPID_PUBLIC_KEY'] = os.getenv("VAPID_PUBLIC_KEY")
