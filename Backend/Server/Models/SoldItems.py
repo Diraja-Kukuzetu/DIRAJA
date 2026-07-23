@@ -24,7 +24,7 @@ class SoldItem(db.Model):
     # Updated relationship to point to ShopStockV2
     shop_stock = db.relationship('ShopStockV2', backref='sold_items', lazy=True)
     stock_item = db.relationship('StockItems', backref='sold_items', lazy=True)
-
+    is_service = db.Column(db.Boolean, default=False, nullable=False)
     @validates('metric')
     def validate_metric(self, key, metric):
         valid_metric = ['item','pieces', 'kg', 'ltrs']

@@ -120,14 +120,12 @@ class AddSale(Resource):
                     }, 400
 
                 # ===== GET STOCK ITEM AND ETIMS CODE =====
-                # ✅ FIX: Remove shop_id filter - search by item_name only
                 stock_item = StockItems.query.filter_by(
                     item_name=item['item_name']
                 ).first()
 
                 if not stock_item:
                     logger.warning(f"Item '{item['item_name']}' not found in StockItems")
-                    # Continue but warn - the sale will still process
                 
                 # Get eTims item code if available
                 etims_item_code = None
@@ -136,6 +134,14 @@ class AddSale(Resource):
                     logger.info(f"✅ Found eTims code {etims_item_code} for '{item['item_name']}'")
                 else:
                     logger.warning(f"⚠️  No eTims code found for '{item['item_name']}'")
+
+                # ===== CHECK IF ITEM IS A SERVICE =====
+                is_service = False
+                if stock_item:
+                    is_service = stock_item.stock_item_type == "Service"
+                    logger.info(f"Item '{item['item_name']}' is {'Service' if is_service else 'Product'} - {'SKIP' if is_service else 'PROCESS'} stock deduction")
+                else:
+                    logger.warning(f"Item '{item['item_name']}' not found in StockItems, treating as Product")
 
                 # Build item data with stock reference
                 item_data = {
@@ -146,7 +152,8 @@ class AddSale(Resource):
                     'total_price': float(item['total_price']),
                     'item_id': stock_item.id if stock_item else None,
                     'etims_item_code': etims_item_code,
-                    'stock_item': stock_item  # Keep reference for later
+                    'stock_item': stock_item,  # Keep reference for later
+                    'is_service': is_service  # Flag for stock processing
                 }
                 items.append(item_data)
                 
@@ -158,7 +165,8 @@ class AddSale(Resource):
                     'unit_price': float(item['unit_price']),
                     'total_price': float(item['total_price']),
                     'etims_item_code': etims_item_code,
-                    'item_id': stock_item.id if stock_item else None
+                    'item_id': stock_item.id if stock_item else None,
+                    'is_service': is_service  # Store service flag
                 })
                 
                 total_quantity += float(item['quantity'])
@@ -195,14 +203,6 @@ class AddSale(Resource):
                 except ValueError:
                     return {'message': f'Invalid amount for payment method {pm["method"]}'}, 400
 
-        # ===== BANK MAPPING =====
-        shop_to_bank_mapping = {
-            1: 12, 2: 3, 3: 6, 4: 2, 5: 5, 6: 17,
-            7: 15, 8: 9, 10: 18, 11: 8, 12: 7,
-            14: 14, 16: 13, 19: 22
-        }
-        bank_id = shop_to_bank_mapping.get(shop_id, 11)
-
         # ===== STOCK PROCESSING =====
         stock_processing_errors = []
         batch_deductions = []
@@ -212,6 +212,40 @@ class AddSale(Resource):
 
         try:
             for item in items:
+                # ===== SKIP STOCK DEDUCTION FOR SERVICE ITEMS =====
+                if item.get('is_service', False):
+                    logger.info(f"⏭️ Skipping stock deduction for service item: {item['item_name']}")
+                    
+                    # Build sold item WITHOUT stock deduction
+                    sold_item = {
+                        'item_name': item['item_name'],
+                        'quantity': item['quantity'],
+                        'metric': item['metric'],
+                        'unit_price': item['unit_price'],
+                        'total_price': item['total_price'],
+                        'BatchNumber': "Service Item - No Stock Deduction",
+                        'stockv2_id': None,
+                        'item_id': item.get('item_id'),
+                        'etims_item_code': item.get('etims_item_code'),
+                        'Cost_of_sale': item['total_price'],
+                        'Purchase_account': 0.0,  # No purchase cost for services
+                        'LivestockDeduction': 0.0,
+                        'is_service': True  # Flag for SoldItem
+                    }
+                    sold_items.append(sold_item)
+                    
+                    # Record that this was a service item (no stock deduction)
+                    batch_deductions.append({
+                        'item_name': item['item_name'],
+                        'item_id': item.get('item_id'),
+                        'etims_item_code': item.get('etims_item_code'),
+                        'deductions': [("Service Item", 0)],
+                        'is_service': True
+                    })
+                    
+                    continue  # Skip to next item
+
+                # ===== PROCESS PRODUCT ITEMS (WITH STOCK DEDUCTION) =====
                 # Process from ShopStockV2 using shop_id
                 batches = ShopStockV2.query.filter(
                     ShopStockV2.itemname == item['item_name'],
@@ -273,7 +307,8 @@ class AddSale(Resource):
                         'item_name': item['item_name'],
                         'item_id': item.get('item_id'),
                         'etims_item_code': item.get('etims_item_code'),
-                        'deductions': item_batch_deductions
+                        'deductions': item_batch_deductions,
+                        'is_service': False
                     })
                     stock_ids_used.extend(item_stock_ids)
 
@@ -292,7 +327,8 @@ class AddSale(Resource):
                     'etims_item_code': item.get('etims_item_code'),
                     'Cost_of_sale': item['total_price'],
                     'Purchase_account': item_purchase_account,
-                    'LivestockDeduction': item_livestock_deduction
+                    'LivestockDeduction': item_livestock_deduction,
+                    'is_service': False
                 }
                 sold_items.append(sold_item)
 
@@ -306,8 +342,7 @@ class AddSale(Resource):
 
         # ===== PAYMENT PROCESSING =====
         total_amount_paid = sum(float(pm['amount']) for pm in payment_methods) if status != "unpaid" else 0
-        sasapay_deposits = []
-
+        
         total_sale_amount = sum(float(item['total_price']) for item in sold_items)
         
         auto_discount_applied = False
@@ -355,13 +390,14 @@ class AddSale(Resource):
                     unit_price=item['unit_price'],
                     total_price=total_price,
                     BatchNumber=item['BatchNumber'],
-                    stockv2_id=item['stockv2_id'],
+                    stockv2_id=item.get('stockv2_id'),  # Will be None for services
                     item_id=item.get('item_id'),  # Link to StockItems
                     etims_item_code=item.get('etims_item_code'),  # Store eTims code
                     Cost_of_sale=item['Cost_of_sale'],
-                    Purchase_account=item['Purchase_account'],
-                    LivestockDeduction=item['LivestockDeduction'],
-                    round_off=fractional_part
+                    Purchase_account=item.get('Purchase_account', 0.0),  # 0 for services
+                    LivestockDeduction=item.get('LivestockDeduction', 0.0),  # 0 for services
+                    round_off=fractional_part,
+                    is_service=item.get('is_service', False)  # Add service flag to SoldItem
                 )
                 db.session.add(sold_item)
 
@@ -378,31 +414,9 @@ class AddSale(Resource):
                     except (ValueError, TypeError):
                         discount = 0
 
-                if method == 'sasapay':
-                    bank_id = shop_to_bank_mapping.get(shop_id)
-                    if bank_id:
-                        bank_account = BankAccount.query.get(bank_id)
-                        if bank_account:
-                            previous_balance = bank_account.Account_Balance
-                            bank_account.Account_Balance += amount
-                            db.session.add(bank_account)
-
-                            db.session.add(TranscationType(
-                                Transaction_type="Debit",
-                                Transaction_amount=amount,
-                                From_account=f"SASAPAY Sale #{new_sale.sales_id}",
-                                To_account=bank_account.Account_name,
-                                created_at=created_at
-                            ))
-
-                            sasapay_deposits.append({
-                                'shop_id': shop_id,
-                                'bank_id': bank_id,
-                                'bank_account': bank_account.Account_name,
-                                'amount': amount,
-                                'previous_balance': previous_balance,
-                                'new_balance': bank_account.Account_Balance
-                            })
+                # REMOVED: Bank account deposit logic for SASAPAY
+                # Previously had code here that would update bank accounts
+                # Now just records the payment method without affecting account balances
 
                 db.session.add(SalesPaymentMethods(
                     sale_id=new_sale.sales_id,
@@ -510,7 +524,6 @@ class AddSale(Resource):
                 },
                 'payments': {
                     'methods': [pm['method'] for pm in payment_methods],
-                    'sasapay_deposits': sasapay_deposits or "No SASAPAY deposits processed",
                     'discounts_applied': [{'method': pm['method'], 'discount': float(pm.get('discount', 0))} for pm in payment_methods]
                 },
                 'delivery': delivery,
@@ -552,13 +565,11 @@ class AddSale(Resource):
                 'debug_info': {
                     'sale_id': new_sale.sales_id if new_sale else "Not created",
                     'processed_payments': [pm['method'] for pm in payment_methods],
-                    'sasapay_attempts': sasapay_deposits,
                     'delivery': delivery,
                     'creditor_id': creditor_id,
                     'auto_discount_applied': auto_discount_applied
                 }
             }, 500
-        
 
 def check_role(required_role):
     def wrapper(fn):

@@ -245,6 +245,7 @@ Columns:
 - Purchase_account (FLOAT)
 - LivestockDeduction (FLOAT)
 - etims_item_code (VARCHAR(50))
+- is_service (BOOLEAN)
 
 Table: transfers
 Columns:

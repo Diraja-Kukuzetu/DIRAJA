@@ -83,8 +83,23 @@ class GetAllStockItems(Resource):
         """
         GET /stock-items
         Get all stock items with eTims sync status
+        
+        Query Parameters:
+        - type: Filter by stock type ('Service' or 'Product') - optional
         """
-        items = StockItems.query.all()
+        # Get query parameters
+        stock_type = request.args.get('type')
+        
+        # Build query
+        query = StockItems.query
+        
+        # Apply filter if type parameter is provided
+        if stock_type:
+            if stock_type not in ['Service', 'Product']:
+                return {"message": "Type must be either 'Service' or 'Product'"}, 400
+            query = query.filter_by(stock_item_type=stock_type)
+        
+        items = query.all()
         result = []
 
         for item in items:
@@ -102,7 +117,12 @@ class GetAllStockItems(Resource):
                 "etims_sync_date": item.etims_sync_date.isoformat() if item.etims_sync_date else None
             })
 
-        return {"stock_items": result}, 200
+        return {
+            "stock_items": result,
+            "count": len(result),
+            "filter": stock_type if stock_type else "all"
+        }, 200
+
 
 
 class StockItem(Resource):
@@ -347,50 +367,3 @@ class ETimsReferenceResource(Resource):
             logger.error(f"Error fetching reference codes: {str(e)}")
             return {"message": str(e)}, 500
 
-
-# ==========================================================
-# NEW RESOURCE: Get Items by Type
-# ==========================================================
-
-class StockItemsByTypeResource(Resource):
-    @jwt_required()
-    def get(self, stock_type):
-        """
-        GET /stock-items/type/<stock_type>
-        Get all stock items filtered by type (Service or Product)
-        """
-        # Validate stock_type
-        if stock_type not in ['Service', 'Product']:
-            return {"message": "stock_type must be either 'Service' or 'Product'"}, 400
-        
-        try:
-            # Filter by stock_item_type (model field name)
-            items = StockItems.query.filter_by(stock_item_type=stock_type).all()
-            
-            result = []
-            for item in items:
-                result.append({
-                    "id": item.id,
-                    "item_name": item.item_name,
-                    "item_code": item.item_code,
-                    "unit_price": item.unit_price,
-                    "pack_price": item.pack_price,
-                    "pack_quantity": item.pack_quantity,
-                    "category": item.category,
-                    "stock_type": item.stock_item_type,  # Return as 'stock_type' for frontend consistency
-                    "etims_synced": item.etims_synced,
-                    "etims_item_code": item.etims_item_code,
-                    "etims_sync_date": item.etims_sync_date.isoformat() if item.etims_sync_date else None
-                })
-            
-            return {
-                "success": True,
-                "data": result,
-                "count": len(result),
-                "stock_type": stock_type,
-                "message": f"Retrieved {len(result)} {stock_type} items"
-            }, 200
-            
-        except Exception as e:
-            logger.error(f"Error fetching items by type: {str(e)}")
-            return {"message": f"Error fetching items: {str(e)}"}, 500
