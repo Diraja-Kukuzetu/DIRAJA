@@ -63,7 +63,7 @@ class GetShopReports(Resource):
                 try:
                     filter_date = datetime.strptime(date_str, '%Y-%m-%d').date()
                     query = query.filter(
-                        func.date(ShopReport.reported_at) == filter_date
+                        func.date(ShopReport.timestamp) == filter_date
                     )
                 except ValueError:
                     return {"message": "date must be in YYYY-MM-DD format"}, 400
@@ -72,7 +72,7 @@ class GetShopReports(Resource):
             if start_date_str:
                 try:
                     start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-                    query = query.filter(ShopReport.reported_at >= start_date)
+                    query = query.filter(ShopReport.timestamp >= start_date)
                 except ValueError:
                     return {"message": "start_date must be in YYYY-MM-DD format"}, 400
             
@@ -81,12 +81,12 @@ class GetShopReports(Resource):
                     end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
                     # Add one day to include the entire end date
                     end_date = end_date + timedelta(days=1)
-                    query = query.filter(ShopReport.reported_at < end_date)
+                    query = query.filter(ShopReport.timestamp < end_date)
                 except ValueError:
                     return {"message": "end_date must be in YYYY-MM-DD format"}, 400
             
             # Order by most recent first
-            query = query.order_by(ShopReport.reported_at.desc())
+            query = query.order_by(ShopReport.timestamp.desc())
             
             # Pagination
             offset = (page - 1) * limit
@@ -101,9 +101,9 @@ class GetShopReports(Resource):
                     "user_id": report.user_id,
                     "username": report.username,
                     "shop_id": report.shop_id,
-                    "reported_at": report.reported_at.isoformat() if report.reported_at else None,
-                    "date": report.reported_at.date().isoformat() if report.reported_at else None,
-                    "time": report.reported_at.time().isoformat() if report.reported_at else None,
+                    "timestamp": report.timestamp.isoformat() if report.timestamp else None,
+                    "date": report.timestamp.date().isoformat() if report.timestamp else None,
+                    "time": report.timestamp.time().isoformat() if report.timestamp else None,
                     "location": report.location,
                     "latitude": report.latitude,
                     "longitude": report.longitude,

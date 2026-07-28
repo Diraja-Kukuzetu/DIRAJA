@@ -8,6 +8,7 @@ from pywebpush import webpush, WebPushException
 from Server.Models.Users import Users
 from Server.Models.Shops import Shops
 from functools import wraps
+from sqlalchemy import or_
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from flask import request, make_response
 import datetime
@@ -243,71 +244,160 @@ class GetTasks(Resource):
     @check_role('manager')
     def get(self):
         try:
-            category = request.args.get('category')
+            # Get query parameters
             status = request.args.get('status')
+            category = request.args.get('category')
             priority = request.args.get('priority')
             assignee_id = request.args.get('assignee_id')
+            assignee2_id = request.args.get('assignee2_id')
+            include_recurring = request.args.get(
+                'include_recurring', 'true'
+            ).lower() == 'true'
 
+            # Build query (NO assignee filter here)
             query = TaskManager.query.options(
                 joinedload(TaskManager.assigner),
                 joinedload(TaskManager.assignee),
-                joinedload(TaskManager.shop),
+                joinedload(TaskManager.assignee2),
+                joinedload(TaskManager.shop)
             )
+
+            # Filter out recurring parent tasks if requested
+            if not include_recurring:
+                query = query.filter(TaskManager.parent_task_id.is_(None))
+
+            # Apply filters
+            if status:
+                query = query.filter(TaskManager.status == status)
 
             if category:
                 query = query.filter(TaskManager.category == category)
-            if status:
-                query = query.filter(TaskManager.status == status)
+
             if priority:
                 query = query.filter(TaskManager.priority == priority)
+
             if assignee_id:
                 query = query.filter(TaskManager.assignee_id == assignee_id)
 
+            if assignee2_id:
+                query = query.filter(TaskManager.assignee2_id == assignee2_id)
+
+            # Order by due date then priority
             tasks = query.order_by(
-                TaskManager.due_date.desc(),
+                TaskManager.due_date.asc(),
                 TaskManager.priority.desc()
             ).all()
 
             if not tasks:
-                return {"message": "No tasks found"}, 404
+                return {
+                    "message": "No tasks found",
+                    "tasks": [],
+                    "total_count": 0
+                }, 200
 
             return {
-                "tasks": [task.to_dict(include_recurrence_info=True) for task in tasks],
-                "total_count": len(tasks),
+                "tasks": [
+                    task.to_dict(include_recurrence_info=True)
+                    for task in tasks
+                ],
+                "total_count": len(tasks)
             }, 200
-        
-        except Exception as e:
-            # Log the error
-            print(f"Error in GetTasks: {str(e)}")
-            return {"error": str(e), "message": "Failed to fetch tasks"}, 500
 
+        except Exception as e:
+            print(f"Error in GetTasks: {e}")
+            return {
+                "error": str(e),
+                "message": "Failed to fetch tasks"
+            }, 500
 
 
 class GetUserTasks(Resource):
     @jwt_required()
     def get(self, user_id=None):
         current_user_id = get_jwt_identity()
-        
+
         # If no user_id provided, use current user
         target_user_id = user_id if user_id else current_user_id
-        
+
         # Get query parameters
         status = request.args.get('status')
         category = request.args.get('category')
         priority = request.args.get('priority')
-        include_recurring = request.args.get('include_recurring', 'true').lower() == 'true'
-        
+        include_recurring = request.args.get(
+            'include_recurring', 'true'
+        ).lower() == 'true'
+
+        # Build query
+        query = TaskManager.query.options(
+            joinedload(TaskManager.assigner),
+            joinedload(TaskManager.shop),
+            joinedload(TaskManager.assignee),
+            joinedload(TaskManager.assignee2)   # if you have this relationship
+        ).filter(
+            or_(
+                TaskManager.assignee_id == target_user_id,
+                TaskManager.assignee2_id == target_user_id
+            )
+        )
+
+        # Filter out parent recurring tasks if needed
+        if not include_recurring:
+            query = query.filter(TaskManager.parent_task_id.is_(None))
+
+        # Apply filters
+        if status:
+            query = query.filter(TaskManager.status == status)
+
+        if category:
+            query = query.filter(TaskManager.category == category)
+
+        if priority:
+            query = query.filter(TaskManager.priority == priority)
+
+        # Order by due date (soonest first) and priority
+        tasks = query.order_by(
+            TaskManager.due_date.asc(),
+            TaskManager.priority.desc()
+        ).all()
+
+        if not tasks:
+            return {"message": "No tasks found"}, 404
+
+        return {
+            "tasks": [
+                task.to_dict(include_recurrence_info=True)
+                for task in tasks
+            ],
+            "total_count": len(tasks)
+        }, 200
+
+class GetTasksByAssigner(Resource):
+    @jwt_required()
+    def get(self, user_id=None):
+        current_user_id = get_jwt_identity()
+
+        # If no user_id is provided, use the logged-in user
+        target_user_id = user_id if user_id else current_user_id
+
+        # Query parameters
+        status = request.args.get("status")
+        category = request.args.get("category")
+        priority = request.args.get("priority")
+        include_recurring = (
+            request.args.get("include_recurring", "true").lower() == "true"
+        )
+
         # Build query
         query = TaskManager.query.options(
             joinedload(TaskManager.assigner),
             joinedload(TaskManager.shop),
             joinedload(TaskManager.assignee)
-        ).filter(TaskManager.assignee_id == target_user_id)
-        
-        # Filter out parent recurring tasks if needed
+        ).filter(TaskManager.user_id == target_user_id)
+
+        # Optionally exclude recurring parent tasks
         if not include_recurring:
             query = query.filter(TaskManager.parent_task_id.is_(None))
-        
+
         # Apply filters
         if status:
             query = query.filter(TaskManager.status == status)
@@ -315,22 +405,23 @@ class GetUserTasks(Resource):
             query = query.filter(TaskManager.category == category)
         if priority:
             query = query.filter(TaskManager.priority == priority)
-        
-        # Order by due date (soonest first) and priority
+
+        # Order by due date then priority
         tasks = query.order_by(
             TaskManager.due_date.asc(),
             TaskManager.priority.desc()
         ).all()
-        
+
         if not tasks:
             return {"message": "No tasks found"}, 404
 
         return {
-            "tasks": [task.to_dict(include_recurrence_info=True) for task in tasks],
+            "tasks": [
+                task.to_dict(include_recurrence_info=True)
+                for task in tasks
+            ],
             "total_count": len(tasks)
         }, 200
-
-
 
 class TaskResource(Resource):
     @jwt_required()
@@ -434,6 +525,7 @@ class TaskCommentResource(Resource):
     def post(self, task_id):
         """Add a comment to a task"""
         try:
+            # Get task
             task = TaskManager.query.get(task_id)
             if not task:
                 return {"error": "Task not found"}, 404
@@ -444,6 +536,7 @@ class TaskCommentResource(Resource):
             if not data or not data.get("comment"):
                 return {"error": "Comment text is required"}, 400
 
+            # Create comment
             comment = TaskComment(
                 task_id=task_id,
                 user_id=current_user_id,
@@ -454,11 +547,34 @@ class TaskCommentResource(Resource):
             db.session.add(comment)
             db.session.commit()
 
-            # Get user info
+            # Get commenter info
             user = Users.query.get(current_user_id)
             username = user.username if user else "Unknown"
 
-            # Return simple dict without using to_dict
+            # ------------------------------------------
+            # Send push notifications
+            # ------------------------------------------
+            users_to_notify = set()
+
+            # Notify task creator
+            if getattr(task, "created_by", None):
+                users_to_notify.add(task.created_by)
+
+            # Notify assignee
+            if getattr(task, "assigned_to", None):
+                users_to_notify.add(task.assigned_to)
+
+            # Don't notify the person who commented
+            users_to_notify.discard(current_user_id)
+
+            for user_id in users_to_notify:
+                self.send_push_to_user(
+                    user_id=user_id,
+                    title="New Task Comment",
+                    body=f"{username} commented on '{task.task}'"
+                )
+
+            # Return response
             return {
                 "message": "Comment added successfully",
                 "comment": {
@@ -478,6 +594,45 @@ class TaskCommentResource(Resource):
             db.session.rollback()
             print(f"Error adding comment: {str(e)}")
             return {"error": "Failed to add comment. Please try again."}, 400
+
+    def send_push_to_user(self, user_id, title, body):
+        """Send push notification to all subscriptions for a user."""
+        subscriptions = PushSubscription.query.filter_by(user_id=user_id).all()
+
+        if not subscriptions:
+            print(f"No push subscriptions found for user {user_id}")
+            return
+
+        vapid_private_key = current_app.config.get("VAPID_PRIVATE_KEY")
+        vapid_email = current_app.config.get("VAPID_EMAIL")
+
+        payload = {
+            "title": title,
+            "body": body,
+            "icon": "/logo192.png",
+        }
+
+        for sub in subscriptions:
+            try:
+                webpush(
+                    subscription_info={
+                        "endpoint": sub.endpoint,
+                        "keys": {
+                            "p256dh": sub.p256dh,
+                            "auth": sub.auth,
+                        },
+                    },
+                    data=json.dumps(payload),
+                    vapid_private_key=vapid_private_key,
+                    vapid_claims={
+                        "sub": vapid_email,
+                    },
+                )
+
+                print(f"Push sent to user {user_id} subscriber {sub.id}")
+
+            except WebPushException as e:
+                print(f"Push failed for subscriber {sub.id}: {repr(e)}")
 
     @jwt_required()
     def get(self, task_id):
@@ -830,6 +985,7 @@ class TaskResource(Resource):
         # Store old values for change tracking
         changes = []
         old_assignee_id = task.assignee_id
+        old_assignee2_id = task.assignee2_id
         old_due_date = task.due_date
         old_status = task.status
         old_priority = task.priority
@@ -872,6 +1028,12 @@ class TaskResource(Resource):
                 new_category = data["category"]
                 changes.append(f"Category changed from {old_category} to {new_category}")
                 task.category = data["category"]
+                
+            # Update assignee2 with tracking
+            if data.get("assignee2") and data["assignee2"] != old_assignee2_id:
+                new_assignee2 = data["assignee2"]
+                changes.append(f"Assignee2 changed from {old_assignee2_id} to {new_assignee2}")
+                task.assignee2 = data["assignee2"]
             
             # Update due date with tracking
             if data.get("due_date"):

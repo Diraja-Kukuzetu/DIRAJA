@@ -514,6 +514,12 @@ class GetEmployeeLeaderboard(Resource):
                     users_id=sale.user_id
                 ).first()
 
+                employee = None
+                if user and user.employee_id:
+                    employee = Employees.query.filter_by(
+                        employee_id=user.employee_id
+                    ).first()
+
                 employee_name = (
                     user.username
                     if user
@@ -522,10 +528,13 @@ class GetEmployeeLeaderboard(Resource):
 
                 leaderboard.append({
                     "employee_name": employee_name,
+                    "merit_points": employee.merit_points if employee else 0,
                     "total_sales": f"{sale.total_sales:,}",
-                    "total_amount": f"{sale.total_amount:,.2f}"
-                    if sale.total_amount
-                    else "0.00"
+                    "total_amount": (
+                        f"{sale.total_amount:,.2f}"
+                        if sale.total_amount
+                        else "0.00"
+                    )
                 })
 
             return make_response(jsonify({

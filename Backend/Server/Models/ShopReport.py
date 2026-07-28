@@ -32,3 +32,9 @@ class ShopReport(db.Model):
     longitude = db.Column(db.Float)
 
     note = db.Column(db.Text)
+    
+    timestamp = db.Column(
+        db.DateTime,
+        server_default=db.func.now(),
+        nullable=False
+    )

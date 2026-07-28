@@ -164,7 +164,7 @@ from Server.Views.PushSubscription import  (
 from Server.Views.TaskManagerViews import (
     # Task Management
     CreateTask, TaskResource, GetTasks, CompleteTask, GetUserTasks,TaskProgressResource,TaskStatsResource,TaskCommentResource,CommentResource,TaskEvaluationResource,
-    CancelRecurringTask,ProcessRecurringTasks,CreateTaskCategory,GetAllTaskCategories
+    CancelRecurringTask,ProcessRecurringTasks,CreateTaskCategory,GetAllTaskCategories,GetTasksByAssigner
 )
 from Server.Views.CookedItemsView import  (
     AddCookedItems
@@ -555,6 +555,7 @@ api.add_resource(GetAllTaskCategories, "/tasks/categories")
 api.add_resource(TaskResource, "/tasks/<int:task_id>")
 api.add_resource(GetTasks, "/alltasks")
 api.add_resource(GetUserTasks, "/mytasks/<int:user_id>")
+api.add_resource(GetTasksByAssigner, "/tasks/assigner/<int:user_id>")
 api.add_resource(CompleteTask, '/<int:task_id>/complete')
 api.add_resource(TaskProgressResource, "/tasks/<int:task_id>/progress")
 api.add_resource(TaskStatsResource, "/tasks/stats")

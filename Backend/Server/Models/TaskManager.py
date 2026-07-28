@@ -209,6 +209,7 @@ class TaskManager(db.Model):
             "assigner_username": self.assigner.username if self.assigner else "Unknown",
             "assignee_id": self.assignee_id,
             "assignee_username": self.assignee.username if self.assignee else "Unknown",
+            "assignee2_username": self.assignee2.username if self.assignee2 else "None",
             "task": self.task,
             "priority": self.priority,
             "category": self.category,
