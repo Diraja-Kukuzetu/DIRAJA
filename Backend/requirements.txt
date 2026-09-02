@@ -64,10 +64,7 @@ MarkupSafe==2.1.5
 marshmallow==3.26.1
 multidict==6.6.4
 mypy_extensions==1.1.0
-<<<<<<< HEAD
-=======
 netifaces==0.10.6
->>>>>>> af6c6da (Delivery sales)
 numpy==2.2.4
 openai==2.32.0
 orjson==3.11.2

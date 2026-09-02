@@ -9,10 +9,6 @@ class StockItems(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     item_name = db.Column(db.String(150), nullable=False)
-    type = db.Column(
-        db.Enum("eggs", "chicken", "farmers choice", "others", name="stock_category"),
-        nullable=True
-    )
     item_code = db.Column(db.String(150), nullable=True)  # Your internal code
     unit_price = db.Column(db.Float, nullable=True)
     pack_price = db.Column(db.Float, nullable=True)

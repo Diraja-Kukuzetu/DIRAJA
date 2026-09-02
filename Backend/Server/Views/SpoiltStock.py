@@ -1,5 +1,5 @@
 from flask import request, jsonify
-from flask_restful import Resource
+from flask_restful import Resource,reqparse
 from datetime import datetime
 from sqlalchemy.exc import SQLAlchemyError
 from flask_jwt_extended import get_jwt_identity, jwt_required
@@ -334,6 +334,163 @@ class ApproveSpoiltStock(Resource):
                 "spoilt_id": spoilt_record.id if spoilt_record else None
             }, 500
 
+
+class ApproveAllSpoiltStock(Resource):
+    @jwt_required()
+    def post(self):
+        """
+        Approve all pending spoilt stock records in batches.
+        """
+        # ===== AUTH USER =====
+        user_id = get_jwt_identity()
+        approver = Users.query.get(user_id)
+        if not approver:
+            return {"message": "Invalid user"}, 400
+
+        try:
+            # ===== GET BATCH SIZE FROM REQUEST (OPTIONAL) =====
+            parser = reqparse.RequestParser()
+            parser.add_argument('batch_size', type=int, default=100, help='Number of records to process per batch')
+            args = parser.parse_args()
+            batch_size = args.get('batch_size', 100)
+
+            # ===== FETCH ALL PENDING RECORDS =====
+            pending_records = SpoiltStock.query.filter_by(status='pending').all()
+            
+            if not pending_records:
+                return {
+                    "message": "No pending spoilt stock records found",
+                    "records_processed": 0
+                }, 200
+
+            # ===== PROCESS IN BATCHES =====
+            approved_records = []
+            failed_records = []
+            total_cost = 0
+            total_quantity = 0
+            processed_count = 0
+
+            # Split records into batches
+            for i in range(0, len(pending_records), batch_size):
+                batch = pending_records[i:i + batch_size]
+                
+                for spoilt_record in batch:
+                    try:
+                        # ===== PROCESS SINGLE RECORD =====
+                        result = self._process_single_record(spoilt_record, user_id)
+                        
+                        if result['success']:
+                            approved_records.append(result['data'])
+                            total_cost += result['data']['cost_of_spoilage']
+                            total_quantity += result['data']['quantity']
+                        else:
+                            failed_records.append({
+                                "record_id": spoilt_record.id,
+                                "item": spoilt_record.item,
+                                "error": result['error']
+                            })
+                        
+                        processed_count += 1
+
+                    except Exception as e:
+                        failed_records.append({
+                            "record_id": spoilt_record.id,
+                            "item": spoilt_record.item,
+                            "error": str(e)
+                        })
+
+                # ===== COMMIT AFTER EACH BATCH =====
+                if approved_records:
+                    db.session.commit()
+
+            # ===== PREPARE RESPONSE =====
+            response = {
+                "message": "Bulk approval completed",
+                "summary": {
+                    "total_pending": len(pending_records),
+                    "processed": processed_count,
+                    "approved": len(approved_records),
+                    "failed": len(failed_records),
+                    "total_quantity": total_quantity,
+                    "total_cost_of_spoilage": float(total_cost)
+                },
+                "approved_records": approved_records,
+                "failed_records": failed_records
+            }
+
+            if approved_records and failed_records:
+                return response, 207
+            elif approved_records:
+                return response, 200
+            else:
+                return response, 400
+
+        except Exception as e:
+            db.session.rollback()
+            return {
+                "message": "Failed to approve spoilt stock",
+                "error": str(e)
+            }, 500
+
+    def _process_single_record(self, spoilt_record, user_id):
+        """
+        Process a single spoilt stock record.
+        """
+        # ===== VALIDATE INVENTORY ID EXISTS =====
+        if not spoilt_record.inventory_id:
+            return {
+                "success": False,
+                "error": "No inventory item linked to this spoilt record"
+            }
+
+        # ===== FETCH INVENTORY ITEM =====
+        inventory_item = InventoryV2.query.get(spoilt_record.inventory_id)
+        if not inventory_item:
+            return {
+                "success": False,
+                "error": f"Inventory item not found for ID: {spoilt_record.inventory_id}"
+            }
+
+        # ===== VALIDATE QUANTITY =====
+        if not spoilt_record.quantity or spoilt_record.quantity <= 0:
+            return {
+                "success": False,
+                "error": f"Invalid quantity: {spoilt_record.quantity}"
+            }
+
+        # ===== VALIDATE UNIT COST =====
+        if not inventory_item.unitCost or inventory_item.unitCost <= 0:
+            return {
+                "success": False,
+                "error": f"Invalid unit cost: {inventory_item.unitCost}"
+            }
+
+        # ===== CALCULATE COST OF SPOILAGE =====
+        spoilt_record.cost_of_spoilage = spoilt_record.quantity * inventory_item.unitCost
+        
+        # ===== APPROVE RECORD =====
+        spoilt_record.status = 'approved'
+        spoilt_record.approved_by = user_id
+        spoilt_record.approved_at = datetime.now(timezone.utc)
+
+        db.session.add(spoilt_record)
+
+        # ===== POST JOURNAL =====
+        journal_result = SpoiltJournalService.post_spoilt_journal(spoilt_record)
+
+        return {
+            "success": True,
+            "data": {
+                "record_id": spoilt_record.id,
+                "item": spoilt_record.item,
+                "quantity": spoilt_record.quantity,
+                "unit": spoilt_record.unit,
+                "cost_of_spoilage": float(spoilt_record.cost_of_spoilage),
+                "unit_cost": float(inventory_item.unitCost),
+                "calculation": f"{spoilt_record.quantity} × {inventory_item.unitCost}",
+                "journal": journal_result
+            }
+        }
 
 class RejectSpoiltStock(Resource):
     @jwt_required()

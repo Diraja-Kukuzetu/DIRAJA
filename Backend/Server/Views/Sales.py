@@ -1,3 +1,4 @@
+
 from app import db
 import os
 import json
@@ -31,42 +32,533 @@ from datetime import datetime, timedelta
 from Server.Models.Transactions import TranscationType
 from Server.Models.BankAccounts import BankAccount
 from Server.Models.CashDeposit import CashDeposits
+from Server.Views.Utils.customer_utils import CustomerService
 from flask import current_app
 from fuzzywuzzy import process
-from collections import defaultdict
-from sqlalchemy import func, and_
 import logging
 from math import modf
 import threading
 from Server.Views.Services.sasapay_service import SasaPayPaymentService
-from Server.Views.Services.etims_sale_service import etims_sale_service
 from Server.Views.Services.journal_service import JournalService
 from flask import send_file
 from io import BytesIO
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
-
-# def check_role(allowed_roles):
-#     def wrapper(fn):
-#         @wraps(fn)
-#         def decorator(*args, **kwargs):
-#             current_user_id = get_jwt_identity()
-#             user = Users.query.get(current_user_id)
-#             if user and user.role not in allowed_roles:
-#                 return make_response(jsonify({"error": "Unauthorized access"}), 403)
-#             return fn(*args, **kwargs)
-#         return decorator
-#     return wrapper
-
-
-# class TotalBalanceSummary(Resource):
+# class AddSale(Resource):
 #     @jwt_required()
-#     @check_role(['manager', 'clerk'])
-#     def get(self):
-#         # Your endpoint logic here
-#         return jsonify({"message": "Success"})
+#     def post(self):
+#         data = request.get_json()
+#         current_user_id = get_jwt_identity()
+#         new_sale = None
 
+#         # ===== VALIDATION =====
+#         required_fields = [
+#             'shop_id', 'customer_name', 'customer_number',
+#             'items', 'payment_methods', 'status', 'delivery'
+#         ]
+#         if not all(field in data for field in required_fields):
+#             return {
+#                 'message': 'Missing required fields',
+#                 'missing': [f for f in required_fields if f not in data]
+#             }, 400
+
+#         try:
+#             shop_id = int(data['shop_id'])
+#             payment_methods = data['payment_methods']
+#             promocode = data.get('promocode', '')
+#             status = data['status'].lower()
+#             balance = float(data.get('balance', 0))
+#             delivery = bool(data.get('delivery', 0))
+#             creditor_id = data.get('creditor_id')
+#             register_for_loyalty = data.get('register_for_loyalty', False)
+#             created_at = datetime.strptime(data['sale_date'], "%Y-%m-%d") if 'sale_date' in data else datetime.utcnow()
+
+#             if not isinstance(data['items'], list) or not data['items']:
+#                 return {'message': 'Items must be a non-empty list'}, 400
+
+#             items = []
+#             total_price = 0.0
+#             total_quantity = 0.0
+#             purchase_account = 0.0
+#             etims_items_data = []
+
+#             for item in data['items']:
+#                 item_fields = ['item_name', 'quantity', 'metric', 'unit_price']
+#                 if not all(field in item for field in item_fields):
+#                     return {
+#                         'message': 'Missing required item fields',
+#                         'missing': [f for f in item_fields if f not in item]
+#                     }, 400
+
+#                 metric = item['metric'].strip().lower()
+#                 if metric not in ['item', 'kg', 'ltrs']:
+#                     return {
+#                         'message': f"Invalid metric '{metric}' for item '{item['item_name']}'. Must be one of: item, kg, ltrs",
+#                         'invalid_item': item
+#                     }, 400
+
+#                 stock_item = StockItems.query.filter_by(
+#                     item_name=item['item_name']
+#                 ).first()
+
+#                 if not stock_item:
+#                     logger.warning(f"Item '{item['item_name']}' not found in StockItems")
+                
+#                 etims_item_code = None
+#                 if stock_item and stock_item.etims_synced:
+#                     etims_item_code = stock_item.etims_item_code
+#                     logger.info(f"✅ Found eTims code {etims_item_code} for '{item['item_name']}'")
+#                 else:
+#                     logger.warning(f"⚠️  No eTims code found for '{item['item_name']}'")
+
+#                 is_service = False
+#                 if stock_item:
+#                     is_service = stock_item.stock_item_type == "Service"
+#                     logger.info(f"Item '{item['item_name']}' is {'Service' if is_service else 'Product'}")
+
+#                 item_data = {
+#                     'item_name': item['item_name'],
+#                     'quantity': float(item['quantity']),
+#                     'metric': metric,
+#                     'unit_price': float(item['unit_price']),
+#                     'total_price': float(item['total_price']),
+#                     'item_id': stock_item.id if stock_item else None,
+#                     'etims_item_code': etims_item_code,
+#                     'stock_item': stock_item,
+#                     'is_service': is_service
+#                 }
+#                 items.append(item_data)
+                
+#                 etims_items_data.append({
+#                     'item_name': item['item_name'],
+#                     'quantity': float(item['quantity']),
+#                     'metric': metric,
+#                     'unit_price': float(item['unit_price']),
+#                     'total_price': float(item['total_price']),
+#                     'etims_item_code': etims_item_code,
+#                     'item_id': stock_item.id if stock_item else None,
+#                     'is_service': is_service
+#                 })
+                
+#                 total_quantity += float(item['quantity'])
+#                 total_price += float(item['total_price'])
+
+#         except (ValueError, KeyError, TypeError) as e:
+#             return {'message': f'Invalid data format: {str(e)}'}, 400
+
+#         # ===== CREDITOR VALIDATION =====
+#         creditor = None
+#         if creditor_id:
+#             try:
+#                 creditor_id = int(creditor_id)
+#                 creditor = Creditors.query.filter_by(id=creditor_id, shop_id=shop_id).first()
+#                 if not creditor:
+#                     return {'message': f'Creditor with ID {creditor_id} not found for this shop'}, 404
+                
+#                 if status not in ["unpaid", "partially_paid"]:
+#                     return {'message': 'Creditor sales must have status "unpaid" or "partially paid"'}, 400
+                    
+#             except (ValueError, TypeError):
+#                 return {'message': 'Invalid creditor ID format'}, 400
+
+#         # ===== PAYMENT METHOD VALIDATION =====
+#         if status != "unpaid":
+#             if not isinstance(payment_methods, list):
+#                 return {'message': 'Payment methods must be a list'}, 400
+
+#             for pm in payment_methods:
+#                 if 'method' not in pm or 'amount' not in pm:
+#                     return {'message': 'Each payment method must have "method" and "amount"'}, 400
+#                 try:
+#                     float(pm['amount'])
+#                 except ValueError:
+#                     return {'message': f'Invalid amount for payment method {pm["method"]}'}, 400
+
+#         # ===== STOCK PROCESSING =====
+#         stock_processing_errors = []
+#         batch_deductions = []
+#         stock_ids_used = []
+#         sold_items = []
+#         livestock_deductions = []
+
+#         try:
+#             for item in items:
+#                 if item.get('is_service', False):
+#                     logger.info(f"⏭️ Skipping stock deduction for service item: {item['item_name']}")
+                    
+#                     sold_item = {
+#                         'item_name': item['item_name'],
+#                         'quantity': item['quantity'],
+#                         'metric': item['metric'],
+#                         'unit_price': item['unit_price'],
+#                         'total_price': item['total_price'],
+#                         'BatchNumber': "Service Item - No Stock Deduction",
+#                         'stockv2_id': None,
+#                         'item_id': item.get('item_id'),
+#                         'etims_item_code': item.get('etims_item_code'),
+#                         'Cost_of_sale': item['total_price'],
+#                         'Purchase_account': 0.0,
+#                         'LivestockDeduction': 0.0,
+#                         'is_service': True
+#                     }
+#                     sold_items.append(sold_item)
+                    
+#                     batch_deductions.append({
+#                         'item_name': item['item_name'],
+#                         'item_id': item.get('item_id'),
+#                         'etims_item_code': item.get('etims_item_code'),
+#                         'deductions': [("Service Item", 0)],
+#                         'is_service': True
+#                     })
+                    
+#                     continue
+
+#                 batches = ShopStockV2.query.filter(
+#                     ShopStockV2.itemname == item['item_name'],
+#                     ShopStockV2.shop_id == shop_id,
+#                     ShopStockV2.quantity > 0
+#                 ).order_by(ShopStockV2.BatchNumber).all()
+
+#                 remaining_qty = item['quantity']
+#                 item_batch_deductions = []
+#                 item_stock_ids = []
+#                 item_purchase_account = 0.0
+#                 item_livestock_deduction = 0.0
+
+#                 for batch in batches:
+#                     if remaining_qty <= 0:
+#                         break
+
+#                     deduct_qty = min(batch.quantity, remaining_qty)
+#                     batch.quantity -= deduct_qty
+#                     remaining_qty -= deduct_qty
+#                     item_batch_deductions.append((batch.BatchNumber, deduct_qty))
+#                     item_stock_ids.append(str(batch.stockv2_id))
+
+#                     inventory = InventoryV2.query.filter_by(inventoryV2_id=batch.inventoryv2_id).first()
+#                     if inventory:
+#                         item_purchase_account += inventory.unitCost * deduct_qty
+
+#                     db.session.add(batch)
+
+#                 if remaining_qty > 0:
+#                     livestock_entry = LiveStock.query.filter(
+#                         LiveStock.shop_id == shop_id,
+#                         func.lower(LiveStock.item_name) == item['item_name'].lower()
+#                     ).first()
+
+#                     if livestock_entry:
+#                         if livestock_entry.current_quantity > 0:
+#                             deduct_qty = min(livestock_entry.current_quantity, remaining_qty)
+#                             livestock_entry.current_quantity -= deduct_qty
+#                             livestock_entry.clock_out_quantity -= deduct_qty
+#                             remaining_qty -= deduct_qty
+#                             item_livestock_deduction = deduct_qty
+#                             db.session.add(livestock_entry)
+#                             livestock_deductions.append({
+#                                 'item_name': item['item_name'],
+#                                 'quantity': deduct_qty,
+#                                 'original_current': livestock_entry.current_quantity + deduct_qty,
+#                                 'new_current': livestock_entry.current_quantity
+#                             })
+
+#                 if remaining_qty > 0:
+#                     stock_processing_errors.append(
+#                         f"Insufficient stock for {item['item_name']}. Needed {item['quantity']}, available {item['quantity'] - remaining_qty}"
+#                     )
+#                     continue
+
+#                 if item_batch_deductions:
+#                     batch_deductions.append({
+#                         'item_name': item['item_name'],
+#                         'item_id': item.get('item_id'),
+#                         'etims_item_code': item.get('etims_item_code'),
+#                         'deductions': item_batch_deductions,
+#                         'is_service': False
+#                     })
+#                     stock_ids_used.extend(item_stock_ids)
+
+#                 purchase_account += item_purchase_account
+
+#                 sold_item = {
+#                     'item_name': item['item_name'],
+#                     'quantity': item['quantity'],
+#                     'metric': item['metric'],
+#                     'unit_price': item['unit_price'],
+#                     'total_price': item['total_price'],
+#                     'BatchNumber': ", ".join(f"{bn} ({q})" for bn, q in item_batch_deductions) if item_batch_deductions else "From Livestock",
+#                     'stockv2_id': item_stock_ids[0] if item_stock_ids else None,
+#                     'item_id': item.get('item_id'),
+#                     'etims_item_code': item.get('etims_item_code'),
+#                     'Cost_of_sale': item['total_price'],
+#                     'Purchase_account': item_purchase_account,
+#                     'LivestockDeduction': item_livestock_deduction,
+#                     'is_service': False
+#                 }
+#                 sold_items.append(sold_item)
+
+#             if stock_processing_errors:
+#                 db.session.rollback()
+#                 return {'message': 'Stock processing failed', 'errors': stock_processing_errors}, 400
+
+#         except Exception as e:
+#             db.session.rollback()
+#             return {'message': 'Stock processing failed', 'error': str(e)}, 500
+
+#         # ===== PAYMENT PROCESSING =====
+#         total_amount_paid = sum(float(pm['amount']) for pm in payment_methods) if status != "unpaid" else 0
+        
+#         total_sale_amount = sum(float(item['total_price']) for item in sold_items)
+        
+#         auto_discount_applied = False
+#         if balance > 0 and status == "paid":
+#             balance_percentage = (balance / total_sale_amount) * 100
+#             if balance_percentage <= 3.0:
+#                 has_discount = any(pm.get('discount', 0) > 0 for pm in payment_methods)
+#                 if not has_discount and len(payment_methods) == 1:
+#                     payment_methods[0]['discount'] = balance
+#                     auto_discount_applied = True
+#                     balance = 0
+
+#         try:
+#             # ===== CREATE LOCAL SALE =====
+#             new_sale = Sales(
+#                 user_id=current_user_id,
+#                 shop_id=shop_id,
+#                 customer_name=data['customer_name'],
+#                 customer_number=data['customer_number'],
+#                 status=status,
+#                 delivery=delivery,
+#                 created_at=created_at,
+#                 balance=balance,
+#                 promocode=promocode,
+#             )
+#             db.session.add(new_sale)
+#             db.session.flush()
+
+#             # ===== CREDITOR BALANCE UPDATE =====
+#             if creditor:
+#                 creditor.total_credit = (creditor.total_credit or 0) + total_sale_amount
+#                 creditor.credit_amount = (creditor.credit_amount or 0) + total_sale_amount
+#                 db.session.add(creditor)
+
+#             # ===== CREATE SOLD ITEMS WITH REFERENCES =====
+#             for item in sold_items:
+#                 total_price = float(item['total_price'])
+#                 fractional_part = round(total_price - int(total_price), 2)
+
+#                 sold_item = SoldItem(
+#                     sales_id=new_sale.sales_id,
+#                     item_name=item['item_name'],
+#                     quantity=item['quantity'],
+#                     metric=item['metric'],
+#                     unit_price=item['unit_price'],
+#                     total_price=total_price,
+#                     BatchNumber=item['BatchNumber'],
+#                     stockv2_id=item.get('stockv2_id'),
+#                     item_id=item.get('item_id'),
+#                     etims_item_code=item.get('etims_item_code'),
+#                     Cost_of_sale=item['Cost_of_sale'],
+#                     Purchase_account=item.get('Purchase_account', 0.0),
+#                     LivestockDeduction=item.get('LivestockDeduction', 0.0),
+#                     round_off=fractional_part,
+#                     is_service=item.get('is_service', False)
+#                 )
+#                 db.session.add(sold_item)
+
+#             # ===== PAYMENT METHODS =====
+#             for payment in payment_methods:
+#                 method = payment['method'].strip().lower()
+#                 amount = float(payment['amount'])
+#                 transaction_code = payment.get('transaction_code', 'N/A').strip().upper()
+                
+#                 discount = 0
+#                 if 'discount' in payment:
+#                     try:
+#                         discount = float(payment['discount'])
+#                     except (ValueError, TypeError):
+#                         discount = 0
+
+#                 db.session.add(SalesPaymentMethods(
+#                     sale_id=new_sale.sales_id,
+#                     payment_method=method,
+#                     amount_paid=amount,
+#                     transaction_code=transaction_code,
+#                     discount=discount,
+#                     created_at=created_at
+#                 ))
+
+#             # ===== CUSTOMER RECORD - USING CUSTOMER SERVICE =====
+#             customer_result = None
+#             if data['customer_name'] or data['customer_number']:
+#                 try:
+#                     customer_result = CustomerService.add_or_update_customer(
+#                         customer_name=data['customer_name'],
+#                         customer_number=data['customer_number'],
+#                         shop_id=shop_id,
+#                         sales_id=new_sale.sales_id,
+#                         user_id=current_user_id,
+#                         items=[item['item_name'] for item in items],
+#                         amount_paid=total_amount_paid,
+#                         payment_method=", ".join(pm['method'] for pm in payment_methods),
+#                         created_at=created_at,
+#                         register_for_loyalty=register_for_loyalty
+#                     )
+                    
+#                     logger.info(f"Customer processed: {customer_result['action']}, points earned: {customer_result['points_earned']}")
+                    
+#                 except Exception as e:
+#                     logger.error(f"Failed to process customer: {str(e)}")
+#                     # Continue with sale even if customer processing fails
+#                     customer_result = None
+
+#             # ===== COMMIT ALL TRANSACTIONS =====
+#             db.session.commit()
+#             logger.info(f"Sale {new_sale.sales_id} committed successfully with customer data")
+
+#             # ===== JOURNAL POSTING =====
+#             try:
+#                 journal_result = JournalService.post_sale_journal(
+#                     sale=new_sale,
+#                     sold_items=sold_items,
+#                     shop_id=shop_id,
+#                     creditor_id=creditor_id,
+#                     amount_paid=total_amount_paid
+#                 )
+#                 db.session.commit()
+#                 logger.info(f"Journal posted successfully for sale {new_sale.sales_id}")
+#             except Exception as e:
+#                 logger.error(f"Journal posting failed: {str(e)}")
+#                 # Don't rollback here - sale is already committed
+#                 # Log the error but continue
+#                 pass
+
+#             # ===== BUILD RESPONSE (without eTims yet) =====
+#             response_data = {
+#                 'message': 'Sale processed successfully',
+#                 'sale_id': new_sale.sales_id,
+#                 'financial': {
+#                     'total': total_price,
+#                     'paid': total_amount_paid,
+#                     'balance': balance,
+#                     'purchase_cost': purchase_account
+#                 },
+#                 'items': {
+#                     'count': len(items),
+#                     'details': sold_items
+#                 },
+#                 'stock_deductions': {
+#                     'shop_stock': batch_deductions,
+#                     'livestock': livestock_deductions
+#                 },
+#                 'payments': {
+#                     'methods': [pm['method'] for pm in payment_methods],
+#                     'discounts_applied': [{'method': pm['method'], 'discount': float(pm.get('discount', 0))} for pm in payment_methods]
+#                 },
+#                 'delivery': delivery,
+#                 'customer': None,
+#                 'etims': None
+#             }
+
+#             # Add customer information to response
+#             if customer_result:
+#                 response_data['customer'] = {
+#                     'customer_id': customer_result['customer'].customer_id,
+#                     'customer_name': customer_result['customer'].customer_name,
+#                     'is_new_customer': customer_result['is_new'],
+#                     'action': customer_result['action'],
+#                     'points_earned': customer_result['points_earned'],
+#                     'loyalty_points': customer_result['customer'].loyalty_points or 0,
+#                     'loyalty_tier': customer_result['customer'].loyalty_tier or 'Bronze',
+#                     'is_loyalty_registered': customer_result['customer'].is_loyalty_registered or False
+#                 }
+
+#             # Add auto-discount notification if applied
+#             if auto_discount_applied:
+#                 response_data['auto_discount'] = {
+#                     'applied': True,
+#                     'amount': balance,
+#                     'reason': f'Balance of {balance} ({balance_percentage:.2f}% of total) was within 3% threshold and converted to discount'
+#                 }
+
+#             # Add creditor information to response if applicable
+#             if creditor:
+#                 response_data['creditor'] = {
+#                     'creditor_id': creditor.id,
+#                     'creditor_name': creditor.name,
+#                     'previous_total_credit': creditor.total_credit - total_sale_amount,
+#                     'new_total_credit': creditor.total_credit,
+#                     'previous_credit_amount': creditor.credit_amount - total_sale_amount,
+#                     'new_credit_amount': creditor.credit_amount
+#                 }
+
+#             # ===== CREATE ETIMS SALE RECORD (LAST - AFTER EVERYTHING ELSE) =====
+#             etims_success = False
+#             etims_result = None
+            
+#             try:
+#                 # Check if all items have eTims codes
+#                 has_etims_codes = all(item.get('etims_item_code') for item in etims_items_data)
+                
+#                 if has_etims_codes:
+#                     etims_sale_data = {
+#                         'items': etims_items_data,
+#                         'customer_name': data['customer_name'],
+#                         'customer_number': data['customer_number'],
+#                         'sale_date': data.get('sale_date'),
+#                         'payment_methods': payment_methods,
+#                         'shop_id': shop_id
+#                     }
+                    
+#                     # Create eTims record in a separate transaction
+#                     etims_success, etims_result = etims_sale_service.create_etims_sale_from_sale(
+#                         etims_sale_data,
+#                         new_sale.sales_id,
+#                         shop_id
+#                     )
+                    
+#                     if etims_success:
+#                         logger.info(f"✅ eTims sale record created: {etims_result.get('etims_sale', {}).get('trader_invoice_no')}")
+#                     else:
+#                         logger.warning(f"⚠️  Failed to create eTims sale record: {etims_result.get('error') if etims_result else 'Unknown error'}")
+#                 else:
+#                     missing_etims_items = [item['item_name'] for item in etims_items_data if not item.get('etims_item_code')]
+#                     logger.warning(f"⚠️  Skipping eTims record - missing eTims codes for: {missing_etims_items}")
+#                     etims_result = {
+#                         'error': f'Missing eTims codes for: {", ".join(missing_etims_items)}',
+#                         'skipped': True
+#                     }
+                    
+#             except Exception as e:
+#                 logger.error(f"Error creating eTims sale record: {str(e)}")
+#                 etims_result = {'error': str(e), 'skipped': True}
+
+#             # Add eTims info to response
+#             response_data['etims'] = {
+#                 'record_created': etims_success,
+#                 'status': 'pending' if etims_success else 'skipped',
+#                 'trader_invoice_no': etims_result.get('etims_sale', {}).get('trader_invoice_no') if etims_success else None,
+#                 'message': etims_result.get('message', 'Sale will be published during bulk sync') if etims_success else etims_result.get('error', 'No eTims record created')
+#             }
+
+#             return response_data, 201
+
+#         except Exception as e:
+#             db.session.rollback()
+#             logger.error(f"Transaction failed: {str(e)}")
+#             return {
+#                 'message': 'Transaction failed',
+#                 'error': str(e),
+#                 'debug_info': {
+#                     'sale_id': new_sale.sales_id if new_sale else "Not created",
+#                     'processed_payments': [pm['method'] for pm in payment_methods] if payment_methods else [],
+#                     'delivery': delivery,
+#                     'creditor_id': creditor_id,
+#                     'auto_discount_applied': auto_discount_applied
+#                 }
+#             }, 500
 
 class AddSale(Resource):
     @jwt_required()
@@ -94,6 +586,7 @@ class AddSale(Resource):
             balance = float(data.get('balance', 0))
             delivery = bool(data.get('delivery', 0))
             creditor_id = data.get('creditor_id')
+            register_for_loyalty = data.get('register_for_loyalty', False)
             created_at = datetime.strptime(data['sale_date'], "%Y-%m-%d") if 'sale_date' in data else datetime.utcnow()
 
             if not isinstance(data['items'], list) or not data['items']:
@@ -103,7 +596,6 @@ class AddSale(Resource):
             total_price = 0.0
             total_quantity = 0.0
             purchase_account = 0.0
-            etims_items_data = []  # For eTims sync
 
             for item in data['items']:
                 item_fields = ['item_name', 'quantity', 'metric', 'unit_price']
@@ -119,43 +611,19 @@ class AddSale(Resource):
                         'message': f"Invalid metric '{metric}' for item '{item['item_name']}'. Must be one of: item, kg, ltrs",
                         'invalid_item': item
                     }, 400
-                    
-                stock_item = StockItems.query.filter_by(
-                    item_name=item['item_name']
-                ).first()
 
-                if not stock_item:
-                    return {
-                        "message": f"Item '{item['item_name']}' not found in stock"
-                    }, 400
-
-                item_id = stock_item.id
-
-                # ===== GET STOCK ITEM AND ETIMS CODE =====
                 stock_item = StockItems.query.filter_by(
                     item_name=item['item_name']
                 ).first()
 
                 if not stock_item:
                     logger.warning(f"Item '{item['item_name']}' not found in StockItems")
-                
-                # Get eTims item code if available
-                etims_item_code = None
-                if stock_item and stock_item.etims_synced:
-                    etims_item_code = stock_item.etims_item_code
-                    logger.info(f"✅ Found eTims code {etims_item_code} for '{item['item_name']}'")
-                else:
-                    logger.warning(f"⚠️  No eTims code found for '{item['item_name']}'")
 
-                # ===== CHECK IF ITEM IS A SERVICE =====
                 is_service = False
                 if stock_item:
                     is_service = stock_item.stock_item_type == "Service"
-                    logger.info(f"Item '{item['item_name']}' is {'Service' if is_service else 'Product'} - {'SKIP' if is_service else 'PROCESS'} stock deduction")
-                else:
-                    logger.warning(f"Item '{item['item_name']}' not found in StockItems, treating as Product")
+                    logger.info(f"Item '{item['item_name']}' is {'Service' if is_service else 'Product'}")
 
-                # Build item data with stock reference
                 item_data = {
                     'item_name': item['item_name'],
                     'quantity': float(item['quantity']),
@@ -163,23 +631,10 @@ class AddSale(Resource):
                     'unit_price': float(item['unit_price']),
                     'total_price': float(item['total_price']),
                     'item_id': stock_item.id if stock_item else None,
-                    'etims_item_code': etims_item_code,
-                    'stock_item': stock_item,  # Keep reference for later
-                    'is_service': is_service  # Flag for stock processing
+                    'stock_item': stock_item,
+                    'is_service': is_service
                 }
                 items.append(item_data)
-                
-                # Store for eTims sync
-                etims_items_data.append({
-                    'item_name': item['item_name'],
-                    'quantity': float(item['quantity']),
-                    'metric': metric,
-                    'unit_price': float(item['unit_price']),
-                    'total_price': float(item['total_price']),
-                    'etims_item_code': etims_item_code,
-                    'item_id': stock_item.id if stock_item else None,
-                    'is_service': is_service  # Store service flag
-                })
                 
                 total_quantity += float(item['quantity'])
                 total_price += float(item['total_price'])
@@ -224,11 +679,9 @@ class AddSale(Resource):
 
         try:
             for item in items:
-                # ===== SKIP STOCK DEDUCTION FOR SERVICE ITEMS =====
                 if item.get('is_service', False):
                     logger.info(f"⏭️ Skipping stock deduction for service item: {item['item_name']}")
                     
-                    # Build sold item WITHOUT stock deduction
                     sold_item = {
                         'item_name': item['item_name'],
                         'quantity': item['quantity'],
@@ -238,27 +691,22 @@ class AddSale(Resource):
                         'BatchNumber': "Service Item - No Stock Deduction",
                         'stockv2_id': None,
                         'item_id': item.get('item_id'),
-                        'etims_item_code': item.get('etims_item_code'),
                         'Cost_of_sale': item['total_price'],
-                        'Purchase_account': 0.0,  # No purchase cost for services
+                        'Purchase_account': 0.0,
                         'LivestockDeduction': 0.0,
-                        'is_service': True  # Flag for SoldItem
+                        'is_service': True
                     }
                     sold_items.append(sold_item)
                     
-                    # Record that this was a service item (no stock deduction)
                     batch_deductions.append({
                         'item_name': item['item_name'],
                         'item_id': item.get('item_id'),
-                        'etims_item_code': item.get('etims_item_code'),
                         'deductions': [("Service Item", 0)],
                         'is_service': True
                     })
                     
-                    continue  # Skip to next item
+                    continue
 
-                # ===== PROCESS PRODUCT ITEMS (WITH STOCK DEDUCTION) =====
-                # Process from ShopStockV2 using shop_id
                 batches = ShopStockV2.query.filter(
                     ShopStockV2.itemname == item['item_name'],
                     ShopStockV2.shop_id == shop_id,
@@ -318,7 +766,6 @@ class AddSale(Resource):
                     batch_deductions.append({
                         'item_name': item['item_name'],
                         'item_id': item.get('item_id'),
-                        'etims_item_code': item.get('etims_item_code'),
                         'deductions': item_batch_deductions,
                         'is_service': False
                     })
@@ -326,10 +773,8 @@ class AddSale(Resource):
 
                 purchase_account += item_purchase_account
 
-                # Build sold item with references
                 sold_item = {
                     'item_name': item['item_name'],
-                    'item_id': item['item_id'],
                     'quantity': item['quantity'],
                     'metric': item['metric'],
                     'unit_price': item['unit_price'],
@@ -337,7 +782,6 @@ class AddSale(Resource):
                     'BatchNumber': ", ".join(f"{bn} ({q})" for bn, q in item_batch_deductions) if item_batch_deductions else "From Livestock",
                     'stockv2_id': item_stock_ids[0] if item_stock_ids else None,
                     'item_id': item.get('item_id'),
-                    'etims_item_code': item.get('etims_item_code'),
                     'Cost_of_sale': item['total_price'],
                     'Purchase_account': item_purchase_account,
                     'LivestockDeduction': item_livestock_deduction,
@@ -398,20 +842,18 @@ class AddSale(Resource):
                 sold_item = SoldItem(
                     sales_id=new_sale.sales_id,
                     item_name=item['item_name'],
-                    item_id=item['item_id'],
                     quantity=item['quantity'],
                     metric=item['metric'],
                     unit_price=item['unit_price'],
                     total_price=total_price,
                     BatchNumber=item['BatchNumber'],
-                    stockv2_id=item.get('stockv2_id'),  # Will be None for services
-                    item_id=item.get('item_id'),  # Link to StockItems
-                    etims_item_code=item.get('etims_item_code'),  # Store eTims code
+                    stockv2_id=item.get('stockv2_id'),
+                    item_id=item.get('item_id'),
                     Cost_of_sale=item['Cost_of_sale'],
-                    Purchase_account=item.get('Purchase_account', 0.0),  # 0 for services
-                    LivestockDeduction=item.get('LivestockDeduction', 0.0),  # 0 for services
+                    Purchase_account=item.get('Purchase_account', 0.0),
+                    LivestockDeduction=item.get('LivestockDeduction', 0.0),
                     round_off=fractional_part,
-                    is_service=item.get('is_service', False)  # Add service flag to SoldItem
+                    is_service=item.get('is_service', False)
                 )
                 db.session.add(sold_item)
 
@@ -428,10 +870,6 @@ class AddSale(Resource):
                     except (ValueError, TypeError):
                         discount = 0
 
-                # REMOVED: Bank account deposit logic for SASAPAY
-                # Previously had code here that would update bank accounts
-                # Now just records the payment method without affecting account balances
-
                 db.session.add(SalesPaymentMethods(
                     sale_id=new_sale.sales_id,
                     payment_method=method,
@@ -441,22 +879,33 @@ class AddSale(Resource):
                     created_at=created_at
                 ))
 
-            # ===== CUSTOMER RECORD =====
+            # ===== CUSTOMER RECORD - USING CUSTOMER SERVICE =====
+            customer_result = None
             if data['customer_name'] or data['customer_number']:
-                db.session.add(Customers(
-                    customer_name=data['customer_name'],
-                    customer_number=data['customer_number'],
-                    shop_id=shop_id,
-                    sales_id=new_sale.sales_id,
-                    user_id=current_user_id,
-                    item=", ".join([item['item_name'] for item in items]),
-                    amount_paid=total_amount_paid,
-                    payment_method=", ".join(pm['method'] for pm in payment_methods),
-                    created_at=created_at
-                ))
+                try:
+                    customer_result = CustomerService.add_or_update_customer(
+                        customer_name=data['customer_name'],
+                        customer_number=data['customer_number'],
+                        shop_id=shop_id,
+                        sales_id=new_sale.sales_id,
+                        user_id=current_user_id,
+                        items=[item['item_name'] for item in items],
+                        amount_paid=total_amount_paid,
+                        payment_method=", ".join(pm['method'] for pm in payment_methods),
+                        created_at=created_at,
+                        register_for_loyalty=register_for_loyalty
+                    )
+                    
+                    logger.info(f"Customer processed: {customer_result['action']}, points earned: {customer_result['points_earned']}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to process customer: {str(e)}")
+                    # Continue with sale even if customer processing fails
+                    customer_result = None
 
-            # ===== COMMIT LOCAL SALE FIRST =====
+            # ===== COMMIT ALL TRANSACTIONS =====
             db.session.commit()
+            logger.info(f"Sale {new_sale.sales_id} committed successfully with customer data")
 
             # ===== JOURNAL POSTING =====
             try:
@@ -468,55 +917,12 @@ class AddSale(Resource):
                     amount_paid=total_amount_paid
                 )
                 db.session.commit()
+                logger.info(f"Journal posted successfully for sale {new_sale.sales_id}")
             except Exception as e:
-                db.session.rollback()
-                return {
-                    "message": "Sale saved but journal posting failed",
-                    "error": str(e),
-                    "sale_id": new_sale.sales_id
-                }, 500
-
-            # ===== CREATE ETIMS SALE RECORD (PENDING SYNC) =====
-            etims_success = False
-            etims_result = None
-            
-            try:
-                # Check if we have eTims codes for all items
-                has_etims_codes = all(item.get('etims_item_code') for item in etims_items_data)
-                
-                if has_etims_codes:
-                    # Prepare data for eTims sale record
-                    etims_sale_data = {
-                        'items': etims_items_data,
-                        'customer_name': data['customer_name'],
-                        'customer_number': data['customer_number'],
-                        'sale_date': data.get('sale_date'),
-                        'payment_methods': payment_methods,
-                        'shop_id': shop_id
-                    }
-                    
-                    # Create eTims sale record (pending)
-                    etims_success, etims_result = etims_sale_service.create_etims_sale_from_sale(
-                        etims_sale_data,
-                        new_sale.sales_id,
-                        shop_id
-                    )
-                    
-                    if etims_success:
-                        logger.info(f"✅ eTims sale record created: {etims_result.get('etims_sale', {}).get('trader_invoice_no')}")
-                    else:
-                        logger.warning(f"⚠️  Failed to create eTims sale record: {etims_result.get('error') if etims_result else 'Unknown error'}")
-                else:
-                    missing_etims_items = [item['item_name'] for item in etims_items_data if not item.get('etims_item_code')]
-                    logger.warning(f"⚠️  Skipping eTims record - missing eTims codes for: {missing_etims_items}")
-                    etims_result = {
-                        'error': f'Missing eTims codes for: {", ".join(missing_etims_items)}',
-                        'skipped': True
-                    }
-                    
-            except Exception as e:
-                logger.error(f"Error creating eTims sale record: {str(e)}")
-                etims_result = {'error': str(e), 'skipped': True}
+                logger.error(f"Journal posting failed: {str(e)}")
+                # Don't rollback here - sale is already committed
+                # Log the error but continue
+                pass
 
             # ===== BUILD RESPONSE =====
             response_data = {
@@ -541,14 +947,21 @@ class AddSale(Resource):
                     'discounts_applied': [{'method': pm['method'], 'discount': float(pm.get('discount', 0))} for pm in payment_methods]
                 },
                 'delivery': delivery,
-                # Add eTims info
-                'etims': {
-                    'record_created': etims_success,
-                    'status': 'pending' if etims_success else 'skipped',
-                    'trader_invoice_no': etims_result.get('etims_sale', {}).get('trader_invoice_no') if etims_success else None,
-                    'message': etims_result.get('message', 'Sale will be published during bulk sync') if etims_success else etims_result.get('error', 'No eTims record created')
-                }
+                'customer': None
             }
+
+            # Add customer information to response
+            if customer_result:
+                response_data['customer'] = {
+                    'customer_id': customer_result['customer'].customer_id,
+                    'customer_name': customer_result['customer'].customer_name,
+                    'is_new_customer': customer_result['is_new'],
+                    'action': customer_result['action'],
+                    'points_earned': customer_result['points_earned'],
+                    'loyalty_points': customer_result['customer'].loyalty_points or 0,
+                    'loyalty_tier': customer_result['customer'].loyalty_tier or 'Bronze',
+                    'is_loyalty_registered': customer_result['customer'].is_loyalty_registered or False
+                }
 
             # Add auto-discount notification if applied
             if auto_discount_applied:
@@ -573,18 +986,20 @@ class AddSale(Resource):
 
         except Exception as e:
             db.session.rollback()
+            logger.error(f"Transaction failed: {str(e)}")
             return {
                 'message': 'Transaction failed',
                 'error': str(e),
                 'debug_info': {
                     'sale_id': new_sale.sales_id if new_sale else "Not created",
-                    'processed_payments': [pm['method'] for pm in payment_methods],
+                    'processed_payments': [pm['method'] for pm in payment_methods] if payment_methods else [],
                     'delivery': delivery,
                     'creditor_id': creditor_id,
                     'auto_discount_applied': auto_discount_applied
                 }
             }, 500
 
+            
 def check_role(required_role):
     def wrapper(fn):
         @wraps(fn)
@@ -674,7 +1089,6 @@ class GetSale(Resource):
             return {"error": str(e)}, 500
 
 
-
 class GetSales(Resource):
     @jwt_required()
     def get(self):
@@ -688,10 +1102,20 @@ class GetSales(Resource):
             selected_date = request.args.get('selectedDate')
             status_filter = request.args.get('status')
             shop_filter = request.args.get('shop_id')
+            payment_method_filter = request.args.get('payment_method')
+            username_filter = request.args.get('username')
             sort_by = request.args.get('sort_by', 'created_at')
             sort_order = request.args.get('sort_order', 'desc')
-            start_date = request.args.get('start_date')  # Added for date range
-            end_date = request.args.get('end_date')      # Added for date range
+            start_date = request.args.get('start_date')  # date range
+            end_date = request.args.get('end_date')      # date range
+
+            # Explicit export flag — ONLY the export modal should set this.
+            # Previously any request that happened to include start_date/
+            # end_date (i.e. normal date-range browsing, not just exports)
+            # was treated as an export and returned every matching row with
+            # no pagination at all. That's what was making filtered/date
+            # requests slow — they weren't paginated.
+            export_flag = request.args.get('export', 'false').lower() == 'true'
 
             # Valid sort fields
             valid_sort_fields = ['created_at', 'username', 'shopname', 'total_amount_paid']
@@ -721,7 +1145,7 @@ class GetSales(Resource):
                 except ValueError:
                     return {"error": "Invalid date format. Use YYYY-MM-DD."}, 400
 
-            # Handle date range filter (for exports)
+            # Handle date range filter
             if start_date and end_date:
                 try:
                     start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
@@ -738,6 +1162,21 @@ class GetSales(Resource):
 
             if shop_filter:
                 sales_query = sales_query.filter(Sales.shop_id == int(shop_filter))
+
+            if username_filter:
+                sales_query = sales_query.filter(Users.username == username_filter)
+
+            # Payment method — filter via a subquery (IN) rather than
+            # joining SalesPaymentMethods directly, so a sale with several
+            # payment method rows doesn't get duplicated in the result /
+            # pagination count.
+            if payment_method_filter:
+                sales_query = sales_query.filter(
+                    Sales.sales_id.in_(
+                        db.session.query(SalesPaymentMethods.sale_id)
+                        .filter(SalesPaymentMethods.payment_method == payment_method_filter)
+                    )
+                )
 
             # Handle sorting
             if sort_by == 'username':
@@ -768,35 +1207,22 @@ class GetSales(Resource):
             else:
                 sales_query = sales_query.order_by(order_field.asc())
 
-            # For exports, always get all data without pagination
-            # Check if this is an export request (large limit or specific parameters)
-            is_export = limit > 500 or start_date or end_date
-            
+            # Only a genuine export request (explicit `export=true` from the
+            # export modal) skips pagination. Every normal request —
+            # regardless of which filters are set — is paginated.
+            is_export = export_flag or limit > 2000
+
             if is_export:
-                # Get all sales without pagination
                 sales_list = sales_query.all()
                 total_sales = len(sales_list)
                 total_pages = 1
+                current_page = 1
             else:
-                # Decide pagination for normal requests
-                use_pagination = not (
-                    search_query or
-                    selected_date or
-                    status_filter or
-                    shop_filter or
-                    sort_by != 'created_at' or
-                    sort_order != 'desc'
-                )
-
-                if use_pagination:
-                    offset = (page - 1) * limit
-                    sales_list = sales_query.offset(offset).limit(limit).all()
-                    total_sales = sales_query.count()
-                    total_pages = (total_sales + limit - 1) // limit
-                else:
-                    sales_list = sales_query.all()
-                    total_sales = len(sales_list)
-                    total_pages = 1
+                offset = (page - 1) * limit
+                total_sales = sales_query.count()
+                sales_list = sales_query.offset(offset).limit(limit).all()
+                total_pages = (total_sales + limit - 1) // limit if limit > 0 else 1
+                current_page = page
 
             # Construct response data
             sales_data = []
@@ -817,15 +1243,14 @@ class GetSales(Resource):
                     {
                         "payment_method": p.payment_method,
                         "amount_paid": p.amount_paid if p.amount_paid is not None else 0,
-                        "discount": p.discount if p.discount is not None else 0,  # Handle None values
-                        "balance": p.balance if p.balance is not None else 0,    # Handle None values
+                        "discount": p.discount if p.discount is not None else 0,
+                        "balance": p.balance if p.balance is not None else 0,
                         "created_at": p.created_at.strftime('%Y-%m-%d %H:%M:%S'),
                         "transaction_code": getattr(p, 'transaction_code', None)
                     }
                     for p in sale.payment
                 ]
 
-                # Safely calculate totals with None checks
                 total_amount_paid = sum(p.get("amount_paid", 0) for p in payments)
                 total_discount = sum(p.get("discount", 0) for p in payments)
 
@@ -853,7 +1278,7 @@ class GetSales(Resource):
                 "sales_data": sales_data,
                 "total_sales": total_sales,
                 "total_pages": total_pages,
-                "current_page": page if not is_export else 1
+                "current_page": current_page
             }, 200
 
         except SQLAlchemyError as e:
@@ -980,18 +1405,21 @@ class GetSalesByShop(Resource):
     @jwt_required()
     def get(self, shop_id):
         try:
-            # Get query parameters
+            # Query params
             page = int(request.args.get('page', 1))
             limit = int(request.args.get('limit', 50))
             search_query = request.args.get('search', '').lower()
-            date_filter = request.args.get('date', '')
+
+            # Date range params
+            start_date = request.args.get('start_date')
+            end_date = request.args.get('end_date')
 
             offset = (page - 1) * limit
 
             # Base query
             sales_query = Sales.query.filter_by(shop_id=shop_id)
 
-            # Apply search filter if provided
+            # Search filter
             if search_query:
                 sales_query = sales_query.join(SoldItem).filter(
                     or_(
@@ -1000,27 +1428,58 @@ class GetSalesByShop(Resource):
                     )
                 )
 
-            # Apply date filter if provided
-            if date_filter:
+            # Date range filter
+            if start_date and end_date:
                 try:
-                    filter_date = datetime.strptime(date_filter, '%Y-%m-%d').date()
-                    sales_query = sales_query.filter(
-                        db.func.date(Sales.created_at) == filter_date
-                    )
-                except ValueError:
-                    pass
+                    start = datetime.strptime(start_date, '%Y-%m-%d').date()
+                    end = datetime.strptime(end_date, '%Y-%m-%d').date()
 
-            # Get total count before pagination
+                    sales_query = sales_query.filter(
+                        db.func.date(Sales.created_at).between(start, end)
+                    )
+
+                except ValueError:
+                    return {"error": "Invalid date format. Use YYYY-MM-DD"}, 400
+
+            elif start_date:
+                try:
+                    start = datetime.strptime(start_date, '%Y-%m-%d').date()
+
+                    sales_query = sales_query.filter(
+                        db.func.date(Sales.created_at) >= start
+                    )
+
+                except ValueError:
+                    return {"error": "Invalid start_date format"}, 400
+
+            elif end_date:
+                try:
+                    end = datetime.strptime(end_date, '%Y-%m-%d').date()
+
+                    sales_query = sales_query.filter(
+                        db.func.date(Sales.created_at) <= end
+                    )
+
+                except ValueError:
+                    return {"error": "Invalid end_date format"}, 400
+
+            # Count after filters
             total_sales = sales_query.count()
 
-            # Apply pagination and ordering
-            sales = sales_query.order_by(Sales.created_at.desc()) \
-                              .offset(offset).limit(limit).all()
+            # Pagination
+            sales = (
+                sales_query
+                .order_by(Sales.created_at.desc())
+                .offset(offset)
+                .limit(limit)
+                .all()
+            )
 
             if not sales:
                 return {"message": "No sales found for this shop"}, 404
 
             sales_data = []
+
             for sale in sales:
                 username = sale.users.username if sale.users else "Unknown User"
                 shopname = sale.shops.shopname if sale.shops else "Unknown Shop"
@@ -1033,7 +1492,10 @@ class GetSalesByShop(Resource):
                     }
                     for payment in sale.payment
                 ]
-                total_amount_paid = sum(payment["amount_paid"] for payment in payment_data)
+
+                total_amount_paid = sum(
+                    p["amount_paid"] for p in payment_data
+                )
 
                 sold_items = [
                     {
@@ -1051,7 +1513,9 @@ class GetSalesByShop(Resource):
                     for item in sale.items
                 ]
 
-                total_items_price = sum(item["total_price"] for item in sold_items)
+                total_items_price = sum(
+                    item["total_price"] for item in sold_items
+                )
 
                 sales_data.append({
                     "sale_id": sale.sales_id,
@@ -2220,7 +2684,57 @@ class SalesByEmployeeResource(Resource):
             return {"error": str(e)}, 500
 
 
+class CashSalesByUser(Resource):
+    def get(self, user_id):
+        query = (
+            Sales.query
+            .join(SalesPaymentMethods, Sales.sales_id == SalesPaymentMethods.sale_id)
+            .filter(
+                Sales.user_id == user_id,
+                SalesPaymentMethods.payment_method == 'cash'
+            )
+        )
 
+        # Date filtering
+        date_str = request.args.get('date')
+        start_date_str = request.args.get('start_date')
+        end_date_str = request.args.get('end_date')
+
+        try:
+            if date_str:
+                date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                query = query.filter(db.func.date(Sales.created_at) == date)
+            elif start_date_str and end_date_str:
+                start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+                end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+                query = query.filter(db.func.date(Sales.created_at).between(start_date, end_date))
+        except ValueError:
+            return {"error": "Invalid date format. Use YYYY-MM-DD."}, 400
+
+        sales = query.all()
+
+        results = []
+        for sale in sales:
+            payments = [p for p in sale.payment if p.payment_method == 'cash']
+            for p in payments:
+                results.append({
+                    "sales_id": sale.sales_id,
+                    "user_id": sale.user_id,
+                    "shop_id": sale.shop_id,
+                    "customer_name": sale.customer_name,
+                    "item_name": sale.item_name,
+                    "quantity": sale.quantity,
+                    "metric": sale.metric,
+                    "unit_price": sale.unit_price,
+                    "total_price": sale.total_price,
+                    "amount_paid": p.amount_paid,
+                    "balance": p.balance,
+                    "transaction_code": p.transaction_code,
+                    "created_at": sale.created_at.strftime('%Y-%m-%d %H:%M:%S')
+                })
+
+        return jsonify(results)
+         
 class CashSales(Resource):
     @jwt_required()
     def get(self):
@@ -2381,6 +2895,11 @@ class CashSalesByUser(Resource):
                     "user_id": sale.user_id,
                     "shop_id": sale.shop_id,
                     "customer_name": sale.customer_name,
+                    "item_name": sale.item_name,
+                    "quantity": sale.quantity,
+                    "metric": sale.metric,
+                    "unit_price": sale.unit_price,
+                    "total_price": sale.total_price,
                     "amount_paid": p.amount_paid,
                     "balance": p.balance,
                     "transaction_code": p.transaction_code,
@@ -2389,76 +2908,6 @@ class CashSalesByUser(Resource):
 
         return jsonify(results)
   
-    
-class TotalCashSalesByUser(Resource):
-    @jwt_required()
-    def get(self, username, shop_id):
-        try:
-            # ===============================
-            # 1. Fixed start date (16/02/2026)
-            # ===============================
-            start_date = datetime.strptime("2026-03-23", "%Y-%m-%d").date()
-            today = datetime.now().date()
-
-            # ===============================
-            # 2. Get user
-            # ===============================
-            user = Users.query.filter_by(username=username).first()
-            if not user:
-                return {"message": f"User '{username}' not found"}, 404
-
-            # ===============================
-            # 3. Total CASH sales from 31/01/2026
-            # ===============================
-            total_cash_sales = (
-                db.session.query(
-                    func.coalesce(func.sum(SalesPaymentMethods.amount_paid), 0)
-                )
-                .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)
-                .filter(Sales.user_id == user.users_id)
-                .filter(Sales.shop_id == shop_id)
-                .filter(SalesPaymentMethods.payment_method == "cash")
-                .filter(func.date(Sales.created_at) >= start_date)
-                .filter(func.date(Sales.created_at) <= today)
-                .scalar()
-            )
-
-            # ===============================
-            # 4. Total CASH deposits from 31/01/2026
-            # ===============================
-            total_deposits = (
-                db.session.query(
-                    func.coalesce(func.sum(CashDeposits.amount), 0)
-                )
-                .filter(CashDeposits.user_id == user.users_id)
-                .filter(CashDeposits.shop_id == shop_id)
-                .filter(func.date(CashDeposits.created_at) >= start_date)
-                .filter(func.date(CashDeposits.created_at) <= today)
-                .scalar()
-            )
-
-            # ===============================
-            # 5. Net cash (cash - deposits)
-            # ===============================
-            net_cash = total_cash_sales - total_deposits
-            net_cash = max(0, net_cash)
-
-            return {
-                "net_cash": f"Ksh {net_cash:,.2f}",
-                "raw_net_cash": float(net_cash),
-                "cash_sales": float(total_cash_sales),
-                "deposits": float(total_deposits),
-                "from_date": start_date.isoformat(),
-                "to_date": today.isoformat()
-            }, 200
-
-        except SQLAlchemyError as e:
-            db.session.rollback()
-            return {
-                "error": "Failed to calculate net cash",
-                "details": str(e)
-            }, 500
-
 class CashAtHandByUser(Resource):
     @jwt_required()
     def get(self):
@@ -2573,6 +3022,79 @@ class CashAtHandByUser(Resource):
                 "error": "Unexpected error",
                 "details": str(e)
             }, 500
+
+
+  
+class TotalCashSalesByUser(Resource):
+    @jwt_required()
+    def get(self, username, shop_id):
+        try:
+            # ===============================
+            # 1. Fixed start date (16/02/2026)
+            # ===============================
+            start_date = datetime.strptime("2026-04-22", "%Y-%m-%d").date()
+            today = datetime.now().date()
+
+            # ===============================
+            # 2. Get user
+            # ===============================
+            user = Users.query.filter_by(username=username).first()
+            if not user:
+                return {"message": f"User '{username}' not found"}, 404
+
+            # ===============================
+            # 3. Total CASH sales from 31/01/2026
+            # ===============================
+            total_cash_sales = (
+                db.session.query(
+                    func.coalesce(func.sum(SalesPaymentMethods.amount_paid), 0)
+                )
+                .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)
+                .filter(Sales.user_id == user.users_id)
+                .filter(Sales.shop_id == shop_id)
+                .filter(SalesPaymentMethods.payment_method == "cash")
+                .filter(func.date(Sales.created_at) >= start_date)
+                .filter(func.date(Sales.created_at) <= today)
+                .scalar()
+            )
+
+            # ===============================
+            # 4. Total CASH deposits from 31/01/2026
+            # ===============================
+            total_deposits = (
+                db.session.query(
+                    func.coalesce(func.sum(CashDeposits.amount), 0)
+                )
+                .filter(CashDeposits.user_id == user.users_id)
+                .filter(CashDeposits.shop_id == shop_id)
+                .filter(func.date(CashDeposits.created_at) >= start_date)
+                .filter(func.date(CashDeposits.created_at) <= today)
+                .scalar()
+            )
+
+            # ===============================
+            # 5. Net cash (cash - deposits)
+            # ===============================
+            net_cash = total_cash_sales - total_deposits
+            net_cash = max(0, net_cash)
+
+            return {
+                "net_cash": f"Ksh {net_cash:,.2f}",
+                "raw_net_cash": float(net_cash),
+                "cash_sales": float(total_cash_sales),
+                "deposits": float(total_deposits),
+                "from_date": start_date.isoformat(),
+                "to_date": today.isoformat()
+            }, 200
+
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            return {
+                "error": "Failed to calculate net cash",
+                "details": str(e)
+            }, 500
+
+
 
 
 class GenerateSalesReport(Resource):
@@ -2791,11 +3313,9 @@ class ItemsSoldSummary(Resource):
     @jwt_required()
     def get(self, shop_id=None):
         try:
-            # Query params
-            start_date = request.args.get('start_date')  # format: 'YYYY-MM-DD'
-            end_date = request.args.get('end_date')      # format: 'YYYY-MM-DD'
+            start_date = request.args.get('start_date')
+            end_date = request.args.get('end_date')
 
-            # Parse and validate dates
             try:
                 if start_date:
                     start_date = datetime.strptime(start_date, '%Y-%m-%d')
@@ -2804,31 +3324,41 @@ class ItemsSoldSummary(Resource):
             except ValueError:
                 return {"error": "Invalid date format. Use YYYY-MM-DD"}, 400
 
-            # Base query
-            query = db.session.query(
-                SoldItem.item_name,
-                SoldItem.metric,
-                func.sum(SoldItem.quantity).label("total_sold")
-            ).join(Sales, SoldItem.sales_id == Sales.sales_id)
+            query = (
+                db.session.query(
+                    SoldItem.item_name,
+                    SoldItem.metric,
+                    func.sum(SoldItem.quantity).label("total_sold"),
+                    func.sum(SoldItem.total_price).label("total_amount"),
+                )
+                .join(Sales, SoldItem.sales_id == Sales.sales_id)
+            )
 
-            # Apply filters
             if shop_id is not None:
                 query = query.filter(Sales.shop_id == shop_id)
+
             if start_date:
                 query = query.filter(Sales.created_at >= start_date)
+
             if end_date:
                 query = query.filter(Sales.created_at <= end_date)
 
-            # Group and fetch
-            result = query.group_by(SoldItem.item_name, SoldItem.metric).all()
+            result = (
+                query.group_by(
+                    SoldItem.item_name,
+                    SoldItem.metric
+                )
+                .all()
+            )
 
             sold_items_summary = [
                 {
                     "item_name": item_name,
                     "metric": metric,
-                    "total_sold": round(total_sold, 2)
+                    "total_sold": round(float(total_sold or 0), 2),
+                    "amount_paid": round(float(total_amount or 0), 2),
                 }
-                for item_name, metric, total_sold in result
+                for item_name, metric, total_sold, total_amount in result
             ]
 
             response = {
@@ -2843,6 +3373,87 @@ class ItemsSoldSummary(Resource):
             db.session.rollback()
             return {
                 "error": "An error occurred while fetching sold item data",
+                "details": str(e)
+            }, 500
+            
+class DeliverySalesSummary(Resource):
+    @jwt_required()
+    def get(self, shop_id=None):
+        try:
+            # Query params
+            start_date = request.args.get('start_date')  # YYYY-MM-DD
+            end_date = request.args.get('end_date')      # YYYY-MM-DD
+
+            # Validate dates
+            try:
+                if start_date:
+                    start_date = datetime.strptime(start_date, '%Y-%m-%d')
+
+                if end_date:
+                    end_date = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
+            except ValueError:
+                return {
+                    "error": "Invalid date format. Use YYYY-MM-DD"
+                }, 400
+
+            # Base query
+            query = db.session.query(
+                SoldItem.item_name,
+                SoldItem.metric,
+                Shops.shopname,
+                func.sum(SoldItem.quantity).label("quantity_sold"),
+                func.sum(SoldItem.total_price).label("total_amount_sold")
+            ).join(
+                Sales, SoldItem.sales_id == Sales.sales_id
+            ).join(
+                Shops, Sales.shop_id == Shops.shops_id
+            ).filter(
+                Sales.delivery == True
+            )
+
+            # Shop filter
+            if shop_id is not None:
+                query = query.filter(Sales.shop_id == shop_id)
+
+            # Date filters
+            if start_date:
+                query = query.filter(Sales.created_at >= start_date)
+
+            if end_date:
+                query = query.filter(Sales.created_at < end_date)
+
+            # Group results
+            result = query.group_by(
+                SoldItem.item_name,
+                SoldItem.metric,
+                Shops.shopname
+            ).all()
+
+            # Format response
+            items = [
+                {
+                    "item_name": item_name,
+                    "shop": shopname,
+                    "metric": metric,
+                    "quantity_sold": round(quantity_sold or 0, 2),
+                    "total_amount_sold": round(total_amount_sold or 0, 2)
+                }
+                for item_name, metric, shopname, quantity_sold, total_amount_sold in result
+            ]
+
+            response = {
+                "shop_id": shop_id,
+                "total_items": len(items),
+                "items": items
+            }
+
+            return make_response(jsonify(response), 200)
+
+        except SQLAlchemyError as e:
+            db.session.rollback()
+
+            return {
+                "error": "An error occurred while fetching delivery sales summary",
                 "details": str(e)
             }, 500
 
@@ -3078,6 +3689,7 @@ class SasaPaySaleResource(Resource):
             20: "222333",   # Kukuzetu - Kasarani Equity
             19: "577123",   # Kukuzetu - Kasarani Maternity
             16: "577556",   # Kukuzetu - Turi
+            9: "570257",   # Kuku Zetu - Mirema
         }
 
         # Get environment and determine merchant code
@@ -3420,7 +4032,8 @@ class SasaPaySaleResource(Resource):
                     'environment': environment if 'environment' in locals() else "Unknown"
                 }
             }, 500
-
+            
+            
 
 class SasaPayPaymentStatusResource(Resource):
     @jwt_required()
@@ -3487,426 +4100,300 @@ class SasaPayPaymentStatusResource(Resource):
             }, 500
 
 
+
+# Add these imports near the top of the file:
+from sqlalchemy import func
+import calendar
+
 class GetSalesGraphData(Resource):
     @jwt_required()
     def get(self):
         """
-        Comprehensive sales graph data endpoint
-        Query params:
-        - shop_id: optional (if not provided, returns data for all shops)
-        - start_date: optional (YYYY-MM-DD)
-        - end_date: optional (YYYY-MM-DD)
-        - payment_method: optional (cash, mpesa, sasapay, bank)
-        - status: optional (paid, unpaid, partially_paid, pending)
-        - group_by: optional (day, week, month, year) - default: month
+        Sales data endpoint — aggregated in SQL instead of in Python.
+        Now includes total_paid and total_unpaid calculations based on actual payments vs sale totals.
         """
         try:
-            # Get query parameters
             shop_id = request.args.get('shop_id')
             start_date = request.args.get('start_date')
             end_date = request.args.get('end_date')
             payment_method = request.args.get('payment_method')
-            status = request.args.get('status')
-            group_by = request.args.get('group_by', 'month')
-            
-            # Base query for sales - start with all sales
-            sales_query = Sales.query
-            
-            # Apply shop filter if provided
+            year = request.args.get('year')
+
             shop_name = "All Shops"
             if shop_id:
-                # Validate shop exists
                 shop = Shops.query.filter_by(shops_id=shop_id).first()
                 if not shop:
                     return {"error": "Shop not found"}, 404
                 shop_name = shop.shopname
-                sales_query = sales_query.filter_by(shop_id=shop_id)
-            
-            # Apply date filters
-            if start_date:
-                sales_query = sales_query.filter(Sales.created_at >= start_date)
-            if end_date:
-                # Add one day to include the end date
-                end_date_obj = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
-                sales_query = sales_query.filter(Sales.created_at < end_date_obj)
-            
-            # Apply status filter
-            if status:
-                sales_query = sales_query.filter(Sales.status == status)
-            
-            # Get sales ordered by created_at
-            sales = sales_query.order_by(Sales.created_at.asc()).all()
-            
-            if not sales:
-                return {
-                    "message": "No sales data found for the given criteria",
-                    "time_series": {
-                        "categories": [],
-                        "series": []
+
+            # --- Shared filters, applied identically to every aggregate query ---
+            def apply_common_filters(query, date_column):
+                if shop_id:
+                    query = query.filter(Sales.shop_id == shop_id)
+                if start_date:
+                    query = query.filter(date_column >= start_date)
+                if end_date:
+                    end_date_obj = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
+                    query = query.filter(date_column < end_date_obj)
+                if year:
+                    query = query.filter(db.extract('year', date_column) == int(year))
+                return query
+
+            yr = func.extract('year', Sales.created_at)
+            mo = func.extract('month', Sales.created_at)
+
+            # --- 1. Monthly summary: sales count + total income + total paid + total unpaid ---
+            # Calculate total sale amounts from items
+            sale_totals_q = (
+                db.session.query(
+                    yr.label('yr'), mo.label('mo'),
+                    Sales.sales_id,
+                    func.coalesce(func.sum(SoldItem.total_price), 0).label('sale_total')
+                )
+                .join(SoldItem, SoldItem.sales_id == Sales.sales_id)
+            )
+            sale_totals_q = apply_common_filters(sale_totals_q, Sales.created_at)
+            sale_totals = sale_totals_q.group_by('yr', 'mo', Sales.sales_id).subquery()
+
+            # Calculate total paid per sale from payment methods
+            paid_totals_q = (
+                db.session.query(
+                    yr.label('yr'), mo.label('mo'),
+                    Sales.sales_id,
+                    func.coalesce(func.sum(SalesPaymentMethods.amount_paid), 0).label('total_paid')
+                )
+                .join(SalesPaymentMethods, SalesPaymentMethods.sale_id == Sales.sales_id)
+            )
+            paid_totals_q = apply_common_filters(paid_totals_q, Sales.created_at)
+            paid_totals = paid_totals_q.group_by('yr', 'mo', Sales.sales_id).subquery()
+
+            # Combine sale totals and paid amounts
+            combined_q = (
+                db.session.query(
+                    sale_totals.c.yr.label('yr'),
+                    sale_totals.c.mo.label('mo'),
+                    func.count().label('sales_count'),
+                    func.coalesce(func.sum(sale_totals.c.sale_total), 0).label('total_income'),
+                    func.coalesce(func.sum(paid_totals.c.total_paid), 0).label('total_paid'),
+                    func.coalesce(func.sum(sale_totals.c.sale_total - paid_totals.c.total_paid), 0).label('total_unpaid')
+                )
+                .outerjoin(
+                    paid_totals,
+                    (sale_totals.c.sales_id == paid_totals.c.sales_id) &
+                    (sale_totals.c.yr == paid_totals.c.yr) &
+                    (sale_totals.c.mo == paid_totals.c.mo)
+                )
+                .group_by(sale_totals.c.yr, sale_totals.c.mo)
+                .order_by(sale_totals.c.yr, sale_totals.c.mo)
+            )
+
+            summary_rows = combined_q.all()
+
+            if not summary_rows:
+                return {"message": "No sales data found", "data": []}, 200
+
+            def month_key(y, m):
+                return f"{int(y):04d}-{int(m):02d}"
+
+            def month_label(y, m):
+                return f"{calendar.month_name[int(m)]} {int(y)}"
+
+            months_order = [month_key(r.yr, r.mo) for r in summary_rows]
+            monthly = {}
+            for r in summary_rows:
+                mk = month_key(r.yr, r.mo)
+                monthly[mk] = {
+                    'month': month_label(r.yr, r.mo),
+                    'month_key': mk,
+                    'sales_count': r.sales_count,
+                    'total_income': float(r.total_income or 0),
+                    'total_paid': float(r.total_paid or 0),
+                    'total_unpaid': float(r.total_unpaid or 0),
+                    'shops': [],
+                    'payment_methods': [],
+                    'top_items': [],
+                    'status_distribution': {},
+                }
+
+            # --- 2. Shop breakdown, per month ---
+            # Calculate sale totals per shop
+            shop_sale_totals_q = (
+                db.session.query(
+                    yr.label('yr'), mo.label('mo'),
+                    Shops.shopname.label('shop_name'),
+                    Shops.shops_id,
+                    Sales.sales_id,
+                    func.coalesce(func.sum(SoldItem.total_price), 0).label('sale_total')
+                )
+                .join(Shops, Shops.shops_id == Sales.shop_id)
+                .join(SoldItem, SoldItem.sales_id == Sales.sales_id)
+            )
+            shop_sale_totals_q = apply_common_filters(shop_sale_totals_q, Sales.created_at)
+            shop_sale_totals = shop_sale_totals_q.group_by('yr', 'mo', 'shop_name', Shops.shops_id, Sales.sales_id).subquery()
+
+            # Calculate paid amounts per shop
+            shop_paid_totals_q = (
+                db.session.query(
+                    yr.label('yr'), mo.label('mo'),
+                    Shops.shopname.label('shop_name'),
+                    Shops.shops_id,
+                    Sales.sales_id,
+                    func.coalesce(func.sum(SalesPaymentMethods.amount_paid), 0).label('total_paid')
+                )
+                .join(Shops, Shops.shops_id == Sales.shop_id)
+                .join(SalesPaymentMethods, SalesPaymentMethods.sale_id == Sales.sales_id)
+            )
+            shop_paid_totals_q = apply_common_filters(shop_paid_totals_q, Sales.created_at)
+            shop_paid_totals = shop_paid_totals_q.group_by('yr', 'mo', 'shop_name', Shops.shops_id, Sales.sales_id).subquery()
+
+            # Combine shop totals
+            shop_combined_q = (
+                db.session.query(
+                    shop_sale_totals.c.yr.label('yr'),
+                    shop_sale_totals.c.mo.label('mo'),
+                    shop_sale_totals.c.shop_name.label('shop_name'),
+                    func.count().label('sales_count'),
+                    func.coalesce(func.sum(shop_sale_totals.c.sale_total), 0).label('income'),
+                    func.coalesce(func.sum(shop_paid_totals.c.total_paid), 0).label('paid'),
+                    func.coalesce(func.sum(shop_sale_totals.c.sale_total - shop_paid_totals.c.total_paid), 0).label('unpaid')
+                )
+                .outerjoin(
+                    shop_paid_totals,
+                    (shop_sale_totals.c.sales_id == shop_paid_totals.c.sales_id) &
+                    (shop_sale_totals.c.yr == shop_paid_totals.c.yr) &
+                    (shop_sale_totals.c.mo == shop_paid_totals.c.mo) &
+                    (shop_sale_totals.c.shops_id == shop_paid_totals.c.shops_id)
+                )
+                .group_by(shop_sale_totals.c.yr, shop_sale_totals.c.mo, shop_sale_totals.c.shop_name)
+                .order_by(shop_sale_totals.c.yr, shop_sale_totals.c.mo)
+            )
+
+            for r in shop_combined_q.all():
+                mk = month_key(r.yr, r.mo)
+                if mk not in monthly:
+                    continue
+                income = float(r.income or 0)
+                paid = float(r.paid or 0)
+                unpaid = float(r.unpaid or 0)
+                total = monthly[mk]['total_income']
+                monthly[mk]['shops'].append({
+                    'name': r.shop_name,
+                    'income': round(income, 2),
+                    'paid': round(paid, 2),
+                    'unpaid': round(unpaid, 2),
+                    'sales_count': r.sales_count,
+                    'percentage': round((income / total * 100) if total > 0 else 0, 2),
+                })
+
+            # --- 3. Payment method breakdown, per month (payment_method filter applies here only) ---
+            pm_q = (
+                db.session.query(
+                    yr.label('yr'), mo.label('mo'), 
+                    SalesPaymentMethods.payment_method.label('method'),
+                    func.sum(SalesPaymentMethods.amount_paid).label('amount'),
+                    func.count().label('count'),
+                )
+                .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)
+            )
+            pm_q = apply_common_filters(pm_q, Sales.created_at)
+            if payment_method:
+                pm_q = pm_q.filter(SalesPaymentMethods.payment_method == payment_method)
+            for r in pm_q.group_by('yr', 'mo', SalesPaymentMethods.payment_method).all():
+                mk = month_key(r.yr, r.mo)
+                if mk not in monthly:
+                    continue
+                amount = float(r.amount or 0)
+                total = monthly[mk]['total_income']
+                monthly[mk]['payment_methods'].append({
+                    'method': r.method,
+                    'amount': round(amount, 2),
+                    'count': r.count,
+                    'percentage': round((amount / total * 100) if total > 0 else 0, 2),
+                })
+
+            # --- 4. Item breakdown, per month — top 10 by revenue ---
+            item_q = (
+                db.session.query(
+                    yr.label('yr'), mo.label('mo'), 
+                    SoldItem.item_name.label('item_name'),
+                    func.sum(SoldItem.quantity).label('quantity'),
+                    func.sum(SoldItem.total_price).label('revenue'),
+                    func.count().label('sales_count'),
+                )
+                .join(Sales, Sales.sales_id == SoldItem.sales_id)
+            )
+            item_q = apply_common_filters(item_q, Sales.created_at)
+            item_rows_by_month = defaultdict(list)
+            for r in item_q.group_by('yr', 'mo', SoldItem.item_name).all():
+                mk = month_key(r.yr, r.mo)
+                if mk not in monthly:
+                    continue
+                item_rows_by_month[mk].append({
+                    'name': r.item_name,
+                    'quantity': round(float(r.quantity or 0), 2),
+                    'revenue': round(float(r.revenue or 0), 2),
+                    'sales_count': r.sales_count,
+                })
+            for mk, items in item_rows_by_month.items():
+                monthly[mk]['top_items'] = sorted(items, key=lambda x: x['revenue'], reverse=True)[:10]
+
+            # --- 5. Status distribution, per month ---
+            status_q = db.session.query(
+                yr.label('yr'), mo.label('mo'), 
+                Sales.status.label('status'),
+                func.count(Sales.sales_id).label('count'),
+            )
+            status_q = apply_common_filters(status_q, Sales.created_at)
+            for r in status_q.group_by('yr', 'mo', Sales.status).all():
+                mk = month_key(r.yr, r.mo)
+                if mk not in monthly:
+                    continue
+                monthly[mk]['status_distribution'][r.status] = r.count
+
+            # --- Format final response (same shape as before) ---
+            response_data = []
+            for mk in months_order:
+                m = monthly[mk]
+                avg = round(m['total_income'] / m['sales_count'], 2) if m['sales_count'] > 0 else 0
+                response_data.append({
+                    'month': m['month'],
+                    'month_key': m['month_key'],
+                    'summary': {
+                        'total_sales': m['sales_count'],
+                        'total_income': round(m['total_income'], 2),
+                        'total_paid': round(m['total_paid'], 2),
+                        'total_unpaid': round(m['total_unpaid'], 2),
+                        'average_sale': avg,
                     },
-                    "summary": {},
-                    "popular_items": {"items": []},
-                    "payment_distribution": {"distribution": []},
-                    "daily_trends": {"days": [], "income": [], "transactions": [], "items_sold": []},
-                    "filters_applied": {
-                        "shop_id": shop_id or "all",
-                        "shop_name": shop_name,
-                        "start_date": start_date,
-                        "end_date": end_date,
-                        "payment_method": payment_method,
-                        "status": status,
-                        "group_by": group_by
-                    }
-                }, 200
-            
-            # Prepare all data
-            grouped_data = self.group_sales_by_period(sales, group_by)
-            time_series_data = self.prepare_time_series_data(grouped_data)
-            summary = self.calculate_summary(sales, payment_method)
-            popular_items = self.get_popular_items(sales)
-            payment_distribution = self.get_payment_distribution(sales)
-            daily_trends = self.get_daily_trends(sales)
-            
+                    'shops': m['shops'],
+                    'payment_methods': m['payment_methods'],
+                    'top_items': m['top_items'],
+                    'status_distribution': m['status_distribution'],
+                })
+
+            total_income = sum(month['summary']['total_income'] for month in response_data)
+            total_paid = sum(month['summary']['total_paid'] for month in response_data)
+            total_unpaid = sum(month['summary']['total_unpaid'] for month in response_data)
+            total_sales = sum(month['summary']['total_sales'] for month in response_data)
+
             return make_response(jsonify({
-                "time_series": time_series_data,
-                "summary": summary,
-                "popular_items": popular_items,
-                "payment_distribution": payment_distribution,
-                "daily_trends": daily_trends,
-                "filters_applied": {
-                    "shop_id": shop_id or "all",
-                    "shop_name": shop_name,
-                    "start_date": start_date,
-                    "end_date": end_date,
-                    "payment_method": payment_method,
-                    "status": status,
-                    "group_by": group_by
+                'data': response_data,
+                'totals': {
+                    'total_income': round(total_income, 2),
+                    'total_paid': round(total_paid, 2),
+                    'total_unpaid': round(total_unpaid, 2),
+                    'total_sales': total_sales,
+                    'months_count': len(response_data),
+                },
+                'filters_applied': {
+                    'shop_id': shop_id or 'all',
+                    'shop_name': shop_name,
+                    'start_date': start_date,
+                    'end_date': end_date,
+                    'payment_method': payment_method,
+                    'year': year,
                 }
             }), 200)
-            
+
         except Exception as e:
             return {"error": str(e)}, 500
-    
-    def group_sales_by_period(self, sales, group_by):
-        """Group sales by day, week, month, or year"""
-        grouped = defaultdict(lambda: {
-            'sales': [],
-            'total_income': 0,
-            'total_cashflow': 0,
-            'total_revenue': 0,
-            'transactions': 0,
-            'total_discount': 0,
-            'total_balance': 0,
-            'sold_items': []
-        })
-        
-        for sale in sales:
-            # Determine period key
-            if group_by == 'day':
-                period_key = sale.created_at.strftime('%Y-%m-%d')
-            elif group_by == 'week':
-                year = sale.created_at.isocalendar()[0]
-                week = sale.created_at.isocalendar()[1]
-                period_key = f"{year}-W{week:02d}"
-            elif group_by == 'year':
-                period_key = sale.created_at.strftime('%Y')
-            else:  # month (default)
-                period_key = sale.created_at.strftime('%Y-%m')
-            
-            # Get payment methods for this sale
-            payment_methods = SalesPaymentMethods.query.filter_by(sale_id=sale.sales_id).all()
-            
-            # Handle None values with safe fallbacks
-            total_paid = sum(pm.amount_paid or 0 for pm in payment_methods)
-            total_discount = sum(pm.discount or 0 for pm in payment_methods)
-            
-            # Get sold items for this sale
-            sold_items = SoldItem.query.filter_by(sales_id=sale.sales_id).all()
-            total_items_revenue = sum(item.total_price or 0 for item in sold_items)
-            total_cost = sum(item.Cost_of_sale or 0 for item in sold_items)
-            
-            # Group data with safe None handling
-            grouped[period_key]['sales'].append(sale)
-            grouped[period_key]['total_income'] += total_paid
-            grouped[period_key]['total_cashflow'] += total_paid - (sale.balance or 0)
-            grouped[period_key]['total_revenue'] += total_items_revenue
-            grouped[period_key]['transactions'] += 1
-            grouped[period_key]['total_discount'] += total_discount
-            grouped[period_key]['total_balance'] += sale.balance or 0
-            grouped[period_key]['sold_items'].extend(sold_items)
-        
-        return grouped
-    
-    def prepare_time_series_data(self, grouped_data):
-        """Prepare data for time series charts"""
-        sorted_periods = sorted(grouped_data.keys())
-        
-        income_data = []
-        cashflow_data = []
-        revenue_data = []
-        transaction_count = []
-        average_order_value = []
-        discount_data = []
-        profit_data = []
-        balance_data = []
-        
-        for period in sorted_periods:
-            data = grouped_data[period]
-            
-            # Calculate profit (revenue - cost) with safe None handling
-            total_cost = sum(item.Cost_of_sale or 0 for item in data['sold_items'])
-            profit = data['total_revenue'] - total_cost
-            
-            income_data.append(round(data['total_income'] or 0, 2))
-            cashflow_data.append(round(data['total_cashflow'] or 0, 2))
-            revenue_data.append(round(data['total_revenue'] or 0, 2))
-            transaction_count.append(data['transactions'] or 0)
-            discount_data.append(round(data['total_discount'] or 0, 2))
-            profit_data.append(round(profit or 0, 2))
-            balance_data.append(round(data['total_balance'] or 0, 2))
-            
-            if data['transactions'] > 0:
-                avg_order = (data['total_income'] or 0) / data['transactions']
-                average_order_value.append(round(avg_order, 2))
-            else:
-                average_order_value.append(0)
-        
-        return {
-            'categories': sorted_periods,
-            'series': [
-                {
-                    'name': 'Income',
-                    'type': 'column',
-                    'data': income_data,
-                    'color': '#008FFB'
-                },
-                {
-                    'name': 'Cashflow',
-                    'type': 'column',
-                    'data': cashflow_data,
-                    'color': '#00E396'
-                },
-                {
-                    'name': 'Revenue',
-                    'type': 'line',
-                    'data': revenue_data,
-                    'color': '#FEB019'
-                },
-                {
-                    'name': 'Profit',
-                    'type': 'line',
-                    'data': profit_data,
-                    'color': '#FF4560'
-                },
-                {
-                    'name': 'Transactions',
-                    'type': 'line',
-                    'data': transaction_count,
-                    'color': '#775DD0'
-                },
-                {
-                    'name': 'Avg Order Value',
-                    'type': 'line',
-                    'data': average_order_value,
-                    'color': '#3F51B5'
-                }
-            ],
-            'yaxis_labels': {
-                'income': 'Income (KES)',
-                'cashflow': 'Cashflow (KES)',
-                'revenue': 'Revenue (KES)',
-                'profit': 'Profit (KES)',
-                'transactions': 'Number of Transactions',
-                'avg_order': 'Average Order Value (KES)'
-            }
-        }
-    
-    def calculate_summary(self, sales, payment_method_filter=None):
-        """Calculate summary statistics"""
-        total_sales = len(sales)
-        total_income = 0
-        total_balance = 0
-        total_items_sold = 0
-        total_revenue = 0
-        total_cost = 0
-        total_discount = 0
-        payment_methods_count = defaultdict(int)
-        status_count = defaultdict(int)
-        unique_customers = set()
-        
-        for sale in sales:
-            payment_methods = SalesPaymentMethods.query.filter_by(sale_id=sale.sales_id).all()
-            
-            # Filter by payment method if specified
-            if payment_method_filter:
-                payment_methods = [pm for pm in payment_methods if pm.payment_method == payment_method_filter]
-            
-            # Safe sum with None handling
-            total_paid = sum(pm.amount_paid or 0 for pm in payment_methods)
-            total_discount += sum(pm.discount or 0 for pm in payment_methods)
-            total_income += total_paid
-            total_balance += sale.balance or 0
-            
-            # Track unique customers
-            if sale.customer_number:
-                unique_customers.add(sale.customer_number)
-            
-            # Count payment methods
-            for pm in payment_methods:
-                payment_methods_count[pm.payment_method] += 1
-            
-            # Count status
-            status_count[sale.status] += 1
-            
-            # Get sold items with safe None handling
-            sold_items = SoldItem.query.filter_by(sales_id=sale.sales_id).all()
-            total_items_sold += sum(item.quantity or 0 for item in sold_items)
-            total_revenue += sum(item.total_price or 0 for item in sold_items)
-            total_cost += sum(item.Cost_of_sale or 0 for item in sold_items)
-        
-        profit = total_revenue - total_cost
-        
-        return {
-            'total_sales': total_sales,
-            'total_income': round(total_income, 2),
-            'total_balance': round(total_balance, 2),
-            'total_items_sold': round(total_items_sold, 2),
-            'total_revenue': round(total_revenue, 2),
-            'total_cost': round(total_cost, 2),
-            'total_profit': round(profit, 2),
-            'total_discount': round(total_discount, 2),
-            'average_sale_value': round(total_income / total_sales if total_sales > 0 else 0, 2),
-            'average_items_per_sale': round(total_items_sold / total_sales if total_sales > 0 else 0, 2),
-            'unique_customers': len(unique_customers),
-            'payment_methods': dict(payment_methods_count),
-            'status_distribution': dict(status_count)
-        }
-    
-    def get_popular_items(self, sales):
-        """Get most popular items across all sales"""
-        item_sales = defaultdict(lambda: {
-            'total_quantity': 0,
-            'total_revenue': 0,
-            'total_cost': 0,
-            'sales_count': 0,
-            'total_profit': 0
-        })
-        
-        for sale in sales:
-            sold_items = SoldItem.query.filter_by(sales_id=sale.sales_id).all()
-            for item in sold_items:
-                # Safe None handling for all numeric fields
-                quantity = item.quantity or 0
-                total_price = item.total_price or 0
-                cost_of_sale = item.Cost_of_sale or 0
-                
-                item_sales[item.item_name]['total_quantity'] += quantity
-                item_sales[item.item_name]['total_revenue'] += total_price
-                item_sales[item.item_name]['total_cost'] += cost_of_sale
-                item_sales[item.item_name]['sales_count'] += 1
-                item_sales[item.item_name]['total_profit'] += total_price - cost_of_sale
-        
-        # Sort by total revenue
-        sorted_items = sorted(
-            item_sales.items(),
-            key=lambda x: x[1]['total_revenue'],
-            reverse=True
-        )[:10]  # Top 10 items
-        
-        return {
-            'items': [
-                {
-                    'name': item_name,
-                    'total_quantity': round(data['total_quantity'] or 0, 2),
-                    'total_revenue': round(data['total_revenue'] or 0, 2),
-                    'total_cost': round(data['total_cost'] or 0, 2),
-                    'total_profit': round(data['total_profit'] or 0, 2),
-                    'sales_count': data['sales_count'] or 0,
-                    'average_price': round((data['total_revenue'] or 0) / (data['total_quantity'] or 1) if data['total_quantity'] > 0 else 0, 2),
-                    'profit_margin': round(((data['total_profit'] or 0) / (data['total_revenue'] or 1)) * 100 if data['total_revenue'] > 0 else 0, 2)
-                }
-                for item_name, data in sorted_items
-            ]
-        }
-    
-    def get_payment_distribution(self, sales):
-        """Get payment method distribution"""
-        payment_stats = defaultdict(lambda: {
-            'count': 0,
-            'total_amount': 0,
-            'sales_count': 0,
-            'total_discount': 0
-        })
-        
-        for sale in sales:
-            payment_methods = SalesPaymentMethods.query.filter_by(sale_id=sale.sales_id).all()
-            for pm in payment_methods:
-                # Safe None handling
-                amount = pm.amount_paid or 0
-                discount = pm.discount or 0
-                
-                payment_stats[pm.payment_method]['count'] += 1
-                payment_stats[pm.payment_method]['total_amount'] += amount
-                payment_stats[pm.payment_method]['sales_count'] += 1
-                payment_stats[pm.payment_method]['total_discount'] += discount
-        
-        total_amount = sum(d['total_amount'] for d in payment_stats.values())
-        
-        return {
-            'distribution': [
-                {
-                    'payment_method': method,
-                    'count': data['count'] or 0,
-                    'total_amount': round(data['total_amount'] or 0, 2),
-                    'sales_count': data['sales_count'] or 0,
-                    'total_discount': round(data['total_discount'] or 0, 2),
-                    'percentage': round(
-                        ((data['total_amount'] or 0) / (total_amount or 1)) * 100 if total_amount > 0 else 0,
-                        2
-                    )
-                }
-                for method, data in sorted(payment_stats.items(), key=lambda x: x[1]['total_amount'], reverse=True)
-            ]
-        }
-    
-    def get_daily_trends(self, sales):
-        """Get daily sales trends"""
-        daily_data = defaultdict(lambda: {
-            'income': 0,
-            'transactions': 0,
-            'items_sold': 0,
-            'revenue': 0,
-            'profit': 0,
-            'discount': 0
-        })
-        
-        for sale in sales:
-            day_key = sale.created_at.strftime('%Y-%m-%d')
-            
-            payment_methods = SalesPaymentMethods.query.filter_by(sale_id=sale.sales_id).all()
-            total_paid = sum(pm.amount_paid or 0 for pm in payment_methods)
-            total_discount = sum(pm.discount or 0 for pm in payment_methods)
-            
-            sold_items = SoldItem.query.filter_by(sales_id=sale.sales_id).all()
-            total_items = sum(item.quantity or 0 for item in sold_items)
-            total_revenue = sum(item.total_price or 0 for item in sold_items)
-            total_cost = sum(item.Cost_of_sale or 0 for item in sold_items)
-            
-            daily_data[day_key]['income'] += total_paid
-            daily_data[day_key]['transactions'] += 1
-            daily_data[day_key]['items_sold'] += total_items
-            daily_data[day_key]['revenue'] += total_revenue
-            daily_data[day_key]['profit'] += total_revenue - total_cost
-            daily_data[day_key]['discount'] += total_discount
-        
-        sorted_days = sorted(daily_data.keys())
-        
-        return {
-            'days': sorted_days,
-            'income': [round(daily_data[day]['income'] or 0, 2) for day in sorted_days],
-            'transactions': [daily_data[day]['transactions'] or 0 for day in sorted_days],
-            'items_sold': [round(daily_data[day]['items_sold'] or 0, 2) for day in sorted_days],
-            'revenue': [round(daily_data[day]['revenue'] or 0, 2) for day in sorted_days],
-            'profit': [round(daily_data[day]['profit'] or 0, 2) for day in sorted_days],
-            'discount': [round(daily_data[day]['discount'] or 0, 2) for day in sorted_days]
-        }

@@ -473,7 +473,6 @@ class CountShops(Resource):
      
 
 
-
 class TotalAmountPaidPerShop(Resource):
     @jwt_required()
     @check_role('manager')
@@ -481,7 +480,7 @@ class TotalAmountPaidPerShop(Resource):
         today = datetime.utcnow()
 
         try:
-            # Date filtering
+            # Date filtering logic (same as before)
             start_date_str, end_date_str = request.args.get('start_date'), request.args.get('end_date')
             date_str, period = request.args.get('date'), request.args.get('period', 'today')
 
@@ -509,110 +508,127 @@ class TotalAmountPaidPerShop(Resource):
             results = []
             overall_paid = overall_unpaid = overall_delivery_sales = overall_transaction_count = 0
             overall_payment_totals = {"sasapay": 0, "cash": 0, "not_payed": 0}
-            overall_category_totals = {}  # Will hold totals per category across all shops
+            overall_category_totals = {}
 
             for shop in shops:
                 shop_id = shop.shops_id
 
-                # Paid sales
-                total_paid = db.session.query(func.sum(SalesPaymentMethods.amount_paid))\
-                    .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)\
-                    .filter(Sales.shop_id == shop_id, Sales.created_at.between(start_date, end_date))\
-                    .scalar() or 0
-
-                # Unpaid balances
-                total_unpaid = db.session.query(func.sum(Sales.balance))\
-                    .filter(
-                        Sales.shop_id == shop_id,
-                        Sales.created_at.between(start_date, end_date),
-                        Sales.status.in_(["unpaid", "partially_paid"])
-                    ).scalar() or 0
-
-                # Delivery sales
-                delivery_sales = db.session.query(func.sum(SalesPaymentMethods.amount_paid))\
-                    .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)\
-                    .filter(
-                        Sales.shop_id == shop_id,
-                        Sales.delivery == True,
-                        Sales.created_at.between(start_date, end_date)
-                    ).scalar() or 0
-
-                # Transaction count
-                transaction_count = db.session.query(func.count(SalesPaymentMethods.id))\
-                    .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)\
-                    .filter(Sales.shop_id == shop_id, Sales.created_at.between(start_date, end_date))\
-                    .scalar() or 0
-
-                # Payment breakdown
-                payment_summary = {"sasapay": 0, "cash": 0, "not_payed": float(total_unpaid)}
-
-                payments = db.session.query(
-                    SalesPaymentMethods.payment_method,
-                    func.sum(SalesPaymentMethods.amount_paid)
-                ).join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)\
-                 .filter(Sales.shop_id == shop_id, Sales.created_at.between(start_date, end_date))\
-                 .group_by(SalesPaymentMethods.payment_method).all()
-
-                for method, amount in payments:
-                    amount = float(amount or 0)
-                    if method in payment_summary:
-                        payment_summary[method] = amount
-                        overall_payment_totals[method] += amount
-
-                overall_payment_totals["not_payed"] += float(total_unpaid)
-
-                # Category breakdown for this shop
-                category_summary = {}
-                
-                # Query to get total sales per category for this shop
-                category_sales = db.session.query(
-                    StockItems.category,
-                    func.sum(SoldItem.total_price)
-                ).join(
-                    SoldItem, SoldItem.item_id == StockItems.id
-                ).join(
-                    Sales, Sales.sales_id == SoldItem.sales_id
-                ).filter(
+                # Get ALL sales for this shop in the date range
+                sales_query = Sales.query.filter(
                     Sales.shop_id == shop_id,
                     Sales.created_at.between(start_date, end_date)
-                ).group_by(
-                    StockItems.category
                 ).all()
 
-                for category, total in category_sales:
-                    category_name = category if category else "uncategorized"
-                    amount = float(total or 0)
-                    category_summary[category_name] = f"Ksh {amount:,.2f}"
+                # Initialize totals
+                total_paid = 0
+                total_unpaid = 0
+                total_sales_value = 0
+                delivery_sales = 0
+                transaction_count = 0
+                payment_summary = {"sasapay": 0, "cash": 0, "not_payed": 0}
+                category_summary = {}
+
+                # Process each sale individually
+                for sale in sales_query:
+                    # Get all payments for this sale
+                    payments = SalesPaymentMethods.query.filter(
+                        SalesPaymentMethods.sale_id == sale.sales_id
+                    ).all()
+
+                    # Calculate total paid for this sale
+                    sale_paid = sum(p.amount_paid for p in payments)
+                    total_paid += sale_paid
                     
-                    # Add to overall category totals
-                    if category_name in overall_category_totals:
-                        overall_category_totals[category_name] += amount
+                    # Get sale total value (from items)
+                    sale_total = db.session.query(func.sum(SoldItem.total_price))\
+                        .filter(SoldItem.sales_id == sale.sales_id)\
+                        .scalar() or 0
+                    total_sales_value += sale_total
+
+                    # Calculate unpaid (sale value - amount paid)
+                    sale_unpaid = max(0, sale_total - sale_paid)
+                    total_unpaid += sale_unpaid
+
+                    # Count transactions (one per payment)
+                    transaction_count += len(payments)
+
+                    # Payment method breakdown
+                    for payment in payments:
+                        method = payment.payment_method
+                        amount = payment.amount_paid
+                        if method in payment_summary:
+                            payment_summary[method] += amount
+                            overall_payment_totals[method] += amount
+                        
+                        # Delivery sales
+                        if sale.delivery:
+                            delivery_sales += amount
+
+                    # Category breakdown for this sale
+                    sale_items = SoldItem.query.filter(
+                        SoldItem.sales_id == sale.sales_id
+                    ).all()
+                    
+                    for item in sale_items:
+                        # Get category from stock item
+                        stock_item = StockItems.query.get(item.item_id)
+                        category_name = stock_item.category if stock_item and stock_item.category else "uncategorized"
+                        
+                        # Calculate what portion of this item's price was paid
+                        # (proportion based on sale_paid / sale_total)
+                        if sale_total > 0:
+                            paid_portion = sale_paid / sale_total
+                            item_paid_amount = item.total_price * paid_portion
+                        else:
+                            item_paid_amount = 0
+                        
+                        if category_name in category_summary:
+                            category_summary[category_name] += item_paid_amount
+                        else:
+                            category_summary[category_name] = item_paid_amount
+
+                # Add unpaid to payment summary as "not_payed"
+                payment_summary["not_payed"] = total_unpaid
+                overall_payment_totals["not_payed"] += total_unpaid
+
+                # Format category summary
+                formatted_category_summary = {}
+                for category, amount in category_summary.items():
+                    formatted_category_summary[category] = f"Ksh {amount:,.2f}"
+                    if category in overall_category_totals:
+                        overall_category_totals[category] += amount
                     else:
-                        overall_category_totals[category_name] = amount
+                        overall_category_totals[category] = amount
 
                 total_sales = total_paid + total_unpaid
 
-                # Comparison
+                # Comparison (same logic as before)
                 comparison = 0
                 if period != "custom":
                     compare_days = {"today": 1, "yesterday": 1, "week": 7, "month": 30}
                     shift = compare_days.get(period, 0)
-
                     prev_start = start_date - timedelta(days=shift)
                     prev_end = (start_date - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
 
-                    prev_paid = db.session.query(func.sum(SalesPaymentMethods.amount_paid))\
-                        .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)\
-                        .filter(Sales.shop_id == shop_id, Sales.created_at.between(prev_start, prev_end))\
-                        .scalar() or 0
-
-                    prev_unpaid = db.session.query(func.sum(Sales.balance))\
-                        .filter(
-                            Sales.shop_id == shop_id,
-                            Sales.created_at.between(prev_start, prev_end),
-                            Sales.status.in_(["unpaid", "partially_paid"])
-                        ).scalar() or 0
-
+                    # Get previous period totals
+                    prev_sales = Sales.query.filter(
+                        Sales.shop_id == shop_id,
+                        Sales.created_at.between(prev_start, prev_end)
+                    ).all()
+                    
+                    prev_paid = 0
+                    prev_unpaid = 0
+                    for prev_sale in prev_sales:
+                        prev_payments = SalesPaymentMethods.query.filter(
+                            SalesPaymentMethods.sale_id == prev_sale.sales_id
+                        ).all()
+                        prev_sale_paid = sum(p.amount_paid for p in prev_payments)
+                        prev_sale_total = db.session.query(func.sum(SoldItem.total_price))\
+                            .filter(SoldItem.sales_id == prev_sale.sales_id)\
+                            .scalar() or 0
+                        prev_paid += prev_sale_paid
+                        prev_unpaid += max(0, prev_sale_total - prev_sale_paid)
+                    
                     comparison = total_sales - (prev_paid + prev_unpaid)
 
                 overall_paid += total_paid
@@ -629,7 +645,7 @@ class TotalAmountPaidPerShop(Resource):
                     "delivery_sales": f"Ksh {delivery_sales:,.2f}",
                     "transaction_count": transaction_count,
                     "payment_breakdown": payment_summary,
-                    "category_breakdown": category_summary,  # New field for category breakdown
+                    "category_breakdown": formatted_category_summary,
                     "comparison": comparison
                 })
 
@@ -652,7 +668,7 @@ class TotalAmountPaidPerShop(Resource):
                     "cash": f"Ksh {overall_payment_totals['cash']:,.2f}",
                     "not_payed": f"Ksh {overall_payment_totals['not_payed']:,.2f}"
                 },
-                "overall_category_breakdown": formatted_category_totals,  # New field for category totals
+                "overall_category_breakdown": formatted_category_totals,
                 "transaction_count": overall_transaction_count
             }
 

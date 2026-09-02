@@ -30,7 +30,7 @@ class PostStockItem(Resource):
     def post(self):
         """
         POST /api/diraja/add-stock-items
-        Create a new stock item and sync to eTims
+        Create a new stock item and sync to eTims (if enabled)
         """
         data = request.get_json()
 
@@ -49,59 +49,132 @@ class PostStockItem(Resource):
         if stock_type not in ['Service', 'Product']:
             return {"message": "stock_type must be either 'Service' or 'Product'"}, 400
 
-        # Prepare data for service
-        stock_item_data = {
-            'item_name': item_name,
-            'item_code': data.get('item_code'),
-            'unit_price': data.get('unit_price'),
-            'pack_price': data.get('pack_price'),
-            'pack_quantity': data.get('pack_quantity'),
-            'category': data.get('category'),
-            'stock_item_type': stock_type,  # Changed from 'stock_type' to 'stock_item_type'
-            # eTims fields
-            'org_country_code': data.get('org_country_code', 'KE'),
-            'item_type_code': data.get('item_type_code', '1'),
-            'tax_code': data.get('tax_code', 'A'),
-            'qty_unit_code': data.get('qty_unit_code', 'U'),
-            'pkg_unit_code': data.get('pkg_unit_code', 'CT'),
-            'item_class_code': data.get('item_class_code', '99000000'),
-            'initial_stock': data.get('initial_stock', 0)
-        }
+        # Check if eTims sync is enabled
+        etims_synced = data.get('etims_synced', True)  # Default to True if not provided
 
-        # Use eTims service to create and sync
-        success, result = etims_service.create_and_sync_item(stock_item_data)
+        if etims_synced:
+            # Prepare data for eTims service - using stock_item_type
+            stock_item_data = {
+                'item_name': item_name,
+                'item_code': data.get('item_code'),
+                'unit_price': data.get('unit_price'),
+                'pack_price': data.get('pack_price'),
+                'pack_quantity': data.get('pack_quantity'),
+                'category': data.get('category'),
+                'stock_item_type': stock_type,  # Translated to stock_item_type
+                # eTims fields
+                'org_country_code': data.get('org_country_code', 'KE'),
+                'item_type_code': data.get('item_type_code', '1'),
+                'tax_code': data.get('tax_code', 'A'),
+                'qty_unit_code': data.get('qty_unit_code', 'U'),
+                'pkg_unit_code': data.get('pkg_unit_code', 'CT'),
+                'item_class_code': data.get('item_class_code', '99000000'),
+                'initial_stock': data.get('initial_stock', 0)
+            }
 
-        if not success:
-            return {"message": result.get('error', 'Failed to create item')}, 400
+            # Use eTims service to create and sync
+            success, result = etims_service.create_and_sync_item(stock_item_data)
 
-        return result, 201
+            if not success:
+                return {"message": result.get('error', 'Failed to create item')}, 400
+
+            return result, 201
+        else:
+            # Skip eTims sync - just create the item locally
+            try:
+                new_item = StockItems(
+                    item_name=item_name,
+                    item_code=data.get('item_code'),
+                    unit_price=data.get('unit_price'),
+                    pack_price=data.get('pack_price'),
+                    pack_quantity=data.get('pack_quantity'),
+                    category=data.get('category'),
+                    stock_item_type=stock_type,  # Translated to stock_item_type
+                    initial_stock=data.get('initial_stock', 0),
+                    etims_synced=False  # Mark as not synced
+                )
+                
+                db.session.add(new_item)
+                db.session.commit()
+                
+                return {
+                    "message": "Stock item created successfully (eTims sync skipped)",
+                    "item": {
+                        "id": new_item.id,
+                        "item_name": new_item.item_name,
+                        "item_code": new_item.item_code,
+                        "unit_price": new_item.unit_price,
+                        "pack_price": new_item.pack_price,
+                        "pack_quantity": new_item.pack_quantity,
+                        "category": new_item.category,
+                        "stock_item_type": new_item.stock_item_type,  # Return as stock_item_type
+                        "etims_synced": new_item.etims_synced
+                    }
+                }, 201
+                
+            except Exception as e:
+                db.session.rollback()
+                return {"message": f"Failed to create item: {str(e)}"}, 500
 
 
 class GetAllStockItems(Resource):
-    @jwt_required()
+
     def get(self):
         """
-        GET /stock-items
-        Get all stock items with eTims sync status
+        GET /stockitems
+        Get all stock items with optional filtering
         
         Query Parameters:
-        - type: Filter by stock type ('Service' or 'Product') - optional
+        - type: 'Service' or 'Product' (optional)
+        - category: 'eggs', 'chicken', 'farmers choice', 'others' (optional)
+        - search: Search by item name or code (optional)
         """
         # Get query parameters
-        stock_type = request.args.get('type')
+        stock_type = request.args.get('type')  # Changed to 'type'
+        category = request.args.get('category')
+        search = request.args.get('search')
         
-        # Build query
+        # Start with base query
         query = StockItems.query
         
-        # Apply filter if type parameter is provided
+        # Apply type filter if provided
         if stock_type:
-            if stock_type not in ['Service', 'Product']:
-                return {"message": "Type must be either 'Service' or 'Product'"}, 400
-            query = query.filter_by(stock_item_type=stock_type)
+            # Case-insensitive check
+            if stock_type.lower() not in ['service', 'product']:
+                return {
+                    "error": "Invalid type parameter",
+                    "message": "Type must be either 'Service' or 'Product'",
+                    "valid_values": ["Service", "Product"]
+                }, 400
+            # Apply filter with proper case
+            query = query.filter(StockItems.stock_item_type == stock_type.capitalize())
         
-        items = query.all()
+        # Apply category filter if provided
+        if category:
+            valid_categories = ['eggs', 'chicken', 'farmers choice', 'others']
+            if category.lower() not in valid_categories:
+                return {
+                    "error": "Invalid category parameter",
+                    "message": f"Category must be one of: {', '.join(valid_categories)}",
+                    "valid_values": valid_categories
+                }, 400
+            query = query.filter(StockItems.category == category.lower())
+        
+        # Apply search filter if provided (search in item_name or item_code)
+        if search:
+            search_term = f"%{search}%"
+            query = query.filter(
+                db.or_(
+                    StockItems.item_name.ilike(search_term),
+                    StockItems.item_code.ilike(search_term)
+                )
+            )
+        
+        # Order results by item name
+        items = query.order_by(StockItems.item_name.asc()).all()
+        
+        # Build response
         result = []
-
         for item in items:
             result.append({
                 "id": item.id,
@@ -111,22 +184,23 @@ class GetAllStockItems(Resource):
                 "pack_price": item.pack_price,
                 "pack_quantity": item.pack_quantity,
                 "category": item.category,
-                "stock_type": item.stock_item_type,  # Changed from item.stock_type to item.stock_item_type
-                "etims_synced": item.etims_synced,
-                "etims_item_code": item.etims_item_code,
-                "etims_sync_date": item.etims_sync_date.isoformat() if item.etims_sync_date else None
+                "stock_item_type": item.stock_item_type  # Include type in response
             })
-
+        
         return {
             "stock_items": result,
-            "count": len(result),
-            "filter": stock_type if stock_type else "all"
+            "total_count": len(result),
+            "filters_applied": {
+                "type": stock_type if stock_type else "all",
+                "category": category if category else "all",
+                "search": search if search else "none"
+            }
         }, 200
 
 
 
 class StockItem(Resource):
-    @jwt_required()
+   
     @check_role('manager')
     def get(self, item_id=None):
         """

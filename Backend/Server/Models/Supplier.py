@@ -15,6 +15,15 @@ class Suppliers(db.Model):
     # Optional contact details
     email = db.Column(db.String(255), nullable=True)
     phone_number = db.Column(db.String(50), nullable=False)
+    kra_pin = db.Column(db.String(50), nullable=True)
+
+    # Store payment details for this transaction
+    payment_method = db.Column(db.String(50), nullable=True)
+    mobile_number = db.Column(db.String(50), nullable=True)
+    till_number = db.Column(db.String(50), nullable=True)
+    paybill_number = db.Column(db.String(50), nullable=True)
+    paybill_account = db.Column(db.String(50), nullable=True)
+  
 
     # New column: list of items the supplier sells
     items_sold = db.Column(db.JSON, nullable=True, default=list)

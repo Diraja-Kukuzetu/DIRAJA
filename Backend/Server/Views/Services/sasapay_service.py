@@ -21,11 +21,15 @@ class SasaPayPaymentService:
             self.payment_url = "https://api.sasapay.app/api/v1/payments/request-payment/"
             self.status_url = "https://api.sasapay.app/api/v1/payments/status/"
             self.process_url = "https://api.sasapay.app/api/v1/payments/process-payment/"
+            self.b2b_url = "https://api.sasapay.app/api/v1/payments/b2b/"
+            self.b2c_url = "https://api.sasapay.app/api/v1/payments/b2c/"
         else:
             self.base_url = os.getenv("SASAPAY_SANDBOX_BASE_URL", "https://sandbox.sasapay.app")
             self.payment_url = "https://sandbox.sasapay.app/api/v1/payments/request-payment/"
             self.status_url = "https://sandbox.sasapay.app/api/v1/payments/status/"
             self.process_url = "https://sandbox.sasapay.app/api/v1/payments/process-payment/"
+            self.b2b_url = "https://sandbox.sasapay.app/api/v1/payments/b2b/"
+            self.b2c_url = "https://sandbox.sasapay.app/api/v1/payments/b2c/"
         
         self.sandbox_merchant_code = os.getenv("SASAPAY_SANDBOX_MERCHANT_CODE", "600980")
         
@@ -50,6 +54,7 @@ class SasaPayPaymentService:
         logger.info(f"[SASAPAY] Payment URL: {self.payment_url}")
         logger.info(f"[SASAPAY] Status URL: {self.status_url}")
         logger.info(f"[SASAPAY] Process URL: {self.process_url}")
+        logger.info(f"[SASAPAY] B2B URL: {self.b2b_url}")
         logger.info(f"[SASAPAY] Sandbox Merchant Code: {self.sandbox_merchant_code}")
         logger.info("=" * 60)
 
@@ -361,6 +366,264 @@ class SasaPayPaymentService:
             return {
                 'status': False,
                 'message': f'Error initiating payment: {str(e)}'
+            }
+
+    def initiate_b2b_transfer(self, sender_merchant_code, transaction_reference, amount,
+                              receiver_merchant_code, account_reference,
+                              receiver_account_type="PAYBILL", network_code="0",
+                              callback_url=None, reason="Internal merchant transfer"):
+        """
+        Move funds from one of your merchant accounts to another merchant's
+        account using SasaPay's B2B API.
+
+        NOTE: unlike initiate_payment(), this method does NOT force-override
+        sender_merchant_code with self.sandbox_merchant_code in sandbox mode.
+        A B2B transfer needs two distinct real merchant codes (sender +
+        receiver) to mean anything, so both are used exactly as passed in.
+        Confirm with SasaPay that your sandbox app is provisioned to move
+        funds between 570257 and 577960 before relying on this in sandbox.
+        """
+        try:
+            logger.info("=" * 60)
+            logger.info("[SASAPAY] B2B TRANSFER INITIATION STARTED")
+            logger.info("=" * 60)
+
+            # STEP 1: Get access token (auth as the SENDER merchant)
+            logger.info("[SASAPAY] STEP 1: Getting access token for sender merchant...")
+            access_token = self._get_access_token(sender_merchant_code)
+            logger.info("[SASAPAY] STEP 1: Access token obtained successfully")
+
+            # STEP 2: Prepare B2B request
+            logger.info("[SASAPAY] STEP 2: Preparing B2B transfer request...")
+
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+
+            # Get callback URL (defaults to sender merchant's configured callback)
+            if not callback_url:
+                callback_url = self._get_merchant_callback_url(sender_merchant_code)
+            logger.info(f"[SASAPAY] Using callback URL: {callback_url}")
+
+            # Resolve network code (defaults to '0' = SasaPay internal)
+            network_code = self._get_network_code(network_code)
+
+            b2b_data = {
+                "MerchantCode": sender_merchant_code,
+                "MerchantTransactionReference": transaction_reference,
+                "Currency": "KES",
+                "Amount": float(amount),
+                "ReceiverMerchantCode": receiver_merchant_code,
+                "AccountReference": account_reference,
+                "ReceiverAccountType": receiver_account_type,
+                "NetworkCode": network_code,
+                "CallBackURL": callback_url,
+                "Reason": reason
+            }
+
+            b2b_json = json.dumps(b2b_data, indent=2)
+
+            logger.info("=" * 60)
+            logger.info("[SASAPAY] STEP 2: B2B TRANSFER REQUEST DETAILS")
+            logger.info(f"[SASAPAY] Transaction Reference: {transaction_reference}")
+            logger.info(f"[SASAPAY] Amount: {amount}")
+            logger.info(f"[SASAPAY] Sender Merchant Code: {sender_merchant_code}")
+            logger.info(f"[SASAPAY] Receiver Merchant Code: {receiver_merchant_code}")
+            logger.info(f"[SASAPAY] B2B URL: {self.b2b_url}")
+            logger.info(f"[SASAPAY] Network Code: {network_code}")
+            logger.info(f"[SASAPAY] Callback URL: {callback_url}")
+            logger.info("[SASAPAY] PAYLOAD BEING SENT TO SASAPAY:")
+            logger.info(f"\n{b2b_json}")
+            logger.info("=" * 60)
+
+            # STEP 3: Make the POST request
+            logger.info("[SASAPAY] STEP 3: Sending B2B transfer request to SasaPay...")
+            response = requests.post(self.b2b_url, json=b2b_data, headers=headers, timeout=30)
+
+            logger.info(f"[SASAPAY] Response Status: {response.status_code}")
+            logger.info(f"[SASAPAY] Response Body: {response.text[:500]}")
+
+            # STEP 4: Process response
+            logger.info("[SASAPAY] STEP 4: Processing response...")
+
+            if response.status_code in [200, 201]:
+                result = response.json()
+                logger.info(f"[SASAPAY] B2B transfer initiated successfully for transaction: {transaction_reference}")
+                logger.info(f"[SASAPAY] Response: {json.dumps(result, indent=2)}")
+
+                return {
+                    'status': True,
+                    'data': {
+                        'B2BRequestID': result.get('B2BRequestID'),
+                        'ConversationID': result.get('ConversationID'),
+                        'OriginatorConversationID': result.get('OriginatorConversationID'),
+                        'TransactionCharges': result.get('TransactionCharges'),
+                        'ResponseCode': result.get('ResponseCode'),
+                        'ResponseDescription': result.get('ResponseDescription'),
+                        'our_transaction_reference': transaction_reference
+                    }
+                }
+            else:
+                logger.error(f"[SASAPAY] B2B transfer failed for transaction: {transaction_reference}, status: {response.status_code}")
+                logger.error(f"[SASAPAY] Response: {response.text}")
+                return {
+                    'status': False,
+                    'message': f'B2B transfer failed: {response.status_code}',
+                    'response': response.text
+                }
+
+        except Exception as e:
+            logger.error(f"[SASAPAY] Exception initiating B2B transfer for transaction: {transaction_reference} - {str(e)}")
+            return {
+                'status': False,
+                'message': f'Error initiating B2B transfer: {str(e)}'
+            }
+
+    def pay_paybill(self, sender_merchant_code, transaction_reference, amount,
+                    paybill_number, account_reference, callback_url=None,
+                    reason="Paybill payment"):
+        """
+        Send money from one of your merchant accounts to someone else's
+        PAYBILL number (e.g. paying a supplier, KPLC, DSTV, another
+        business's paybill, etc). Thin wrapper around initiate_b2b_transfer().
+        """
+        return self.initiate_b2b_transfer(
+            sender_merchant_code=sender_merchant_code,
+            transaction_reference=transaction_reference,
+            amount=amount,
+            receiver_merchant_code=paybill_number,
+            account_reference=account_reference,
+            receiver_account_type="PAYBILL",
+            callback_url=callback_url,
+            reason=reason
+        )
+
+    def pay_till(self, sender_merchant_code, transaction_reference, amount,
+                till_number, account_reference, callback_url=None,
+                reason="Till payment"):
+        """
+        Send money from one of your merchant accounts to someone else's
+        TILL number (buy goods). Thin wrapper around initiate_b2b_transfer().
+        """
+        return self.initiate_b2b_transfer(
+            sender_merchant_code=sender_merchant_code,
+            transaction_reference=transaction_reference,
+            amount=amount,
+            receiver_merchant_code=till_number,
+            account_reference=account_reference,
+            receiver_account_type="TILL",
+            callback_url=callback_url,
+            reason=reason
+        )
+
+    def transfer_to_merchant(self, sender_merchant_code, transaction_reference,
+                             amount, receiver_merchant_code, account_reference,
+                             callback_url=None, reason="Merchant to merchant transfer"):
+        """
+        Move funds from one of YOUR merchant accounts directly to another
+        SasaPay merchant account (e.g. your own 570257 -> 577960).
+        Thin wrapper around initiate_b2b_transfer() using ReceiverAccountType
+        appropriate for a merchant-to-merchant move.
+        """
+        return self.initiate_b2b_transfer(
+            sender_merchant_code=sender_merchant_code,
+            transaction_reference=transaction_reference,
+            amount=amount,
+            receiver_merchant_code=receiver_merchant_code,
+            account_reference=account_reference,
+            receiver_account_type="PAYBILL",
+            callback_url=callback_url,
+            reason=reason
+        )
+
+    def initiate_b2c_payment(self, sender_merchant_code, transaction_reference, amount,
+                             receiver_number, reason, callback_url=None, channel="0"):
+        """
+        Send money from one of your merchant accounts directly to a person's
+        phone number (M-PESA/Airtel/etc or SasaPay wallet). Use this for
+        suppliers paid via mobile_number rather than paybill/till.
+        """
+        try:
+            logger.info("=" * 60)
+            logger.info("[SASAPAY] B2C PAYMENT INITIATION STARTED")
+            logger.info("=" * 60)
+
+            access_token = self._get_access_token(sender_merchant_code)
+
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+
+            if not callback_url:
+                callback_url = self._get_merchant_callback_url(sender_merchant_code)
+
+            formatted_phone = self._format_phone_number(receiver_number)
+            if not formatted_phone:
+                logger.error("[SASAPAY] Invalid receiver phone number format")
+                return {
+                    'status': False,
+                    'message': 'Invalid receiver phone number format'
+                }
+
+            channel = self._get_network_code(channel)
+
+            b2c_data = {
+                "MerchantCode": sender_merchant_code,
+                "MerchantTransactionReference": transaction_reference,
+                "Amount": str(float(amount)),
+                "Currency": "KES",
+                "ReceiverNumber": formatted_phone,
+                "Channel": channel,
+                "Reason": reason,
+                "CallBackURL": callback_url
+            }
+
+            logger.info("=" * 60)
+            logger.info("[SASAPAY] B2C PAYMENT REQUEST DETAILS")
+            logger.info(f"[SASAPAY] Transaction Reference: {transaction_reference}")
+            logger.info(f"[SASAPAY] Amount: {amount}")
+            logger.info(f"[SASAPAY] Sender Merchant Code: {sender_merchant_code}")
+            logger.info(f"[SASAPAY] Receiver Number: {formatted_phone}")
+            logger.info(f"[SASAPAY] B2C URL: {self.b2c_url}")
+            logger.info(f"\n{json.dumps(b2c_data, indent=2)}")
+            logger.info("=" * 60)
+
+            response = requests.post(self.b2c_url, json=b2c_data, headers=headers, timeout=30)
+
+            logger.info(f"[SASAPAY] Response Status: {response.status_code}")
+            logger.info(f"[SASAPAY] Response Body: {response.text[:500]}")
+
+            if response.status_code in [200, 201]:
+                result = response.json()
+                logger.info(f"[SASAPAY] B2C payment initiated successfully for transaction: {transaction_reference}")
+                return {
+                    'status': True,
+                    'data': {
+                        'B2CRequestID': result.get('B2CRequestID'),
+                        'ConversationID': result.get('ConversationID'),
+                        'OriginatorConversationID': result.get('OriginatorConversationID'),
+                        'ResponseCode': result.get('ResponseCode'),
+                        'ResponseDescription': result.get('ResponseDescription') or result.get('detail'),
+                        'our_transaction_reference': transaction_reference
+                    }
+                }
+            else:
+                logger.error(f"[SASAPAY] B2C payment failed for transaction: {transaction_reference}, status: {response.status_code}")
+                return {
+                    'status': False,
+                    'message': f'B2C payment failed: {response.status_code}',
+                    'response': response.text
+                }
+
+        except Exception as e:
+            logger.error(f"[SASAPAY] Exception initiating B2C payment for transaction: {transaction_reference} - {str(e)}")
+            return {
+                'status': False,
+                'message': f'Error initiating B2C payment: {str(e)}'
             }
 
     def process_payment(self, merchant_code, checkout_request_id, verification_code):

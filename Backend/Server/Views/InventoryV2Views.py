@@ -26,6 +26,10 @@ from Server.Models.PushSubscription import PushSubscription
 from Server.Models.Supplier import SupplierHistory , Suppliers
 from flask import current_app
 import re
+import uuid
+
+from Server.Views.Services.sasapay_service import SasaPayPaymentService
+sasapay_service = SasaPayPaymentService()
 
 
 def check_role(required_role):
@@ -1508,6 +1512,213 @@ class AddInventoryV2(Resource):
             db.session.rollback()
             return {'message': 'Error adding inventory', 'error': str(e)}, 500
 
+
+class SelfCheckoutInventory(Resource):
+    
+    def post(self):
+        data = request.get_json()
+
+        required_fields = [
+            'itemname', 'quantity', 'metric', 'unitCost', 'amountPaid', 
+            'Suppliername', 'Supplier_location', 
+            'payment_method', 'mobile_number'
+        ]
+        
+        missing_fields = [field for field in required_fields if field not in data]
+        if missing_fields:
+            return {
+                'message': f'Missing required fields: {", ".join(missing_fields)}'
+            }, 400
+
+        # Extract fields
+        itemname = data.get('itemname')
+        quantity = float(data.get('quantity'))
+        metric = data.get('metric')
+        unitCost = float(data.get('unitCost'))
+        amountPaid = float(data.get('amountPaid', 0))  # This will be the credit amount
+        Suppliername = data.get('Suppliername')
+        Supplier_location = data.get('Supplier_location')
+        email = data.get('email', '')
+        note = data.get('note', '')
+        payment_method = data.get('payment_method')
+        mobile_number = data.get('mobile_number')
+        till_number = data.get('till_number')
+        paybill_number = data.get('paybill_number')
+        paybill_account = data.get('paybill_account')
+        kra_pin = data.get('kra_pin')
+        source = data.get('source', 'Self Checkout')
+        paymentRef = data.get('paymentRef', f'SELF-{datetime.now().strftime("%Y%m%d%H%M%S")}')
+        created_at_str = data.get('created_at', datetime.now().strftime("%Y-%m-%d"))
+
+        # Validate payment method
+        valid_payment_methods = ['send_money', 'till', 'paybill']
+        if payment_method not in valid_payment_methods:
+            return {
+                'message': f'Invalid payment method. Must be one of: {valid_payment_methods}'
+            }, 400
+
+        # Validate payment method specific fields
+        if payment_method == 'send_money' and not mobile_number:
+            return {'message': 'Mobile number is required for send_money payment method'}, 400
+        elif payment_method == 'till' and not till_number:
+            return {'message': 'Till number is required for till payment method'}, 400
+        elif payment_method == 'paybill':
+            if not paybill_number:
+                return {'message': 'Paybill number is required for paybill payment method'}, 400
+            if not paybill_account:
+                return {'message': 'Paybill account is required for paybill payment method'}, 400
+
+        try:
+            created_at = datetime.strptime(created_at_str, "%Y-%m-%d")
+        except ValueError:
+            return {'message': 'Invalid date format. Please use YYYY-MM-DD for created_at.'}, 400
+
+        # Calculate totals
+        totalCost = unitCost * quantity
+        credit_amount = amountPaid  # The amount sent becomes the credit amount
+        balance = totalCost - amountPaid  # The remaining balance that needs to be paid
+        
+        # Since it's self-checkout, payment status is unpaid by default
+        payment_status = 'unpaid'
+        
+        # Generate batch code
+        last_inventory = InventoryV2.query.order_by(InventoryV2.inventoryV2_id.desc()).first()
+        next_batch_number = 1 if not last_inventory else last_inventory.inventoryV2_id + 1
+        batch_code = InventoryV2.generate_batch_code(
+            Suppliername, Supplier_location, itemname, created_at, next_batch_number
+        )
+
+        # Debit account value (could be 0 for unpaid items)
+        debit_account_value = 0  # Since it's unpaid, no debit
+
+        try:
+            # Step 1: Check or create supplier
+            supplier = Suppliers.query.filter_by(
+                supplier_name=Suppliername,
+                supplier_location=Supplier_location
+            ).first()
+
+            if not supplier:
+                # Create new supplier with payment details
+                supplier = Suppliers(
+                    supplier_name=Suppliername,
+                    supplier_location=Supplier_location,
+                    total_amount_received=0,  # No payment received yet
+                    credit_amount=credit_amount,  # Set initial credit amount
+                    email=email,
+                    phone_number=mobile_number,  # Use mobile_number as phone_number
+                    kra_pin=kra_pin,
+                    payment_method=payment_method,
+                    mobile_number=mobile_number,
+                    till_number=till_number,
+                    paybill_number=paybill_number,
+                    paybill_account=paybill_account,
+                    items_sold=json.dumps([itemname])
+                )
+                db.session.add(supplier)
+                db.session.flush()
+            else:
+                # Update existing supplier's credit
+                supplier.credit_amount = (supplier.credit_amount or 0) + credit_amount
+                
+                # Update payment details if provided and different
+                if payment_method:
+                    supplier.payment_method = payment_method
+                if mobile_number:
+                    supplier.mobile_number = mobile_number
+                if till_number:
+                    supplier.till_number = till_number
+                if paybill_number:
+                    supplier.paybill_number = paybill_number
+                if paybill_account:
+                    supplier.paybill_account = paybill_account
+                if kra_pin:
+                    supplier.kra_pin = kra_pin
+                
+                # Update items sold
+                if supplier.items_sold:
+                    try:
+                        items_list = json.loads(supplier.items_sold)
+                    except:
+                        items_list = supplier.items_sold if isinstance(supplier.items_sold, list) else []
+                else:
+                    items_list = []
+                    
+                if itemname not in items_list:
+                    items_list.append(itemname)
+                supplier.items_sold = json.dumps(items_list)
+                db.session.flush()
+
+            # Step 2: Add inventory record (unpaid status)
+            # ✅ Set user_id to None (null) since no JWT authentication
+            new_inventory = InventoryV2(
+                itemname=itemname,
+                initial_quantity=quantity,
+                quantity=quantity,
+                metric=metric,
+                unitCost=unitCost,
+                totalCost=totalCost,
+                amountPaid=0,  # No payment made
+                vat=0,  # No VAT for self-checkout
+                unitPrice=0,  # No sale price set
+                BatchNumber=batch_code,
+                user_id=None,  # ✅ No user_id since no authentication
+                Suppliername=Suppliername,
+                Supplier_location=Supplier_location,
+                ballance=totalCost,  # Full balance outstanding
+                note=note,
+                created_at=created_at,
+                source=source,
+                Trasnaction_type_credit=credit_amount,  # Credit amount
+                Transcation_type_debit=0,  # No debit
+                paymentRef=paymentRef,
+                payment_status=payment_status,  # 'unpaid'
+                credits_amount=credit_amount  # Amount owed
+            )
+            db.session.add(new_inventory)
+            db.session.flush()  # Get the inventory ID
+
+            # Step 3: Add supplier history (without payment details - they're on supplier)
+            supplier_history = SupplierHistory(
+                supplier_id=supplier.supplier_id,
+                amount_received=credit_amount,  # This is the credit amount
+                transaction_date=created_at,
+                item_bought=itemname,
+                payment_status=payment_status,  # 'unpaid'
+                credit_amount=credit_amount,  # Store credit amount
+                inventory_id=new_inventory.inventoryV2_id
+            )
+            db.session.add(supplier_history)
+
+            db.session.commit()
+
+            return {
+                'message': 'Self checkout inventory added successfully',
+                'inventory_id': new_inventory.inventoryV2_id,
+                'batch_number': batch_code,
+                'supplier_id': supplier.supplier_id,
+                'supplier_name': supplier.supplier_name,
+                'payment_status': payment_status,
+                'credit_amount': credit_amount,
+                'total_cost': totalCost,
+                'outstanding_balance': balance,
+                'payment_method': payment_method,
+                'items': [{
+                    'itemname': itemname,
+                    'quantity': quantity,
+                    'unitCost': unitCost,
+                    'totalCost': totalCost
+                }]
+            }, 201
+
+        except Exception as e:
+            db.session.rollback()
+            return {
+                'message': 'Error processing self checkout',
+                'error': str(e)
+            }, 500
+
+        
 class AllInventoryV2(Resource):
     @jwt_required()
    
@@ -2296,3 +2507,205 @@ class ProcessInventoryPayment(Resource):
                 'message': 'Error processing payment',
                 'error': str(e)
             }, 500
+
+
+
+class SasaPayProcessPayment(Resource):
+    """
+    Pays a supplier's outstanding inventory balance via SasaPay, using the
+    supplier's stored payment_method (till / paybill / mobile) instead of
+    a manual bank entry. On success, the SasaPay request ID becomes the
+    payment_reference.
+    """
+ 
+    @jwt_required()
+    def post(self):
+        data = request.get_json()
+ 
+        required_fields = ['inventory_id', 'amount_paid', 'source_account', 'sasapay_merchant_code']
+        if not all(field in data for field in required_fields):
+            return {'message': 'Missing required fields'}, 400
+ 
+        inventory_id = data.get('inventory_id')
+        amount_paid = float(data.get('amount_paid'))
+        source_account = data.get('source_account')
+        sasapay_merchant_code = data.get('sasapay_merchant_code')
+        notes = data.get('notes', '')
+ 
+        try:
+            # ---- Validate inventory ----
+            inventory = InventoryV2.query.get(inventory_id)
+            if not inventory:
+                return {'message': 'Inventory not found'}, 404
+ 
+            if inventory.ballance <= 0:
+                return {'message': 'This inventory has no outstanding balance'}, 400
+ 
+            if amount_paid <= 0:
+                return {'message': 'Payment amount must be greater than 0'}, 400
+ 
+            if amount_paid > inventory.ballance:
+                return {
+                    'message': f'Payment amount exceeds outstanding balance of {inventory.ballance}'
+                }, 400
+ 
+            # ---- Get supplier + their SasaPay payment details ----
+            supplier = Suppliers.query.filter_by(
+                supplier_name=inventory.Suppliername,
+                supplier_location=inventory.Supplier_location
+            ).first()
+ 
+            if not supplier:
+                return {'message': 'Supplier not found'}, 404
+ 
+            # ---- Get bank account (funds are still tracked against your books) ----
+            account = BankAccount.query.filter_by(Account_name=source_account).first()
+            if not account:
+                return {'message': f'Bank account "{source_account}" not found'}, 404
+ 
+            if account.Account_Balance < amount_paid:
+                return {'message': f'Insufficient balance in account "{source_account}"'}, 400
+ 
+            # ---- Build our own transaction reference before calling SasaPay ----
+            our_reference = f"SUP{supplier.supplier_id}-INV{inventory_id}-{uuid.uuid4().hex[:8]}"
+ 
+            # ---- Route to the right SasaPay method based on supplier's payment_method ----
+            method = (supplier.payment_method or '').lower()
+ 
+            if method == 'till':
+                if not supplier.till_number:
+                    return {'message': 'Supplier has no till_number configured'}, 400
+                sasapay_result = sasapay_service.pay_till(
+                    sender_merchant_code=sasapay_merchant_code,
+                    transaction_reference=our_reference,
+                    amount=amount_paid,
+                    till_number=supplier.till_number,
+                    account_reference=supplier.supplier_name,
+                    reason=f"Payment for {inventory.itemname}"
+                )
+ 
+            elif method == 'paybill':
+                if not supplier.paybill_number:
+                    return {'message': 'Supplier has no paybill_number configured'}, 400
+                sasapay_result = sasapay_service.pay_paybill(
+                    sender_merchant_code=sasapay_merchant_code,
+                    transaction_reference=our_reference,
+                    amount=amount_paid,
+                    paybill_number=supplier.paybill_number,
+                    account_reference=supplier.paybill_account or supplier.supplier_name,
+                    reason=f"Payment for {inventory.itemname}"
+                )
+ 
+            elif method == 'mobile':
+                if not supplier.mobile_number:
+                    return {'message': 'Supplier has no mobile_number configured'}, 400
+                sasapay_result = sasapay_service.initiate_b2c_payment(
+                    sender_merchant_code=sasapay_merchant_code,
+                    transaction_reference=our_reference,
+                    amount=amount_paid,
+                    receiver_number=supplier.mobile_number,
+                    reason=f"Payment for {inventory.itemname}"
+                )
+ 
+            else:
+                return {
+                    'message': f'Supplier has no valid payment_method configured (got "{supplier.payment_method}"). '
+                                f'Expected one of: till, paybill, mobile.'
+                }, 400
+ 
+            # ---- Bail out if SasaPay rejected the request outright ----
+            if not sasapay_result.get('status'):
+                return {
+                    'message': 'SasaPay payment request failed',
+                    'sasapay_response': sasapay_result
+                }, 502
+ 
+            sasapay_data = sasapay_result.get('data', {})
+            # Prefer SasaPay's own request ID; fall back to our generated reference
+            payment_reference = (
+                sasapay_data.get('B2BRequestID')
+                or sasapay_data.get('B2CRequestID')
+                or sasapay_data.get('ConversationID')
+                or our_reference
+            )
+ 
+            # ---- NOTE: SasaPay has only ACCEPTED the request at this point.       ----
+            # ---- Final success/failure arrives later via your callback endpoint.  ----
+            # ---- Committing the balance/inventory update here mirrors the        ----
+            # ---- existing ProcessInventoryPayment pattern, but means your books   ----
+            # ---- can say "paid" before SasaPay confirms the transfer landed.      ----
+            # ---- Consider moving this block into process_callback() keyed on     ----
+            # ---- payment_reference if you want it to only finalize on success.   ----
+ 
+            account.Account_Balance -= amount_paid
+ 
+            inventory.amountPaid += amount_paid
+            inventory.ballance -= amount_paid
+ 
+            if inventory.paymentRef:
+                inventory.paymentRef = f"{inventory.paymentRef}, {payment_reference}"
+            else:
+                inventory.paymentRef = payment_reference
+ 
+            if source_account not in ["Unknown", "External funding"]:
+                inventory.source = source_account
+ 
+            if inventory.ballance == 0:
+                inventory.payment_status = 'paid'
+                inventory.credits_amount = 0
+            else:
+                inventory.payment_status = 'partially_paid'
+                inventory.credits_amount = inventory.ballance
+ 
+            supplier.total_amount_received += amount_paid
+            if supplier.credit_amount:
+                supplier.credit_amount -= amount_paid
+ 
+            transaction = BankingTransaction(
+                account_id=account.id,
+                Transaction_type_debit=amount_paid,
+                Transaction_type_credit=None,
+            )
+            db.session.add(transaction)
+ 
+            supplier_history = SupplierHistory(
+                supplier_id=supplier.supplier_id,
+                amount_received=amount_paid,
+                transaction_date=datetime.utcnow(),
+                item_bought=inventory.itemname,
+                payment_status='processing',  # not yet confirmed by SasaPay callback
+                credit_amount=0,
+                inventory_id=inventory_id,
+            )
+            db.session.add(supplier_history)
+ 
+            inventory_payment = InventoryPayment(
+                inventory_id=inventory.inventoryV2_id,
+                amount_paid=amount_paid,
+                payment_reference=payment_reference
+            )
+            db.session.add(inventory_payment)
+ 
+            db.session.commit()
+ 
+            return {
+                'message': 'SasaPay payment initiated successfully',
+                'inventory_id': inventory_id,
+                'supplier_id': supplier.supplier_id,
+                'payment_method': method,
+                'amount_paid': amount_paid,
+                'new_balance': inventory.ballance,
+                'payment_status': inventory.payment_status,
+                'payment_reference': payment_reference,
+                'updated_source': inventory.source,
+                'updated_payment_ref': inventory.paymentRef,
+                'sasapay_response': sasapay_data
+            }, 200
+ 
+        except Exception as e:
+            db.session.rollback()
+            return {
+                'message': 'Error processing SasaPay payment',
+                'error': str(e)
+            }, 500
+ 

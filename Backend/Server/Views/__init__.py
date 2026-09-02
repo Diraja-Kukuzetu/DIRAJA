@@ -1,7 +1,9 @@
-from flask import Blueprint
+from flask import Blueprint, g, request
 from flask_restful import Api
+from flask_jwt_extended import verify_jwt_in_request, get_jwt
 
-api_endpoint = Blueprint 
+from app import db
+from tenant import  get_engine_for_tenant
 
 # add all file inputs 
 from Server.Views.Usersviews import (
@@ -50,7 +52,7 @@ from Server.Views.Expenses import (
 )
 
 from Server.Views.Customersviews import (
-    AddCustomer, GetAllCustomers, GetCustomerById, GetCustomersByShop
+    AddCustomer, GetAllCustomers, GetCustomerById, GetCustomersByShop,GetCustomerByNumber
 )
 
 from Server.Views.Employeeviews import (
@@ -63,7 +65,7 @@ from Server.Views.employeeloanview import (
 )
 
 from Server.Views.Sales import (
-    AddSale, SasaPaySaleResource , GetSales, GetSalesByShop, SalesResources, GetPaymentTotals,
+    AddSale, SasaPaySaleResource , GetSales, GetSalesByShop, SalesResources, GetPaymentTotals,GetSalesGraphData,
     SalesBalanceResource, TotalBalanceSummary,SasaPayPaymentStatusResource,
     UpdateSalePayment, GetUnpaidSales, PaymentMethodsResource,
     CapturePaymentResource, CreditHistoryResource, GetSingleSaleByShop,
@@ -94,7 +96,7 @@ from Server.Views.AccountBalances import (
 )
 
 from Server.Views.SpoiltStock import (
-    AddSpoiltStock, SpoiltStockResource, ApproveSpoiltStock,RejectSpoiltStock, 
+    AddSpoiltStock, SpoiltStockResource, ApproveSpoiltStock,RejectSpoiltStock,ApproveAllSpoiltStock,
     GetPendingSpoiltStock, SpoiltStockHistory, AddSpoiltFromInventory, SpoiltValue
 )
 
@@ -134,9 +136,9 @@ from Server.Views.ShopstockviewsV2 import (
 
 from Server.Views.InventoryV2Views import (
     GetInventoryByBatchV2, DistributeInventoryV2, DeleteShopStockV2,
-    GetTransferV2, GetTransferByIdV2, UpdateTransferV2, AddInventoryV2,ProcessInventoryPayment,
+    GetTransferV2, GetTransferByIdV2, UpdateTransferV2, AddInventoryV2,ProcessInventoryPayment,SelfCheckoutInventory,
     GetAllInventoryV2, AllInventoryV2, InventoryResourceByIdV2, StockDeletionResourceV2,
-    ManualTransferV2, ReceiveTransfer, DeclineTransfer, PendingTransfers,
+    ManualTransferV2, ReceiveTransfer, DeclineTransfer, PendingTransfers,SasaPayProcessPayment,
     ProcessInventoryV2
 )
 
@@ -215,9 +217,54 @@ from Server.Views.ETimsSale import  (
 )
 
 
-
-api_endpoint = Blueprint('auth',__name__,url_prefix='/api/diraja')
+# -------------------------------
+# Blueprint + API setup
+# -------------------------------
+api_endpoint = Blueprint('auth', __name__, url_prefix='/api/<tenant>')
 api = Api(api_endpoint)
+
+
+# -------------------------------
+# Tenant DB binding middleware
+# -------------------------------
+@api_endpoint.before_request
+def bind_tenant_db():
+    tenant = request.view_args.get('tenant')
+    engine = get_engine_for_tenant(tenant)   # aborts 404 if tenant unknown
+
+    db.session.remove()
+    db.session.configure(bind=engine)
+    g.tenant = tenant
+    request.view_args.pop('tenant', None)
+
+    # -------------------------------
+    # Tenant lock: if a JWT is present, its 'tenant' claim
+    # must match the tenant in the URL.
+    # -------------------------------
+    try:
+        verify_jwt_in_request(optional=True)  # decodes token if present; no-op if absent
+        claims = get_jwt()
+    except Exception:
+        claims = {}
+
+    token_tenant = claims.get('tenant') if claims else None
+    if token_tenant and token_tenant != tenant:
+        abort(401, description=f"This token is not valid for tenant '{tenant}'")
+
+
+@api_endpoint.teardown_request
+def cleanup_tenant_db(exc):
+    db.session.remove()
+
+
+# -------------------------------
+# Register all endpoints
+# (unchanged — keep every api.add_resource(...) line you already
+#  have here, e.g.:)
+# -------------------------------
+# api.add_resource(Report, '/send-report')
+# api.add_resource(CountUsers, '/countusers')
+# ... your existing 100+ api.add_resource(...) calls go here, untouched
 
 # add all endpoints 
 
@@ -311,6 +358,7 @@ api.add_resource(AddCustomer, '/newcustomer')
 api.add_resource(GetAllCustomers, '/allcustomers')  
 api.add_resource(GetCustomersByShop, '/customers/<shop_id>')
 api.add_resource(GetCustomerById, '/customer/<int:customer_id>')
+api.add_resource(GetCustomerByNumber, '/customers/by-number')
 
 #Sales 
 api.add_resource(AddSale, '/newsale')
@@ -415,6 +463,7 @@ api.add_resource(MultipleToOneTransfer,"/bulk-transfer")
 api.add_resource(AddSpoiltStock, '/newspoilt')
 api.add_resource(SpoiltStockResource, '/allspoilt')
 api.add_resource(ApproveSpoiltStock, '/spoilt/<int:record_id>/approve')
+api.add_resource(ApproveAllSpoiltStock, '/spoilt-stock/approve-all')
 api.add_resource(RejectSpoiltStock, '/spoilt/<int:record_id>/reject')
 api.add_resource(GetPendingSpoiltStock, '/spoilt/pending')
 api.add_resource(SpoiltStockHistory, '/spoilt/history')
@@ -493,7 +542,9 @@ api.add_resource(UpdateSupplier, '/suppliers/update/<int:supplier_id>')
 
 # Inventory V2 endpoints
 api.add_resource(AddInventoryV2, '/v2/newinventory')
+api.add_resource(SelfCheckoutInventory, '/self-checkout/inventory')
 api.add_resource(ProcessInventoryPayment, '/inventory/payment') 
+api.add_resource(SasaPayProcessPayment, '/sasapay/payment') 
 api.add_resource(GetAllInventoryV2, '/new/allinventories')
 api.add_resource(AllInventoryV2, '/v2/allinventories')
 api.add_resource(InventoryResourceByIdV2, '/v2/inventory/<int:inventoryV2_id>')

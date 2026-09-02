@@ -15,6 +15,7 @@ from Server.Models.ShopReport import ShopReport
 from sqlalchemy import func
 from datetime import datetime, date, timedelta
 import logging
+from flask import g
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,8 @@ class Addusers(Resource):
         db.session.commit()
 
         return {'message': 'User added successfully'}, 201
+
+
 
 
 class UserLogin(Resource):
@@ -123,18 +126,22 @@ class UserLogin(Resource):
         username = user.username
         user_role = user.role
 
-        # Create access token with additional claims including status
+        # Create access token with additional claims including status + tenant
         access_token = create_access_token(
             identity=user.users_id, 
             additional_claims={
                 'roles': [user_role],
                 'username': username,
                 'email': user.email,
-                'status': user.status
+                'status': user.status,
+                'tenant': g.tenant   # 🔑 lock this token to the tenant it was issued under
             }
         )
         
-        refresh_token = create_refresh_token(identity=user.users_id)
+        refresh_token = create_refresh_token(
+            identity=user.users_id,
+            additional_claims={'tenant': g.tenant}   # 🔑 lock refresh token too
+        )
 
         response_data = {
             "access_token": access_token,
@@ -207,6 +214,8 @@ class UserLoginWith2FA(Resource):
                 }), 401)
 
             # Complete login and generate tokens
+            # Unchanged — g.tenant is still set on this request's context,
+            # so _generate_login_response picks it up automatically.
             return UserLogin()._generate_login_response(user)
 
         except Exception as e:
@@ -214,7 +223,6 @@ class UserLoginWith2FA(Resource):
             return make_response(jsonify({
                 "error": "An error occurred during verification"
             }), 500)
-
 
 class Resend2FACode(Resource):
     """Resend 2FA verification code"""

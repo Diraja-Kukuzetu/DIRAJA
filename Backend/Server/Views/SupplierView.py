@@ -8,10 +8,10 @@ from sqlalchemy.exc import SQLAlchemyError
 
 
 class AddSupplier(Resource):
-    @jwt_required()
+   
     def post(self):
         data = request.get_json()
-        current_user_id = get_jwt_identity()
+       
 
         required_fields = [
             'supplier_name',
@@ -27,16 +27,30 @@ class AddSupplier(Resource):
 
         supplier_name = data.get('supplier_name')
         supplier_location = data.get('supplier_location')
-        email = data.get('email')  # Optional
-        phone_number = data.get('phone_number')  # Optional
-        credit_amount = data.get('credit_amount', 0.0)  # Optional credit amount, default to 0
+        email = data.get('email')
+        phone_number = data.get('phone_number')
+        credit_amount = data.get('credit_amount', 0.0)
+        kra_pin = data.get('kra_pin')
+        
+        # Payment details
+        payment_method = data.get('payment_method')
+        mobile_number = data.get('mobile_number')
+        till_number = data.get('till_number')
+        paybill_number = data.get('paybill_number')
+        paybill_account = data.get('paybill_account')
 
         new_supplier = Suppliers(
             supplier_name=supplier_name,
             supplier_location=supplier_location,
             email=email,
             phone_number=phone_number,
-            credit_amount=float(credit_amount)  # Added credit_amount
+            credit_amount=float(credit_amount),
+            kra_pin=kra_pin,
+            payment_method=payment_method,
+            mobile_number=mobile_number,
+            till_number=till_number,
+            paybill_number=paybill_number,
+            paybill_account=paybill_account
         )
 
         db.session.add(new_supplier)
@@ -57,7 +71,7 @@ class AddSupplier(Resource):
 
 
 class GetAllSuppliers(Resource):
-    @jwt_required()
+
     def get(self):
         try:
             suppliers = Suppliers.query.all()
@@ -69,9 +83,15 @@ class GetAllSuppliers(Resource):
                     'supplier_name': supplier.supplier_name,
                     'supplier_location': supplier.supplier_location,
                     'total_amount_received': supplier.total_amount_received,
-                    'credit_amount': supplier.credit_amount,  # Added credit_amount
+                    'credit_amount': supplier.credit_amount,
                     'email': supplier.email,
                     'phone_number': supplier.phone_number,
+                    'kra_pin': supplier.kra_pin,
+                    'payment_method': supplier.payment_method,
+                    'mobile_number': supplier.mobile_number,
+                    'till_number': supplier.till_number,
+                    'paybill_number': supplier.paybill_number,
+                    'paybill_account': supplier.paybill_account,
                     'items_sold': supplier.items_sold if supplier.items_sold else []
                 })
 
@@ -85,7 +105,7 @@ class GetAllSuppliers(Resource):
 
 
 class GetSingleSupplier(Resource):
-    @jwt_required()
+  
     def get(self, supplier_id):
         try:
             supplier = Suppliers.query.filter_by(supplier_id=supplier_id).first()
@@ -102,7 +122,10 @@ class GetSingleSupplier(Resource):
                 'history_id': h.history_id,
                 'amount_received': h.amount_received,
                 'item_bought': h.item_bought,
-                'transaction_date': h.transaction_date.strftime("%Y-%m-%d %H:%M:%S")
+                'transaction_date': h.transaction_date.strftime("%Y-%m-%d %H:%M:%S"),
+                'payment_status': h.payment_status,
+                'credit_amount': h.credit_amount,
+                'inventory_id': h.inventory_id
             } for h in histories]
 
             supplier_data = {
@@ -110,9 +133,15 @@ class GetSingleSupplier(Resource):
                 'supplier_name': supplier.supplier_name,
                 'supplier_location': supplier.supplier_location,
                 'total_amount_received': supplier.total_amount_received,
-                'credit_amount': supplier.credit_amount,  # Added credit_amount
+                'credit_amount': supplier.credit_amount,
                 'email': supplier.email,
                 'phone_number': supplier.phone_number,
+                'kra_pin': supplier.kra_pin,
+                'payment_method': supplier.payment_method,
+                'mobile_number': supplier.mobile_number,
+                'till_number': supplier.till_number,
+                'paybill_number': supplier.paybill_number,
+                'paybill_account': supplier.paybill_account,
                 'items_sold': supplier.items_sold if supplier.items_sold else [],
                 'history': history_list
             }
@@ -127,7 +156,7 @@ class GetSingleSupplier(Resource):
 
 
 class UpdateSupplier(Resource):
-    @jwt_required()
+    
     def put(self, supplier_id):
         try:
             supplier = Suppliers.query.filter_by(supplier_id=supplier_id).first()
@@ -146,8 +175,23 @@ class UpdateSupplier(Resource):
                 supplier.email = data['email']
             if 'phone_number' in data:
                 supplier.phone_number = data['phone_number']
-            if 'credit_amount' in data:  # Added credit_amount update
+            if 'credit_amount' in data:
                 supplier.credit_amount = float(data['credit_amount'])
+            if 'kra_pin' in data:
+                supplier.kra_pin = data['kra_pin']
+            
+            # Update payment details
+            if 'payment_method' in data:
+                supplier.payment_method = data['payment_method']
+            if 'mobile_number' in data:
+                supplier.mobile_number = data['mobile_number']
+            if 'till_number' in data:
+                supplier.till_number = data['till_number']
+            if 'paybill_number' in data:
+                supplier.paybill_number = data['paybill_number']
+            if 'paybill_account' in data:
+                supplier.paybill_account = data['paybill_account']
+            
             if 'items_sold' in data:
                 supplier.items_sold = data['items_sold']
 
@@ -160,9 +204,15 @@ class UpdateSupplier(Resource):
                     'supplier_name': supplier.supplier_name,
                     'supplier_location': supplier.supplier_location,
                     'total_amount_received': supplier.total_amount_received,
-                    'credit_amount': supplier.credit_amount,  # Added credit_amount
+                    'credit_amount': supplier.credit_amount,
                     'email': supplier.email,
                     'phone_number': supplier.phone_number,
+                    'kra_pin': supplier.kra_pin,
+                    'payment_method': supplier.payment_method,
+                    'mobile_number': supplier.mobile_number,
+                    'till_number': supplier.till_number,
+                    'paybill_number': supplier.paybill_number,
+                    'paybill_account': supplier.paybill_account,
                     'items_sold': supplier.items_sold if supplier.items_sold else []
                 }
             }, 200
@@ -262,7 +312,7 @@ class AddSupplierHistory(Resource):
                 'supplier': {
                     'supplier_id': supplier.supplier_id,
                     'total_amount_received': supplier.total_amount_received,
-                    'credit_amount': supplier.credit_amount  # Added credit_amount
+                    'credit_amount': supplier.credit_amount
                 }
             }, 201
 
@@ -295,19 +345,83 @@ class GetSupplierHistory(Resource):
                 'history_id': h.history_id,
                 'amount_received': h.amount_received,
                 'item_bought': h.item_bought,
-                'transaction_date': h.transaction_date.strftime("%Y-%m-%d %H:%M:%S")
+                'transaction_date': h.transaction_date.strftime("%Y-%m-%d %H:%M:%S"),
+                'payment_status': h.payment_status,
+                'credit_amount': h.credit_amount,
+                'inventory_id': h.inventory_id
             } for h in histories]
 
             return {
                 'supplier_id': supplier_id,
                 'supplier_name': supplier.supplier_name,
                 'total_amount_received': supplier.total_amount_received,
-                'credit_amount': supplier.credit_amount,  # Added credit_amount
+                'credit_amount': supplier.credit_amount,
                 'history': history_list
             }, 200
 
         except Exception as e:
             return {
                 'error': 'Failed to fetch supplier history',
+                'details': str(e)
+            }, 500
+
+
+class GetSupplierByPhone(Resource):
+    @jwt_required()
+    def get(self, phone_number):
+        """Get supplier by phone number"""
+        try:
+            # Clean phone number (remove spaces, etc.)
+            clean_phone = phone_number.replace(' ', '').strip()
+            
+            supplier = Suppliers.query.filter(
+                Suppliers.phone_number.like(f'%{clean_phone}%')
+            ).first()
+
+            if not supplier:
+                return {
+                    'message': 'Supplier not found',
+                    'found': False
+                }, 404
+
+            # Get supplier history (last 5 transactions)
+            histories = SupplierHistory.query.filter_by(
+                supplier_id=supplier.supplier_id
+            ).order_by(
+                SupplierHistory.transaction_date.desc()
+            ).limit(5).all()
+
+            history_list = [{
+                'history_id': h.history_id,
+                'amount_received': h.amount_received,
+                'item_bought': h.item_bought,
+                'transaction_date': h.transaction_date.strftime("%Y-%m-%d %H:%M:%S"),
+                'payment_status': h.payment_status
+            } for h in histories]
+
+            return {
+                'found': True,
+                'supplier': {
+                    'supplier_id': supplier.supplier_id,
+                    'supplier_name': supplier.supplier_name,
+                    'supplier_location': supplier.supplier_location,
+                    'total_amount_received': supplier.total_amount_received,
+                    'credit_amount': supplier.credit_amount,
+                    'email': supplier.email,
+                    'phone_number': supplier.phone_number,
+                    'kra_pin': supplier.kra_pin,
+                    'payment_method': supplier.payment_method,
+                    'mobile_number': supplier.mobile_number,
+                    'till_number': supplier.till_number,
+                    'paybill_number': supplier.paybill_number,
+                    'paybill_account': supplier.paybill_account,
+                    'items_sold': supplier.items_sold if supplier.items_sold else [],
+                    'recent_history': history_list
+                }
+            }, 200
+
+        except Exception as e:
+            return {
+                'error': 'Failed to fetch supplier by phone',
                 'details': str(e)
             }, 500

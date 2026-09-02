@@ -63,6 +63,25 @@ Columns:
 - amount_paid (FLOAT)
 - payment_method (VARCHAR(50))
 - created_at (DATETIME)
+- loyalty_points (INTEGER)
+- total_spent (FLOAT)
+- points_earned_total (INTEGER)
+- points_redeemed_total (INTEGER)
+- loyalty_tier (VARCHAR(20))
+- last_purchase_date (DATETIME)
+- is_loyalty_registered (BOOLEAN)
+- loyalty_registration_date (DATETIME)
+
+Table: loyalty_transactions
+Columns:
+- transaction_id (INTEGER)
+- customer_id (INTEGER)
+- points_earned (INTEGER)
+- points_redeemed (INTEGER)
+- transaction_type (VARCHAR(20))
+- amount_spent (FLOAT)
+- description (VARCHAR(255))
+- created_at (DATETIME)
 
 Table: employees
 Columns:
@@ -346,6 +365,12 @@ Columns:
 - credit_amount (FLOAT)
 - email (VARCHAR(255))
 - phone_number (VARCHAR(50))
+- kra_pin (VARCHAR(50))
+- payment_method (VARCHAR(50))
+- mobile_number (VARCHAR(50))
+- till_number (VARCHAR(50))
+- paybill_number (VARCHAR(50))
+- paybill_account (VARCHAR(50))
 - items_sold (JSON)
 
 Table: supplier_history
@@ -507,6 +532,7 @@ Relationships:
 - customers.shop_id → shops.shops_id
 - customers.sales_id → sales.sales_id
 - customers.user_id → users.users_id
+- loyalty_transactions.customer_id → customers.customer_id
 - employees.shop_id → shops.shops_id
 - employeesLoan.employee_id → employees.employee_id
 - stock.shop_id → shops.shops_id
@@ -542,10 +568,7 @@ Relationships:
 - supplier_history.supplier_id → suppliers.supplier_id
 - supplier_history.inventory_id → inventoryV2.inventoryV2_id
 - inventoryV2.user_id → users.users_id
-<<<<<<< HEAD
-=======
 - inventory_payments.inventory_id → inventoryV2.inventoryV2_id
->>>>>>> 1ece5c2 (Added category sales grouping, Added payment tabble for inventory, Added spoilt stock feature for inventory)
 - shop_stock_v2.shop_id → shops.shops_id
 - shop_stock_v2.transferv2_id → transfers.transfer_id
 - shop_stock_v2.inventoryv2_id → inventoryV2.inventoryV2_id
@@ -555,13 +578,9 @@ Relationships:
 - permission.user_id → users.users_id
 - task_manager.user_id → users.users_id
 - task_manager.assignee_id → users.users_id
-<<<<<<< HEAD
-- task_manager.parent_task_id → task_manager.task_id
-=======
 - task_manager.assignee2_id → users.users_id
 - task_manager.parent_task_id → task_manager.task_id
 - task_manager.shop_id → shops.shops_id
->>>>>>> 1ece5c2 (Added category sales grouping, Added payment tabble for inventory, Added spoilt stock feature for inventory)
 - task_comments.task_id → task_manager.task_id
 - task_comments.user_id → users.users_id
 - task_comments.parent_comment_id → task_comments.comment_id
