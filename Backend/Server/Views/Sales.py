@@ -3456,6 +3456,106 @@ class DeliverySalesSummary(Resource):
                 "error": "An error occurred while fetching delivery sales summary",
                 "details": str(e)
             }, 500
+            
+class TotalAmountPaidDeliverySales(Resource):
+    @jwt_required()
+    def get(self):
+        # Get period from query parameters
+        period = request.args.get('period', 'today')
+
+        today = datetime.utcnow()
+        start_date = None
+        end_date = None
+
+        # Set date range
+        if period == 'today':
+            start_date = today.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+
+        elif period == 'week':
+            start_date = today - timedelta(days=7)
+
+        elif period == 'month':
+            start_date = today - timedelta(days=30)
+
+        elif period == 'date':
+            date_str = request.args.get('date')
+
+            if not date_str:
+                return {
+                    "message": "Date parameter is required when period is 'date'"
+                }, 400
+
+            try:
+                start_date = datetime.strptime(
+                    date_str, "%Y-%m-%d"
+                ).replace(
+                    hour=0,
+                    minute=0,
+                    second=0,
+                    microsecond=0
+                )
+
+                end_date = start_date.replace(
+                    hour=23,
+                    minute=59,
+                    second=59,
+                    microsecond=999999
+                )
+
+            except ValueError:
+                return {
+                    "message": "Invalid date format. Use YYYY-MM-DD."
+                }, 400
+
+        elif period == 'alltime':
+            pass
+
+        else:
+            return {
+                "message": "Invalid period specified"
+            }, 400
+
+        try:
+            # Get total paid delivery sales
+            query = db.session.query(
+                func.sum(SalesPaymentMethods.amount_paid)
+            ).join(
+                Sales,
+                Sales.sales_id == SalesPaymentMethods.sale_id
+            ).filter(
+                Sales.delivery == True
+            )
+
+            # Apply date filters
+            if period != 'alltime':
+
+                if period == 'date':
+                    query = query.filter(
+                        Sales.created_at.between(start_date, end_date)
+                    )
+
+                else:
+                    query = query.filter(
+                        Sales.created_at >= start_date
+                    )
+
+            total_paid = query.scalar() or 0
+
+            return {
+                "total_sales_amount": "{:,.2f}".format(total_paid),
+                "total_paid": "{:,.2f}".format(total_paid),
+                "total_unpaid": "0.00",
+                "period": period
+            }, 200
+
+        except SQLAlchemyError as e:
+            db.session.rollback()
+
+            return {
+                "error": f"Database error: {str(e)}"
+            }, 500
 
 
 class ProductEarningsSummary(Resource):
