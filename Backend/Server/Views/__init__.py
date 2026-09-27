@@ -65,7 +65,7 @@ from Server.Views.employeeloanview import (
 )
 
 from Server.Views.Sales import (
-    AddSale, SasaPaySaleResource , GetSales, GetSalesByShop, SalesResources, GetPaymentTotals,GetSalesGraphData,
+    AddSale, GetAllDeliverySales, SasaPaySaleResource , GetSales, GetSalesByShop, SalesResources, GetPaymentTotals,GetSalesGraphData,
     SalesBalanceResource, TotalBalanceSummary,SasaPayPaymentStatusResource,
     UpdateSalePayment, GetUnpaidSales, PaymentMethodsResource,
     CapturePaymentResource, CreditHistoryResource, GetSingleSaleByShop,
@@ -74,7 +74,7 @@ from Server.Views.Sales import (
 )
 
 from Server.Views.ManagerDashbordViews import (
-    TotalAmountPaidExpenses, TotalAmountPaidSalesPerShop, CountEmployees,
+    TotalAmountPaidDeliverySales, TotalAmountPaidExpenses, TotalAmountPaidSalesPerShop, CountEmployees,
     CountShops, TotalAmountPaidAllSales, TotalAmountPaidPerShop,
     TotalAmountPaidPurchases, StockAlert, TotalSalesByShop,
     TotalUnpaidAmountAllSales, TotalAmountPaidForMabanda,
@@ -367,6 +367,7 @@ api.add_resource(SasaPayPaymentStatusResource,'/sasapay/payment/status/<string:c
 api.add_resource(GetSales, '/allsales')
 api.add_resource(GetSalesGraphData, '/graphs/sales-data')
 api.add_resource(GetSalesByShop,'/sales/shop/<int:shop_id>')
+api.add_resource(GetAllDeliverySales,'/sales/delivery')
 api.add_resource(SalesResources,'/sale/<int:sales_id>')
 api.add_resource(GetPaymentTotals, '/get_payment_totals')
 api.add_resource(SalesBalanceResource, '/sales/totalsalesbalance')
@@ -409,6 +410,7 @@ api.add_resource(CountShops, '/totalshops')
 api.add_resource(CountEmployees,'/totalemployees')
 api.add_resource(TotalAmountPaidExpenses,'/totalexpenses')
 api.add_resource(TotalAmountPaidSalesPerShop,'/totalsales')
+api.add_resource(TotalAmountPaidDeliverySales,'/totaldeliverysales')
 api.add_resource(TotalAmountPaidAllSales,"/allshopstotal")
 api.add_resource(TotalAmountPaidPurchases,"/totalpurchases")
 api.add_resource(TotalAmountPaidPurchasesInventory,"/Invetory-purchase")

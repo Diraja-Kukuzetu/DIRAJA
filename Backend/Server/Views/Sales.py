@@ -1550,6 +1550,220 @@ class GetSalesByShop(Resource):
 
         except Exception as e:
             return {"error": f"An error occurred: {str(e)}"}, 500
+    
+        
+class GetAllDeliverySales(Resource):
+    @jwt_required()
+    def get(self):
+        try:
+            # Query params
+            page = int(request.args.get('page', 1))
+            limit = int(request.args.get('limit', 50))
+            search_query = request.args.get('search', '').lower()
+
+            # Date range params
+            start_date = request.args.get('start_date')
+            end_date = request.args.get('end_date')
+
+            offset = (page - 1) * limit
+
+            # ==========================================
+            # BASE QUERY - DELIVERY SALES ONLY
+            # ==========================================
+            sales_query = Sales.query.filter(
+                Sales.delivery == True
+            )
+
+            # ==========================================
+            # SEARCH FILTER
+            # ==========================================
+            if search_query:
+                sales_query = sales_query.join(SoldItem).filter(
+                    or_(
+                        Sales.customer_name.ilike(f'%{search_query}%'),
+                        SoldItem.item_name.ilike(f'%{search_query}%')
+                    )
+                )
+
+            # ==========================================
+            # DATE RANGE FILTER
+            # ==========================================
+            if start_date and end_date:
+                try:
+                    start = datetime.strptime(
+                        start_date, '%Y-%m-%d'
+                    ).date()
+
+                    end = datetime.strptime(
+                        end_date, '%Y-%m-%d'
+                    ).date()
+
+                    sales_query = sales_query.filter(
+                        db.func.date(Sales.created_at).between(
+                            start, end
+                        )
+                    )
+
+                except ValueError:
+                    return {
+                        "error": "Invalid date format. Use YYYY-MM-DD"
+                    }, 400
+
+            elif start_date:
+                try:
+                    start = datetime.strptime(
+                        start_date, '%Y-%m-%d'
+                    ).date()
+
+                    sales_query = sales_query.filter(
+                        db.func.date(Sales.created_at) >= start
+                    )
+
+                except ValueError:
+                    return {
+                        "error": "Invalid start_date format"
+                    }, 400
+
+            elif end_date:
+                try:
+                    end = datetime.strptime(
+                        end_date, '%Y-%m-%d'
+                    ).date()
+
+                    sales_query = sales_query.filter(
+                        db.func.date(Sales.created_at) <= end
+                    )
+
+                except ValueError:
+                    return {
+                        "error": "Invalid end_date format"
+                    }, 400
+
+            # ==========================================
+            # COUNT AFTER FILTERS
+            # ==========================================
+            total_sales = sales_query.count()
+
+            # ==========================================
+            # PAGINATION
+            # ==========================================
+            sales = (
+                sales_query
+                .order_by(Sales.created_at.desc())
+                .offset(offset)
+                .limit(limit)
+                .all()
+            )
+
+            if not sales:
+                return {
+                    "message": "No delivery sales found"
+                }, 404
+
+            sales_data = []
+
+            # ==========================================
+            # BUILD SALES DATA
+            # ==========================================
+            for sale in sales:
+
+                username = (
+                    sale.users.username
+                    if sale.users
+                    else "Unknown User"
+                )
+
+                shopname = (
+                    sale.shops.shopname
+                    if sale.shops
+                    else "Unknown Shop"
+                )
+
+                # Payment information
+                payment_data = [
+                    {
+                        "payment_method": payment.payment_method,
+                        "amount_paid": payment.amount_paid,
+                        "balance": payment.balance,
+                    }
+                    for payment in sale.payment
+                ]
+
+                total_amount_paid = sum(
+                    p["amount_paid"] or 0
+                    for p in payment_data
+                )
+
+                # Sold items
+                sold_items = [
+                    {
+                        "item_id": item.id,
+                        "item_name": item.item_name,
+                        "quantity": item.quantity,
+                        "metric": item.metric,
+                        "unit_price": item.unit_price,
+                        "total_price": item.total_price,
+                        "batch_number": item.BatchNumber,
+                        "stockv2_id": item.stockv2_id,
+                        "cost_of_sale": item.Cost_of_sale,
+                        "purchase_account": item.Purchase_account
+                    }
+                    for item in sale.items
+                ]
+
+                total_items_price = sum(
+                    item["total_price"] or 0
+                    for item in sold_items
+                )
+
+                sales_data.append({
+                    "sale_id": sale.sales_id,
+                    "user_id": sale.user_id,
+                    "username": username,
+
+                    # Shop information is still included
+                    # for each individual delivery sale
+                    "shop_id": sale.shop_id,
+                    "shop_name": shopname,
+
+                    "customer_name": sale.customer_name,
+                    "status": sale.status,
+                    "customer_number": sale.customer_number,
+
+                    "items": sold_items,
+                    "total_items_price": total_items_price,
+                    "total_amount_paid": total_amount_paid,
+                    "balance": sale.balance,
+
+                    "payment_methods": payment_data,
+
+                    "created_at": sale.created_at.strftime(
+                        '%Y-%m-%d %H:%M:%S'
+                    ),
+
+                    "note": sale.note,
+                    "delivery": sale.delivery,
+                    "promocode": sale.promocode
+                })
+
+            # ==========================================
+            # TOTAL PAGES
+            # ==========================================
+            total_pages = (
+                total_sales + limit - 1
+            ) // limit
+
+            return {
+                "total_sales": total_sales,
+                "sales": sales_data,
+                "current_page": page,
+                "total_pages": total_pages,
+            }, 200
+
+        except Exception as e:
+            return {
+                "error": f"An error occurred: {str(e)}"
+            }, 500
 
 
 

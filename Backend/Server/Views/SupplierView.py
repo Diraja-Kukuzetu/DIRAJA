@@ -74,10 +74,21 @@ class GetAllSuppliers(Resource):
 
     def get(self):
         try:
-            suppliers = Suppliers.query.all()
+            suppliers = Suppliers.query.order_by(
+                Suppliers.credit_amount.desc()
+            ).all()
+
             supplier_list = []
+            total_credit_amount = 0
+            credit_count = 0
 
             for supplier in suppliers:
+                credit_amount = supplier.credit_amount or 0
+                total_credit_amount += credit_amount
+
+                if credit_amount > 0:
+                    credit_count += 1
+
                 supplier_list.append({
                     'supplier_id': supplier.supplier_id,
                     'supplier_name': supplier.supplier_name,
@@ -95,7 +106,11 @@ class GetAllSuppliers(Resource):
                     'items_sold': supplier.items_sold if supplier.items_sold else []
                 })
 
-            return {'suppliers': supplier_list}, 200
+            return {
+                'suppliers': supplier_list,
+                'total_credit_amount': total_credit_amount,
+                'credit_count': credit_count
+            }, 200
 
         except Exception as e:
             return {

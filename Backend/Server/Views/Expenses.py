@@ -747,7 +747,7 @@ class CreditPaymentResource(Resource):
         amount = data.get('amount')
         payment_ref = data.get('payment_ref')
         payment_method = data.get('payment_method', 'Cash')
-        notes = data.get('notes')                                   
+        notes = data.get('notes')
         source = data.get('source')
 
         # Validations
@@ -761,17 +761,26 @@ class CreditPaymentResource(Resource):
             return {"error": "Payment source is required"}, 400
 
         if amount > expense.outstanding_balance:
-            return {"error": f"Payment amount exceeds outstanding balance of {expense.outstanding_balance}"}, 400
+            return {
+                "error": f"Payment amount exceeds outstanding balance of {expense.outstanding_balance}"
+            }, 400
 
         try:
             # Handle bank deduction if payment is from bank account
             if source not in ["External funding", "Cash"]:
-                account = BankAccount.query.filter_by(Account_name=source).first()
+                account = BankAccount.query.filter_by(
+                    Account_name=source
+                ).first()
+
                 if not account:
-                    return {"error": f"Bank account '{source}' not found"}, 404
+                    return {
+                        "error": f"Bank account '{source}' not found"
+                    }, 404
 
                 if account.Account_Balance < amount:
-                    return {"error": f"Insufficient balance in account '{source}'"}, 400
+                    return {
+                        "error": f"Insufficient balance in account '{source}'"
+                    }, 400
 
                 account.Account_Balance -= amount
                 db.session.add(account)
@@ -785,7 +794,7 @@ class CreditPaymentResource(Resource):
                 )
                 db.session.add(transaction)
 
-            # Record payment with source
+            # Record payment
             payment = CreditPayments(
                 expense_id=expense_id,
                 amount=amount,
@@ -800,13 +809,28 @@ class CreditPaymentResource(Resource):
             # Update expense
             expense.amountPaid += amount
             expense.update_payment_status()
-            
-            # Update creditor totals if expense has creditor
+
+            # Update creditor totals
+            creditor = None
+
             if expense.creditor_id:
                 creditor = Creditor.query.get(expense.creditor_id)
-                if creditor:
-                    creditor.update_totals()
 
+                if creditor:
+                    # Increase total amount paid
+                    creditor.total_amount_paid = (
+                        (creditor.total_amount_paid or 0) + amount
+                    )
+
+                    # Reduce total amount owed
+                    creditor.total_amount_owed = max(
+                        0,
+                        (creditor.total_amount_owed or 0) - amount
+                    )
+
+                    db.session.add(creditor)
+
+            # Commit all changes
             db.session.commit()
 
             return {
@@ -816,12 +840,21 @@ class CreditPaymentResource(Resource):
                 "amount_paid": amount,
                 "source": source,
                 "remaining_outstanding": expense.outstanding_balance,
-                "payment_status": expense.payment_status
+                "payment_status": expense.payment_status,
+                "creditor_id": expense.creditor_id,
+                "creditor_total_amount_paid": (
+                    creditor.total_amount_paid if creditor else None
+                ),
+                "creditor_total_amount_owed": (
+                    creditor.total_amount_owed if creditor else None
+                )
             }, 200
 
         except Exception as e:
             db.session.rollback()
-            return {"error": str(e)}, 500
+            return {
+                "error": str(e)
+            }, 500
 
     @jwt_required()
     @check_role('manager')

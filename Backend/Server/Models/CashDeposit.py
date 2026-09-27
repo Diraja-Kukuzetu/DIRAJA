@@ -16,7 +16,7 @@ class CashDeposits(db.Model):
 
     # Relationships
     users = db.relationship('Users', backref='cash_deposits', lazy=True)
-    shops = db.relationship('Shops', backref='cash_deposits', lazy=True)
+    shops  = db.relationship('Shops', backref='cash_deposits', lazy=True)
 
     def __repr__(self):
         return (f"CashDeposit(deposit_id={self.deposit_id}, user_id={self.user_id}, "

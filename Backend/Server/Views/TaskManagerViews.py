@@ -830,6 +830,7 @@ class TaskResource(Resource):
         # Store old values for change tracking
         changes = []
         old_assignee_id = task.assignee_id
+        old_assignee2_id = task.assignee2_id
         old_due_date = task.due_date
         old_status = task.status
         old_priority = task.priority
@@ -840,16 +841,48 @@ class TaskResource(Resource):
             # Update task description with tracking
             if data.get("task") and data["task"] != old_task_description:
                 new_task = data["task"]
-                changes.append(f"Task description changed from '{old_task_description}' to '{new_task}'")
+                changes.append(
+                    f"Task description changed from '{old_task_description}' to '{new_task}'"
+                )
                 task.task = data["task"]
             
-            # Update assignee with tracking
+            # Update primary assignee with tracking
             if data.get("assignee_id") and data["assignee_id"] != old_assignee_id:
                 old_assignee_name = self._get_user_name(old_assignee_id) or "Unassigned"
                 new_assignee_name = self._get_user_name(data["assignee_id"]) or "Unassigned"
+
                 task.assignee_id = data["assignee_id"]
-                changes.append(f"Task reassigned from {old_assignee_name} to {new_assignee_name}")
-            
+
+                changes.append(
+                    f"Task reassigned from {old_assignee_name} to {new_assignee_name}"
+                )
+
+            # Update second assignee with tracking
+            if "assignee2_id" in data:
+                new_assignee2_id = data["assignee2_id"]
+
+                # Only make a change if the value is actually different
+                if new_assignee2_id != old_assignee2_id:
+
+                    old_assignee2_name = (
+                        self._get_user_name(old_assignee2_id)
+                        if old_assignee2_id
+                        else "Unassigned"
+                    )
+
+                    new_assignee2_name = (
+                        self._get_user_name(new_assignee2_id)
+                        if new_assignee2_id
+                        else "Unassigned"
+                    )
+
+                    task.assignee2_id = new_assignee2_id
+
+                    changes.append(
+                        f"Second assignee changed from "
+                        f"{old_assignee2_name} to {new_assignee2_name}"
+                    )
+                
             # Update status with tracking
             if data.get("status") and data["status"] != old_status:
                 new_status = data["status"]
@@ -877,53 +910,103 @@ class TaskResource(Resource):
             if data.get("due_date"):
                 due_date_str = data["due_date"]
                 try:
-                    new_due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d %H:%M:%S")
+                    new_due_date = datetime.datetime.strptime(
+                        due_date_str, "%Y-%m-%d %H:%M:%S"
+                    )
                 except ValueError:
                     try:
-                        new_due_date = datetime.datetime.strptime(due_date_str, "%Y-%m-%d")
+                        new_due_date = datetime.datetime.strptime(
+                            due_date_str, "%Y-%m-%d"
+                        )
                     except ValueError:
-                        return {"error": "Invalid date format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS"}, 400
-                
+                        return {
+                            "error": "Invalid date format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS"
+                        }, 400
+                    
                 if old_due_date != new_due_date:
-                    old_value = old_due_date.strftime("%Y-%m-%d %H:%M:%S") if old_due_date else "Not set"
+                    old_value = (
+                        old_due_date.strftime("%Y-%m-%d %H:%M:%S")
+                        if old_due_date
+                        else "Not set"
+                    )
                     new_value = new_due_date.strftime("%Y-%m-%d %H:%M:%S")
-                    changes.append(f"Due date changed from {old_value} to {new_value}")
+
+                    changes.append(
+                        f"Due date changed from {old_value} to {new_value}"
+                    )
                     task.due_date = new_due_date
             
             # Update recurring task settings with tracking
-            if data.get("is_recurring") is not None and data["is_recurring"] != task.is_recurring:
+            if (
+                data.get("is_recurring") is not None
+                and data["is_recurring"] != task.is_recurring
+            ):
                 old_value = "Yes" if task.is_recurring else "No"
                 new_value = "Yes" if data["is_recurring"] else "No"
-                changes.append(f"Recurring task setting changed from {old_value} to {new_value}")
+
+                changes.append(
+                    f"Recurring task setting changed from {old_value} to {new_value}"
+                )
                 task.is_recurring = data["is_recurring"]
             
-            if data.get("recurrence_pattern") and data["recurrence_pattern"] != task.recurrence_pattern:
+            if (
+                data.get("recurrence_pattern")
+                and data["recurrence_pattern"] != task.recurrence_pattern
+            ):
                 old_value = task.recurrence_pattern or "Not set"
                 new_value = data["recurrence_pattern"]
-                changes.append(f"Recurrence pattern changed from {old_value} to {new_value}")
+
+                changes.append(
+                    f"Recurrence pattern changed from {old_value} to {new_value}"
+                )
                 task.recurrence_pattern = data["recurrence_pattern"]
             
-            if data.get("recurrence_interval") and data["recurrence_interval"] != task.recurrence_interval:
+            if (
+                data.get("recurrence_interval")
+                and data["recurrence_interval"] != task.recurrence_interval
+            ):
                 old_value = task.recurrence_interval or 1
                 new_value = data["recurrence_interval"]
-                changes.append(f"Recurrence interval changed from {old_value} to {new_value}")
+
+                changes.append(
+                    f"Recurrence interval changed from {old_value} to {new_value}"
+                )
                 task.recurrence_interval = data["recurrence_interval"]
             
             if data.get("recurrence_end_date"):
                 try:
-                    new_end_date = datetime.datetime.strptime(data["recurrence_end_date"], "%Y-%m-%d")
+                    new_end_date = datetime.datetime.strptime(
+                        data["recurrence_end_date"], "%Y-%m-%d"
+                    )
+
                     if task.recurrence_end_date != new_end_date:
-                        old_value = task.recurrence_end_date.strftime("%Y-%m-%d") if task.recurrence_end_date else "Never"
+                        old_value = (
+                            task.recurrence_end_date.strftime("%Y-%m-%d")
+                            if task.recurrence_end_date
+                            else "Never"
+                        )
                         new_value = new_end_date.strftime("%Y-%m-%d")
-                        changes.append(f"Recurrence end date changed from {old_value} to {new_value}")
+
+                        changes.append(
+                            f"Recurrence end date changed from {old_value} to {new_value}"
+                        )
                         task.recurrence_end_date = new_end_date
+
                 except ValueError:
-                    return {"error": "Invalid recurrence end date format. Use YYYY-MM-DD"}, 400
+                    return {
+                        "error": "Invalid recurrence end date format. Use YYYY-MM-DD"
+                    }, 400
             
-            if data.get("max_recurrences") and data["max_recurrences"] != task.max_recurrences:
+            if (
+                data.get("max_recurrences")
+                and data["max_recurrences"] != task.max_recurrences
+            ):
                 old_value = task.max_recurrences or "Unlimited"
                 new_value = data["max_recurrences"]
-                changes.append(f"Max recurrences changed from {old_value} to {new_value}")
+
+                changes.append(
+                    f"Max recurrences changed from {old_value} to {new_value}"
+                )
                 task.max_recurrences = data["max_recurrences"]
 
             # If there are changes, add a system comment
@@ -933,7 +1016,11 @@ class TaskResource(Resource):
                 else:
                     comment_text = "Multiple changes made: " + "; ".join(changes)
                 
-                self._add_system_comment(task_id, comment_text, current_user_id)
+                self._add_system_comment(
+                    task_id,
+                    comment_text,
+                    current_user_id
+                )
 
             db.session.commit()
 
@@ -941,6 +1028,7 @@ class TaskResource(Resource):
             updated_task = TaskManager.query.options(
                 joinedload(TaskManager.assigner),
                 joinedload(TaskManager.assignee),
+                joinedload(TaskManager.assignee2),
                 joinedload(TaskManager.shop),
                 joinedload(TaskManager.comments).joinedload(TaskComment.user),
                 joinedload(TaskManager.evaluation),
@@ -950,7 +1038,11 @@ class TaskResource(Resource):
             return {
                 "message": "Task updated successfully",
                 "changes_made": changes,
-                "task": updated_task.to_dict(include_comments=True, include_evaluation=True, include_recurrence_info=True)
+                "task": updated_task.to_dict(
+                    include_comments=True,
+                    include_evaluation=True,
+                    include_recurrence_info=True
+                )
             }, 200
 
         except Exception as e:
