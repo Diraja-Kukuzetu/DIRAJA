@@ -3,6 +3,9 @@ from Server.Models.Users import Users
 from Server.Models.Shops import Shops
 from Server.Models.Employees import Employees
 from Server.Models.StockReport import StockReport
+from Server.Models.Sales import Sales
+from Server.Models.Meritpoints import MeritPoints
+from Server.Models.MeritLedger import MeritLedger
 from Server.Models.TwoFactorAuth import TwoFactorAuth
 from app import db
 import bcrypt
@@ -604,6 +607,221 @@ class PostShopReport(Resource):
                 "longitude": report.longitude
             }
         }, 201
+        
+class CheckShopOpeningReports(Resource):
+    @jwt_required()
+    @check_role('manager')
+    def post(self):
+        try:
+            # ---------------------------------------------------------
+            # 1. Get yesterday's date in EAT (UTC+3)
+            # ---------------------------------------------------------
+            now_utc = datetime.utcnow()
+            now_eat = now_utc + timedelta(hours=3)
+
+            yesterday_eat = now_eat.date() - timedelta(days=1)
+
+            # Start and end of yesterday in EAT
+            start_eat = datetime.combine(
+                yesterday_eat,
+                datetime.min.time()
+            )
+
+            end_eat = datetime.combine(
+                yesterday_eat,
+                datetime.max.time()
+            )
+
+            # Convert EAT to UTC for database queries
+            start_utc = start_eat - timedelta(hours=3)
+            end_utc = end_eat - timedelta(hours=3)
+
+            # ---------------------------------------------------------
+            # 2. Find the demerit reason
+            # ---------------------------------------------------------
+            demerit = MeritPoints.query.filter(
+                func.lower(MeritPoints.reason) ==
+                "not reporting to shop in the app"
+            ).first()
+
+            if not demerit:
+                return {
+                    "message": (
+                        "Demerit reason 'not reporting to shop in the app' "
+                        "was not found."
+                    )
+                }, 404
+
+            # ---------------------------------------------------------
+            # 3. Get ALL users
+            # ---------------------------------------------------------
+            users = Users.query.all()
+
+            deducted = []
+            skipped = []
+
+            # ---------------------------------------------------------
+            # 4. Check each user
+            # ---------------------------------------------------------
+            for user in users:
+
+                user_id = user.users_id
+
+                # -----------------------------------------------------
+                # 5. Check if the user reported opening a shop yesterday
+                # -----------------------------------------------------
+                report = ShopReport.query.filter(
+                    ShopReport.user_id == user_id,
+                    ShopReport.reported_at >= start_utc,
+                    ShopReport.reported_at <= end_utc
+                ).first()
+
+                # -----------------------------------------------------
+                # If report exists -> skip this user
+                # -----------------------------------------------------
+                if report:
+                    skipped.append({
+                        "user_id": user_id,
+                        "username": user.username,
+                        "reason": "Shop opening report submitted"
+                    })
+                    continue
+
+                # -----------------------------------------------------
+                # 6. User did NOT report.
+                #    Check if they made ANY sale yesterday.
+                # -----------------------------------------------------
+                sale = Sales.query.filter(
+                    Sales.user_id == user_id,
+                    Sales.created_at >= start_utc,
+                    Sales.created_at <= end_utc
+                ).first()
+
+                # -----------------------------------------------------
+                # No sales -> nothing happens
+                # -----------------------------------------------------
+                if not sale:
+                    skipped.append({
+                        "user_id": user_id,
+                        "username": user.username,
+                        "reason": "No sales recorded"
+                    })
+                    continue
+
+                # -----------------------------------------------------
+                # 7. Find the employee using Users.employee_id
+                # -----------------------------------------------------
+                if not user.employee_id:
+                    skipped.append({
+                        "user_id": user_id,
+                        "username": user.username,
+                        "reason": "User is not linked to an employee"
+                    })
+                    continue
+
+                employee = Employees.query.get(user.employee_id)
+
+                if not employee:
+                    skipped.append({
+                        "user_id": user_id,
+                        "username": user.username,
+                        "employee_id": user.employee_id,
+                        "reason": "Employee not found"
+                    })
+                    continue
+
+                # -----------------------------------------------------
+                # 8. Create a unique comment for this violation date
+                # -----------------------------------------------------
+                comment = (
+                    f"Not reporting to shop in the app on "
+                    f"{yesterday_eat}"
+                )
+
+                # -----------------------------------------------------
+                # 9. Prevent duplicate demerit
+                # -----------------------------------------------------
+                existing_demerit = MeritLedger.query.filter(
+                    MeritLedger.employee_id == employee.employee_id,
+                    MeritLedger.merit_id == demerit.meritpoint_id,
+                    MeritLedger.comment == comment
+                ).first()
+
+                if existing_demerit:
+                    skipped.append({
+                        "user_id": user_id,
+                        "username": user.username,
+                        "employee_id": employee.employee_id,
+                        "reason": "Demerit already applied"
+                    })
+                    continue
+
+                # -----------------------------------------------------
+                # 10. Save old points
+                # -----------------------------------------------------
+                old_points = employee.merit_points
+
+                # -----------------------------------------------------
+                # 11. Deduct merit points
+                # -----------------------------------------------------
+                employee.merit_points += demerit.point
+                employee.merit_points_updated_at = datetime.utcnow()
+
+                # -----------------------------------------------------
+                # 12. Create MeritLedger entry
+                # -----------------------------------------------------
+                ledger_entry = MeritLedger(
+                    employee_id=employee.employee_id,
+                    merit_id=demerit.meritpoint_id,
+                    comment=comment,
+                    resulting_points=employee.merit_points,
+                    date=datetime.utcnow()
+                )
+
+                db.session.add(ledger_entry)
+
+                # -----------------------------------------------------
+                # 13. Flush changes
+                # -----------------------------------------------------
+                db.session.flush()
+
+                deducted.append({
+                    "user_id": user_id,
+                    "username": user.username,
+                    "employee_id": employee.employee_id,
+                    "old_points": old_points,
+                    "point_change": demerit.point,
+                    "resulting_points": employee.merit_points,
+                    "ledger_created": True
+                })
+
+            # ---------------------------------------------------------
+            # 14. Commit all changes
+            # ---------------------------------------------------------
+            db.session.commit()
+
+            # ---------------------------------------------------------
+            # 15. Return response
+            # ---------------------------------------------------------
+            return {
+                "message": "Shop opening report check completed successfully.",
+                "date_checked": str(yesterday_eat),
+                "demerit_reason": demerit.reason,
+                "demerit_points": demerit.point,
+                "total_users_checked": len(users),
+                "total_deductions": len(deducted),
+                "total_skipped": len(skipped),
+                "deducted": deducted,
+                "skipped": skipped
+            }, 200
+
+        except Exception as e:
+            db.session.rollback()
+
+            return {
+                "message": "An error occurred while checking shop reports.",
+                "error": str(e)
+            }, 500
 
 
 # Server/Views/api_endpoint.py

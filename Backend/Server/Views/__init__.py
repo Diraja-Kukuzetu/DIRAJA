@@ -7,7 +7,7 @@ from tenant import  get_engine_for_tenant
 
 # add all file inputs 
 from Server.Views.Usersviews import (
-    CountUsers, Addusers, UsersResourceById, UserLogin, GetAllUsers,PostShopReport,
+    CheckShopOpeningReports, CountUsers, Addusers, UsersResourceById, UserLogin, GetAllUsers,PostShopReport,
     UserLoginWith2FA,Resend2FACode,Enable2FA,Disable2FA,Get2FAStatus,VerifyBackupCode,TestEmail
 )
 
@@ -282,6 +282,7 @@ api.add_resource(Addusers , '/newuser')
 api.add_resource(UsersResourceById, '/user/<int:users_id>')
 api.add_resource(UserLogin, '/login')
 api.add_resource(PostShopReport, "/shop-reports")
+api.add_resource(CheckShopOpeningReports,'/shop-reports/check-opening')
 
 # 2FA Routes
 api.add_resource(UserLoginWith2FA, '/verify-2fa')
