@@ -14,6 +14,7 @@ from Server.Models.LiveStock import LiveStock
 from datetime import datetime, timezone
 # import datetime
 from app import db
+from sqlalchemy import func
 from flask_restful import Resource
 from flask import jsonify,request,make_response
 from functools import wraps
@@ -88,7 +89,6 @@ class AddSpoiltFromInventory(Resource):
             "batch_number": inventory.BatchNumber
         }, 201
 
-
 class AddSpoiltStock(Resource):
     @jwt_required()
     def post(self):
@@ -133,7 +133,7 @@ class AddSpoiltStock(Resource):
         batch_deductions = []
         livestock_deduction = 0.0
 
-        # ✅ NEW: track inventory_id
+        # track inventory_id
         inventory_id = None
 
         # -----------------------------
@@ -150,7 +150,6 @@ class AddSpoiltStock(Resource):
             stock.quantity -= deduct_amount
             remaining_to_deduct -= deduct_amount
 
-            # ✅ capture inventory_id from first batch
             if inventory_id is None:
                 inventory_id = stock.inventoryv2_id
 
@@ -186,6 +185,31 @@ class AddSpoiltStock(Resource):
             }, 400
 
         # -----------------------------
+        # AUTO-APPROVAL CHECK
+        # Compare spoilt quantity against total quantity ever transferred
+        # for this item into this shop. If spoilage < 2% -> auto-approve.
+        # -----------------------------
+        total_transferred = db.session.query(
+            func.coalesce(func.sum(TransfersV2.quantity), 0.0)
+        ).filter(
+            TransfersV2.shop_id == shop_id,
+            TransfersV2.itemname == item
+        ).scalar() or 0.0
+
+        auto_approved = False
+        auto_approval_reason = None
+
+        if total_transferred > 0:
+            spoilage_ratio = quantity / total_transferred
+            if spoilage_ratio < 0.02:  # strictly less than 2%
+                auto_approved = True
+                auto_approval_reason = (
+                    f"Spoilage {quantity} {unit} is "
+                    f"{spoilage_ratio * 100:.3f}% of total transferred "
+                    f"{total_transferred} {unit} (below 2% threshold)"
+                )
+
+        # -----------------------------
         # Create spoilt record
         # -----------------------------
         record = SpoiltStock(
@@ -194,7 +218,7 @@ class AddSpoiltStock(Resource):
             item=item,
             quantity=quantity,
             unit=unit,
-            inventory_id=inventory_id,   # ✅ HERE IS THE FIX
+            inventory_id=inventory_id,
             disposal_method=disposal_method,
             collector_name=collector_name,
             comment=comment,
@@ -204,7 +228,6 @@ class AddSpoiltStock(Resource):
             livestock_deduction=livestock_deduction
         )
 
-        # batch info
         if batch_deductions:
             record.batches_affected = ", ".join([
                 f"Batch {d['batch']}: -{d['deducted']}{unit}"
@@ -213,31 +236,111 @@ class AddSpoiltStock(Resource):
 
         db.session.add(record)
 
+        # Flush so record.id and inventory link are available
+        try:
+            db.session.flush()
+        except Exception as e:
+            db.session.rollback()
+            return {
+                "message": "Failed to create spoilt stock record",
+                "error": str(e)
+            }, 500
+
+        # -----------------------------
+        # AUTO-APPROVE PATH
+        # -----------------------------
+        journal_result = None
+        if auto_approved:
+            try:
+                inventory_item = InventoryV2.query.get(inventory_id)
+                if not inventory_item:
+                    raise Exception(
+                        f"Inventory item not found for ID: {inventory_id}"
+                    )
+
+                # Validate cost inputs
+                if not record.quantity or record.quantity <= 0:
+                    raise Exception(f"Invalid quantity: {record.quantity}")
+                if not inventory_item.unitCost or inventory_item.unitCost <= 0:
+                    raise Exception(
+                        f"Invalid unit cost: {inventory_item.unitCost}"
+                    )
+
+                # Cost of spoilage
+                record.cost_of_spoilage = (
+                    float(record.quantity) * float(inventory_item.unitCost)
+                )
+
+                # Approve
+                record.status = 'approved'
+                record.approved_by = user_id
+                record.approved_at = datetime.now(timezone.utc)
+                db.session.add(record)
+                db.session.flush()
+
+                if not record.cost_of_spoilage or record.cost_of_spoilage <= 0:
+                    raise Exception(
+                        f"Invalid cost of spoilage: {record.cost_of_spoilage}"
+                    )
+
+                # Post journal
+                journal_result = SpoiltJournalService.post_spoilt_journal(record)
+
+            except Exception as e:
+                db.session.rollback()
+                return {
+                    "message": "Auto-approval failed",
+                    "error": str(e),
+                    "auto_approval_attempted": True
+                }, 500
+
+        # -----------------------------
+        # COMMIT
+        # -----------------------------
         try:
             db.session.commit()
 
-            return {
-                "message": "Spoilt stock recorded successfully",
+            response = {
+                "message": (
+                    "Spoilt stock recorded and auto-approved successfully"
+                    if auto_approved else
+                    "Spoilt stock recorded successfully"
+                ),
                 "details": {
                     "record_id": record.id,
                     "item": item,
                     "quantity": quantity,
                     "unit": unit,
-                    "inventory_id": inventory_id,   # ✅ returned too
-                    "status": "pending",
+                    "inventory_id": inventory_id,
+                    "status": record.status,
+                    "auto_approved": auto_approved,
+                    "auto_approval_reason": auto_approval_reason,
+                    "total_transferred": total_transferred,
                     "batches_affected": batch_deductions,
                     "livestock_deduction": livestock_deduction,
                     "created_at": record.created_at.isoformat()
                 }
-            }, 201
+            }
+
+            if auto_approved:
+                response["financial"] = {
+                    "cost_of_spoilage": float(record.cost_of_spoilage),
+                    "unit_cost": float(InventoryV2.query.get(inventory_id).unitCost),
+                    "calculation": (
+                        f"{record.quantity} × "
+                        f"{InventoryV2.query.get(inventory_id).unitCost}"
+                    )
+                }
+                response["journal"] = journal_result
+
+            return response, 201
 
         except Exception as e:
             db.session.rollback()
             return {
                 "message": "Failed to record spoilt stock",
                 "error": str(e)
-            }, 500
-            
+            }, 500            
 
 class ApproveSpoiltStock(Resource):
     @jwt_required()

@@ -340,15 +340,15 @@ class AllExpenses(Resource):
         # Base query
         query = Expenses.query
         
-         # Apply search filter
+        # Apply search filter
         if search_query:
             query = Expenses.query.filter(
-                 or_(
+                or_(
                     Expenses.category.ilike(f"%{search_query}%"),
                     Expenses.item.ilike(f"%{search_query}%"),
                     Expenses.paidTo.ilike(f"%{search_query}%"),
                     Expenses.source.ilike(f"%{search_query}%"),
-                    Expenses.paymentRef.ilike(f"%{search_query}%")  # Added to search
+                    Expenses.paymentRef.ilike(f"%{search_query}%")
                 )
             )
 
@@ -382,10 +382,19 @@ class AllExpenses(Resource):
         if filters:
             query = query.filter(and_(*filters))
 
-        # Calculate total amount paid for ALL expenses (before pagination)
-        total_amount_paid_all = db.session.query(db.func.sum(Expenses.amountPaid)).filter(and_(*filters)).scalar() or 0
+        # Calculate totals for ALL expenses (unpaginated)
+        # Get all expenses matching the filters (without pagination)
+        all_filtered_expenses = query.all()
+        
+        # Calculate totals
+        total_amount_paid_all = sum(expense.amountPaid for expense in all_filtered_expenses) if all_filtered_expenses else 0
+        total_outstanding_all = sum(expense.outstanding_balance or 0 for expense in all_filtered_expenses) if all_filtered_expenses else 0
+        total_count_all = len(all_filtered_expenses)
+        
+        # Calculate average expense (optional)
+        avg_expense_all = total_amount_paid_all / total_count_all if total_count_all > 0 else 0
 
-        # Order by latest
+        # Order by latest for pagination
         query = query.order_by(Expenses.created_at.desc())
 
         # Pagination
@@ -460,9 +469,12 @@ class AllExpenses(Resource):
         return make_response(jsonify({
             "expenses": all_expenses,
             "pagination": pagination_info,
-            "total_amount_paid_all_expenses": total_amount_paid_all
+            # Unpaginated totals for all expenses matching filters
+            "total_amount_paid_all_expenses": total_amount_paid_all,
+            "total_outstanding_all_expenses": total_outstanding_all,
+            "total_count_all_expenses": total_count_all,
+            "average_expense_all": avg_expense_all
         }), 200)
-
 
 class GetShopExpenses(Resource):
     @jwt_required()

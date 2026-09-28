@@ -23,7 +23,10 @@ class Suppliers(db.Model):
     till_number = db.Column(db.String(50), nullable=True)
     paybill_number = db.Column(db.String(50), nullable=True)
     paybill_account = db.Column(db.String(50), nullable=True)
-  
+
+    # Optional bank details
+    bank_name = db.Column(db.String(255), nullable=True)
+    bank_code = db.Column(db.String(50), nullable=True)
 
     # New column: list of items the supplier sells
     items_sold = db.Column(db.JSON, nullable=True, default=list)
@@ -34,8 +37,9 @@ class Suppliers(db.Model):
     def __repr__(self):
         return (f"Supplier(supplier_id={self.supplier_id}, name='{self.supplier_name}', "
                 f"location='{self.supplier_location}', total_amount_received={self.total_amount_received}, "
-                f"credit_amount={self.credit_amount}, "  # Added to repr
+                f"credit_amount={self.credit_amount}, "
                 f"email='{self.email}', phone_number='{self.phone_number}', "
+                f"bank_name='{self.bank_name}', bank_code='{self.bank_code}', "
                 f"items_sold={self.items_sold})")
 
 

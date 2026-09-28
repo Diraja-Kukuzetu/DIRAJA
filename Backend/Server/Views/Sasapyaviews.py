@@ -6,7 +6,11 @@ from flask import current_app, request
 from flask_jwt_extended import jwt_required
 import os
 from datetime import datetime
+import uuid
+from datetime import datetime
+from Server.Views.Services.sasapay_service import SasaPayPaymentService
 
+sasapay_service = SasaPayPaymentService()
 
 # Start
 #   ↓
@@ -2115,3 +2119,565 @@ class SasaPayTransferStatusResource(Resource):
         except Exception as e:
             current_app.logger.error(f"Status check error: {str(e)}")
             return {"error": str(e)}, 500
+
+
+
+
+
+class SasaPayTransferFundsResource(Resource):
+    """
+    Unified endpoint to move funds OUT of one of your SasaPay merchant
+    accounts. POST body must include 'transfer_type':
+ 
+      - "paybill"  -> pay someone else's PAYBILL number
+                      requires: paybill_number, account_reference
+      - "till"     -> pay someone else's TILL number (buy goods)
+                      requires: till_number
+      - "merchant" -> move funds to another SasaPay merchant account you own
+                      requires: receiver_merchant_code
+      - "b2c"      -> send money directly to a phone number (mobile money)
+                      requires: receiver_number
+      - "b2b"      -> raw B2B transfer, you set receiver_account_type yourself
+                      requires: receiver_merchant_code
+ 
+    Common fields (all types): sender_merchant_code, amount
+    Optional fields: transaction_reference, callback_url, reason
+    """
+ 
+    @jwt_required()
+    def post(self):
+        data = request.get_json(silent=True) or {}
+ 
+        transfer_type = (data.get('transfer_type') or '').lower().strip()
+        valid_types = {'paybill', 'till', 'merchant', 'b2c', 'b2b'}
+ 
+        if transfer_type not in valid_types:
+            return {
+                "error": f"Invalid or missing 'transfer_type'. Must be one of: {sorted(valid_types)}"
+            }, 400
+ 
+        sender_merchant_code = data.get('sender_merchant_code')
+        amount = data.get('amount')
+ 
+        if not sender_merchant_code:
+            return {"error": "sender_merchant_code is required"}, 400
+        if amount is None:
+            return {"error": "amount is required"}, 400
+ 
+        try:
+            amount = float(amount)
+        except (TypeError, ValueError):
+            return {"error": "amount must be a number"}, 400
+ 
+        if amount <= 0:
+            return {"error": "amount must be greater than 0"}, 400
+ 
+        transaction_reference = data.get('transaction_reference') or self._generate_reference(transfer_type)
+        callback_url = data.get('callback_url')  # falls back to merchant's configured callback if omitted
+        reason = data.get('reason', 'Funds transfer')
+ 
+        current_app.logger.info(
+            f"[TRANSFER] type={transfer_type} sender={sender_merchant_code} "
+            f"amount={amount} ref={transaction_reference}"
+        )
+ 
+        handlers = {
+            'paybill': self._handle_paybill,
+            'till': self._handle_till,
+            'merchant': self._handle_merchant,
+            'b2c': self._handle_b2c,
+            'b2b': self._handle_b2b,
+        }
+ 
+        try:
+            result = handlers[transfer_type](
+                data, sender_merchant_code, transaction_reference, amount, callback_url, reason
+            )
+        except ValueError as ve:
+            return {"error": str(ve)}, 400
+        except Exception as e:
+            current_app.logger.error(f"[TRANSFER] Unhandled exception: {str(e)}")
+            return {"error": f"Transfer failed: {str(e)}"}, 500
+ 
+        status_code = 200 if result.get('status') else 400
+ 
+        response = {
+            "success": result.get('status', False),
+            "transfer_type": transfer_type,
+            "sender_merchant_code": sender_merchant_code,
+            "amount": amount,
+            "currency": "KES",
+            "transaction_reference": transaction_reference,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+ 
+        if result.get('status'):
+            response["data"] = result.get('data')
+        else:
+            response["error"] = result.get('message', 'Transfer failed')
+            if result.get('response'):
+                response["details"] = result.get('response')
+ 
+        return response, status_code
+ 
+    # ---- per-type handlers ----
+ 
+    def _handle_paybill(self, data, sender_merchant_code, transaction_reference, amount, callback_url, reason):
+        paybill_number = data.get('paybill_number')
+        account_reference = data.get('account_reference')
+        if not paybill_number:
+            raise ValueError("paybill_number is required for transfer_type='paybill'")
+        if not account_reference:
+            raise ValueError("account_reference is required for transfer_type='paybill'")
+ 
+        return sasapay_service.pay_paybill(
+            sender_merchant_code=sender_merchant_code,
+            transaction_reference=transaction_reference,
+            amount=amount,
+            paybill_number=paybill_number,
+            account_reference=account_reference,
+            callback_url=callback_url,
+            reason=reason
+        )
+ 
+    def _handle_till(self, data, sender_merchant_code, transaction_reference, amount, callback_url, reason):
+        till_number = data.get('till_number')
+        if not till_number:
+            raise ValueError("till_number is required for transfer_type='till'")
+        account_reference = data.get('account_reference', till_number)
+ 
+        return sasapay_service.pay_till(
+            sender_merchant_code=sender_merchant_code,
+            transaction_reference=transaction_reference,
+            amount=amount,
+            till_number=till_number,
+            account_reference=account_reference,
+            callback_url=callback_url,
+            reason=reason
+        )
+ 
+    def _handle_merchant(self, data, sender_merchant_code, transaction_reference, amount, callback_url, reason):
+        receiver_merchant_code = data.get('receiver_merchant_code')
+        if not receiver_merchant_code:
+            raise ValueError("receiver_merchant_code is required for transfer_type='merchant'")
+        account_reference = data.get('account_reference', receiver_merchant_code)
+ 
+        return sasapay_service.transfer_to_merchant(
+            sender_merchant_code=sender_merchant_code,
+            transaction_reference=transaction_reference,
+            amount=amount,
+            receiver_merchant_code=receiver_merchant_code,
+            account_reference=account_reference,
+            callback_url=callback_url,
+            reason=reason
+        )
+ 
+    def _handle_b2c(self, data, sender_merchant_code, transaction_reference, amount, callback_url, reason):
+        receiver_number = data.get('receiver_number')
+        if not receiver_number:
+            raise ValueError("receiver_number is required for transfer_type='b2c'")
+        channel = data.get('channel', '0')
+ 
+        return sasapay_service.initiate_b2c_payment(
+            sender_merchant_code=sender_merchant_code,
+            transaction_reference=transaction_reference,
+            amount=amount,
+            receiver_number=receiver_number,
+            reason=reason,
+            callback_url=callback_url,
+            channel=channel
+        )
+ 
+    def _handle_b2b(self, data, sender_merchant_code, transaction_reference, amount, callback_url, reason):
+        receiver_merchant_code = data.get('receiver_merchant_code')
+        if not receiver_merchant_code:
+            raise ValueError("receiver_merchant_code is required for transfer_type='b2b'")
+        account_reference = data.get('account_reference', receiver_merchant_code)
+        receiver_account_type = data.get('receiver_account_type', 'PAYBILL')
+        network_code = data.get('network_code', '0')
+ 
+        return sasapay_service.initiate_b2b_transfer(
+            sender_merchant_code=sender_merchant_code,
+            transaction_reference=transaction_reference,
+            amount=amount,
+            receiver_merchant_code=receiver_merchant_code,
+            account_reference=account_reference,
+            receiver_account_type=receiver_account_type,
+            network_code=network_code,
+            callback_url=callback_url,
+            reason=reason
+        )
+ 
+    def _generate_reference(self, transfer_type):
+        return f"{transfer_type.upper()}{datetime.utcnow().strftime('%Y%m%d%H%M%S')}{str(uuid.uuid4())[:8]}"
+ 
+ 
+class SasaPayBatchTransferResource(Resource):
+    """
+    Transfer funds from MULTIPLE merchant accounts into ONE receiving
+    merchant account. The total amount is split across the selected
+    senders automatically.
+ 
+    POST body:
+      {
+        "sender_merchant_codes": ["570257", "577960", "577480"],
+        "receiver_merchant_code": "577666",
+        "amount": 15000,
+        "allocation_strategy": "equal" | "balance",   # default "equal"
+        "reason": "...",        # optional
+        "callback_url": "..."   # optional, applied to every leg
+      }
+ 
+    allocation_strategy:
+      - "equal"   -> amount is split evenly across every sender
+                     (remainder cents go to the last sender in the list)
+      - "balance" -> each sender's current balance is checked first, and
+                     funds are pulled from each (up to what it has) in the
+                     order given, until the requested amount is covered.
+                     Fails with a clear error if the combined balance of
+                     the selected senders is insufficient.
+ 
+    Each sender->receiver leg is a separate B2B call (SasaPay requires
+    authenticating as the sender for every transfer), so the response
+    returns a per-sender breakdown plus an overall summary.
+    """
+ 
+    @jwt_required()
+    def post(self):
+        data = request.get_json(silent=True) or {}
+ 
+        sender_merchant_codes = data.get('sender_merchant_codes')
+        receiver_merchant_code = data.get('receiver_merchant_code')
+        amount = data.get('amount')
+        allocation_strategy = (data.get('allocation_strategy') or 'equal').lower().strip()
+        reason = data.get('reason', 'Batch merchant transfer')
+        callback_url = data.get('callback_url')
+ 
+        # ---- validation ----
+        if not sender_merchant_codes or not isinstance(sender_merchant_codes, list):
+            return {"error": "sender_merchant_codes must be a non-empty list"}, 400
+ 
+        sender_merchant_codes = [str(c).strip() for c in sender_merchant_codes if str(c).strip()]
+        if not sender_merchant_codes:
+            return {"error": "sender_merchant_codes must be a non-empty list"}, 400
+ 
+        if not receiver_merchant_code:
+            return {"error": "receiver_merchant_code is required"}, 400
+ 
+        if receiver_merchant_code in sender_merchant_codes:
+            return {"error": "receiver_merchant_code cannot also be a sender"}, 400
+ 
+        if len(set(sender_merchant_codes)) != len(sender_merchant_codes):
+            return {"error": "sender_merchant_codes contains duplicates"}, 400
+ 
+        if amount is None:
+            return {"error": "amount is required"}, 400
+ 
+        try:
+            amount = round(float(amount), 2)
+        except (TypeError, ValueError):
+            return {"error": "amount must be a number"}, 400
+ 
+        if amount <= 0:
+            return {"error": "amount must be greater than 0"}, 400
+ 
+        if allocation_strategy not in {'equal', 'balance'}:
+            return {"error": "allocation_strategy must be 'equal' or 'balance'"}, 400
+ 
+        current_app.logger.info(
+            f"[BATCH TRANSFER] senders={sender_merchant_codes} receiver={receiver_merchant_code} "
+            f"total_amount={amount} strategy={allocation_strategy}"
+        )
+ 
+        # ---- work out how much comes from each sender ----
+        try:
+            if allocation_strategy == 'equal':
+                allocations = self._allocate_equal(sender_merchant_codes, amount)
+            else:
+                allocations, shortfall = self._allocate_by_balance(sender_merchant_codes, amount)
+                if shortfall > 0:
+                    return {
+                        "error": (
+                            f"Combined available balance of selected merchants is short by "
+                            f"KES {shortfall:,.2f}"
+                        ),
+                        "requested_amount": amount,
+                        "allocatable_amount": round(amount - shortfall, 2),
+                        "balances": self._last_balances_debug
+                    }, 400
+        except Exception as e:
+            current_app.logger.error(f"[BATCH TRANSFER] Allocation error: {str(e)}")
+            return {"error": f"Failed to compute allocation: {str(e)}"}, 500
+ 
+        # ---- fire off one B2B transfer per sender ----
+        legs = []
+        successful_amount = 0.0
+ 
+        for sender_code, leg_amount in allocations:
+            if leg_amount <= 0:
+                continue
+ 
+            leg_reference = f"BATCH{datetime.utcnow().strftime('%Y%m%d%H%M%S')}{str(uuid.uuid4())[:6]}"
+ 
+            try:
+                result = sasapay_service.transfer_to_merchant(
+                    sender_merchant_code=sender_code,
+                    transaction_reference=leg_reference,
+                    amount=leg_amount,
+                    receiver_merchant_code=receiver_merchant_code,
+                    account_reference=receiver_merchant_code,
+                    callback_url=callback_url,
+                    reason=reason
+                )
+            except Exception as e:
+                result = {'status': False, 'message': str(e)}
+ 
+            leg_success = bool(result.get('status'))
+            if leg_success:
+                successful_amount += leg_amount
+ 
+            legs.append({
+                "sender_merchant_code": sender_code,
+                "amount": leg_amount,
+                "transaction_reference": leg_reference,
+                "success": leg_success,
+                "data": result.get('data') if leg_success else None,
+                "error": None if leg_success else result.get('message', 'Transfer failed')
+            })
+ 
+        overall_success = all(leg["success"] for leg in legs) and len(legs) > 0
+ 
+        return {
+            "success": overall_success,
+            "receiver_merchant_code": receiver_merchant_code,
+            "requested_amount": amount,
+            "allocated_amount": round(successful_amount, 2),
+            "currency": "KES",
+            "allocation_strategy": allocation_strategy,
+            "legs": legs,
+            "timestamp": datetime.utcnow().isoformat()
+        }, 200 if overall_success else 207  # 207 = partial success (some legs failed)
+ 
+    # ---- allocation strategies ----
+ 
+    def _allocate_equal(self, sender_codes, amount):
+        """Split amount evenly; remainder (from rounding) goes to the last sender."""
+        n = len(sender_codes)
+        share = round(amount / n, 2)
+        allocations = [(code, share) for code in sender_codes[:-1]]
+        allocated_so_far = round(share * (n - 1), 2)
+        last_share = round(amount - allocated_so_far, 2)
+        allocations.append((sender_codes[-1], last_share))
+        return allocations
+ 
+    def _allocate_by_balance(self, sender_codes, amount):
+        """
+        Pull from each sender (in the order given) up to its available
+        balance, until the requested amount is covered. Returns
+        (allocations, shortfall) where shortfall > 0 means the combined
+        balance wasn't enough.
+        """
+        remaining = amount
+        allocations = []
+        balances_debug = {}
+ 
+        for code in sender_codes:
+            balance = self._get_merchant_balance(code)
+            balances_debug[code] = balance
+ 
+            if remaining <= 0:
+                allocations.append((code, 0))
+                continue
+ 
+            take = min(balance, remaining)
+            take = round(take, 2)
+            allocations.append((code, take))
+            remaining = round(remaining - take, 2)
+ 
+        self._last_balances_debug = balances_debug
+        shortfall = max(remaining, 0)
+        return allocations, shortfall
+ 
+    def _get_merchant_balance(self, merchant_code):
+        """Fetch a single merchant's available balance via SasaPay's check-balance endpoint."""
+        try:
+            access_token = sasapay_service._get_access_token(merchant_code)
+            url = f"{sasapay_service.base_url}/api/v1/payments/check-balance/"
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json"
+            }
+            response = requests.get(url, headers=headers, params={"MerchantCode": merchant_code}, timeout=30)
+ 
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('statusCode') == '0':
+                    return float(data.get('data', {}).get('OrgAccountBalance', 0))
+ 
+            current_app.logger.warning(
+                f"[BATCH TRANSFER] Could not fetch balance for {merchant_code}: "
+                f"HTTP {response.status_code} - {response.text[:200]}"
+            )
+            return 0.0
+        except Exception as e:
+            current_app.logger.error(f"[BATCH TRANSFER] Balance fetch error for {merchant_code}: {str(e)}")
+            return 0.0
+ 
+{
+  "allocations": [
+    { "merchant_code": "577480", "amount": 9.02 },
+    { "merchant_code": "570257", "amount": 1250.50 }
+  ],
+  "reason": "Batch move full working balance to utility"
+}
+
+
+class SasaPayBatchUtilityFundingResource(Resource):
+    """
+    Fund MULTIPLE merchants' UTILITY accounts in one call. Each merchant's
+    working balance is moved INTO its own utility account (money never
+    crosses between merchants).
+
+    SasaPay debits B2C payments (till / paybill / send_money) from each
+    merchant's UTILITY account, not the WORKING account where incoming
+    payments land. Use this endpoint to top up several utility accounts
+    at once so B2C payments don't fail with insufficient balance.
+
+    POST body — two supported shapes:
+
+      (A) Explicit per-merchant allocations (preferred, matches the UI):
+        {
+          "allocations": [
+            { "merchant_code": "570257", "amount": 9.02 },
+            { "merchant_code": "577960", "amount": 1250.50 }
+          ],
+          "reason": "..."        # optional, log only
+        }
+
+      (B) Same fixed amount for every merchant (legacy / bulk top-up):
+        {
+          "merchant_codes": ["570257", "577960"],
+          "amount": 5000,
+          "reason": "..."
+        }
+
+    Response returns a per-merchant breakdown plus an overall summary.
+    """
+
+    @jwt_required()
+    def post(self):
+        data = request.get_json(silent=True) or {}
+
+        reason = data.get('reason', 'Batch utility funding')
+        allocations = data.get('allocations')
+        merchant_codes = data.get('merchant_codes')
+        amount = data.get('amount')
+
+        # ---- normalise the incoming payload into [(merchant_code, amount), ...] ----
+        try:
+            if allocations is not None:
+                # Shape (A): explicit per-merchant allocations
+                if not isinstance(allocations, list) or not allocations:
+                    return {"error": "allocations must be a non-empty list"}, 400
+
+                normalised = []
+                seen = set()
+                for entry in allocations:
+                    if not isinstance(entry, dict):
+                        return {"error": "each allocation must be an object"}, 400
+
+                    code = str(entry.get('merchant_code') or '').strip()
+                    if not code:
+                        return {"error": "each allocation needs a merchant_code"}, 400
+
+                    if code in seen:
+                        return {"error": f"duplicate merchant_code: {code}"}, 400
+                    seen.add(code)
+
+                    try:
+                        amt = round(float(entry.get('amount')), 2)
+                    except (TypeError, ValueError):
+                        return {"error": f"invalid amount for merchant {code}"}, 400
+
+                    if amt <= 0:
+                        return {"error": f"amount must be > 0 for merchant {code}"}, 400
+
+                    normalised.append((code, amt))
+
+            elif merchant_codes is not None and amount is not None:
+                # Shape (B): one fixed amount for every merchant
+                if not isinstance(merchant_codes, list) or not merchant_codes:
+                    return {"error": "merchant_codes must be a non-empty list"}, 400
+
+                merchant_codes = [str(c).strip() for c in merchant_codes if str(c).strip()]
+                if not merchant_codes:
+                    return {"error": "merchant_codes must be a non-empty list"}, 400
+
+                if len(set(merchant_codes)) != len(merchant_codes):
+                    return {"error": "merchant_codes contains duplicates"}, 400
+
+                try:
+                    amt = round(float(amount), 2)
+                except (TypeError, ValueError):
+                    return {"error": "amount must be a number"}, 400
+
+                if amt <= 0:
+                    return {"error": "amount must be greater than 0"}, 400
+
+                normalised = [(code, amt) for code in merchant_codes]
+
+            else:
+                return {
+                    "error": "Provide either 'allocations' "
+                             "(per-merchant amounts) or 'merchant_codes' + 'amount'"
+                }, 400
+
+        except Exception as e:
+            current_app.logger.error(f"[BATCH UTILITY FUNDING] Payload error: {str(e)}")
+            return {"error": f"Invalid payload: {str(e)}"}, 400
+
+        current_app.logger.info(
+            f"[BATCH UTILITY FUNDING] merchants={[c for c, _ in normalised]} "
+            f"legs={len(normalised)}"
+        )
+
+        # ---- fire off one internal working->utility move per merchant ----
+        legs = []
+        successful_count = 0
+        total_moved = 0.0
+
+        for merchant_code, leg_amount in normalised:
+            try:
+                result = sasapay_service.move_to_utility_account(
+                    merchant_code=merchant_code,
+                    amount=leg_amount
+                )
+            except Exception as e:
+                result = {'status': False, 'message': str(e)}
+
+            leg_success = bool(result.get('status'))
+            if leg_success:
+                successful_count += 1
+                total_moved += leg_amount
+
+            legs.append({
+                "merchant_code": merchant_code,
+                "amount": leg_amount,
+                "success": leg_success,
+                "data": result.get('data') if leg_success else None,
+                "error": None if leg_success else result.get('message', 'Fund movement failed')
+            })
+
+        overall_success = all(leg["success"] for leg in legs) and len(legs) > 0
+
+        return {
+            "success": overall_success,
+            "merchant_count": len(normalised),
+            "successful_count": successful_count,
+            "failed_count": len(legs) - successful_count,
+            "total_moved": round(total_moved, 2),
+            "currency": "KES",
+            "reason": reason,
+            "legs": legs,
+            "timestamp": datetime.utcnow().isoformat()
+        }, 200 if overall_success else 207  # 207 = partial success

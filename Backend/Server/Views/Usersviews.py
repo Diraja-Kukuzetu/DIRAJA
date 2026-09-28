@@ -533,7 +533,6 @@ class GetAllUsers(Resource):
         return make_response(jsonify(all_users), 200)
 
 
-# Keep your existing PostShopReport class unchanged
 class PostShopReport(Resource):
     @jwt_required()
     def post(self):
@@ -577,6 +576,7 @@ class PostShopReport(Resource):
             }, 409
 
         # ---- Create report ----
+        # closed_at stays NULL until the clerk closes the shop
         report = ShopReport(
             user_id=user.users_id,
             username=user.username,
@@ -585,7 +585,8 @@ class PostShopReport(Resource):
             longitude=longitude,
             location=location,
             note=note,
-            reported_at=datetime.utcnow()
+            reported_at=datetime.utcnow(),
+            # closed_at=None  # implicit — omit it here
         )
 
         db.session.add(report)
@@ -599,12 +600,74 @@ class PostShopReport(Resource):
                 "user_id": report.user_id,
                 "username": report.username,
                 "reported_at": (report.reported_at + timedelta(hours=3)).isoformat(),
+                # NEW
+                "closed_at": None,
                 "location": report.location,
                 "latitude": report.latitude,
                 "longitude": report.longitude
             }
         }, 201
 
+class CloseShopReport(Resource):
+    @jwt_required()
+    def post(self):
+        user_id = get_jwt_identity()
+        data = request.get_json() or {}
+
+        shop_id = data.get("shop_id")
+        if not shop_id:
+            return {"message": "shop_id is required"}, 400
+        try:
+            shop_id = int(shop_id)
+        except (ValueError, TypeError):
+            return {"message": "shop_id must be an integer"}, 400
+
+        user = Users.query.get(user_id)
+        if not user:
+            return {"message": "User not found"}, 404
+
+        # Current time (UTC + EAT)
+        now_utc = datetime.utcnow()
+        now_eat = now_utc + timedelta(hours=3)
+        today_eat = now_eat.date()
+
+        # Find today's opening report for this shop + user
+        report = ShopReport.query.filter(
+            ShopReport.shop_id == shop_id,
+            ShopReport.user_id == user.users_id,
+            func.date(ShopReport.reported_at + timedelta(hours=3)) == today_eat
+        ).order_by(ShopReport.reported_at.desc()).first()
+
+        if not report:
+            return {
+                "message": "No opening report found for this shop today. "
+                           "Please submit an opening report first."
+            }, 404
+
+        if report.closed_at is not None:
+            return {
+                "message": "This shop has already been closed today",
+                "closed_at": (report.closed_at + timedelta(hours=3)).isoformat()
+            }, 409
+
+        # Stamp the closing time on the SAME row
+        report.closed_at = now_utc
+        db.session.commit()
+
+        return {
+            "message": "Shop closing recorded successfully",
+            "report": {
+                "id": report.id,
+                "shop_id": report.shop_id,
+                "user_id": report.user_id,
+                "username": report.username,
+                "reported_at": (report.reported_at + timedelta(hours=3)).isoformat(),
+                "closed_at": (report.closed_at + timedelta(hours=3)).isoformat(),
+                "location": report.location,
+                "latitude": report.latitude,
+                "longitude": report.longitude,
+            }
+        }, 200
 
 # Server/Views/api_endpoint.py
 from flask import jsonify, request, current_app

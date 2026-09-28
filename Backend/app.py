@@ -1,19 +1,28 @@
 import os
-from flask import Flask
+from flask import Flask, g
 from flask_sqlalchemy import SQLAlchemy
+from flask_sqlalchemy.session import Session as FSASession
 from flask_migrate import Migrate
 from flask_jwt_extended import JWTManager
 from flask_cors import CORS
 from dotenv import load_dotenv
 from flask_socketio import SocketIO
 from flask_mail import Mail
-from openai import OpenAI  
+from openai import OpenAI
 
 # Load env
 load_dotenv()
 
+# ---------- Tenant-aware Session ----------
+class TenantAwareSession(FSASession):
+    def get_bind(self, mapper=None, clause=None, **kwargs):
+        engine = getattr(g, "tenant_engine", None)
+        if engine is not None:
+            return engine
+        return super().get_bind(mapper=mapper, clause=clause, **kwargs)
+
 # ---------- Extensions ----------
-db = SQLAlchemy()
+db = SQLAlchemy(session_options={"class_": TenantAwareSession})
 jwt = JWTManager()
 mail = Mail()
 socketio = SocketIO()

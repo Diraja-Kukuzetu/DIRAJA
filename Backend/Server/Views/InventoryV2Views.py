@@ -2513,113 +2513,158 @@ class ProcessInventoryPayment(Resource):
 class SasaPayProcessPayment(Resource):
     """
     Pays a supplier's outstanding inventory balance via SasaPay, using the
-    supplier's stored payment_method (till / paybill / mobile) instead of
+    supplier's stored payment_method (till / paybill / send_money) instead of
     a manual bank entry. On success, the SasaPay request ID becomes the
     payment_reference.
+
+    Channel routing:
+        - till        -> B2C to supplier.till_number    (channel = supplier.bank_code)
+        - paybill     -> B2C to supplier.paybill_number (channel = supplier.bank_code)
+        - send_money  -> B2C to supplier.mobile_number  (channel = supplier.bank_code)
+
+    The channel (network) is ALWAYS taken from the supplier's stored
+    bank_name / bank_code. No channel is hardcoded in this endpoint.
+
+    If the supplier has NEITHER bank_name NOR bank_code set, the request is
+    rejected with a "supplier missing provider details" error so the operator
+    fixes the supplier record first rather than silently routing to a default.
     """
- 
+
     @jwt_required()
     def post(self):
         data = request.get_json()
- 
+
         required_fields = ['inventory_id', 'amount_paid', 'source_account', 'sasapay_merchant_code']
         if not all(field in data for field in required_fields):
             return {'message': 'Missing required fields'}, 400
- 
+
         inventory_id = data.get('inventory_id')
         amount_paid = float(data.get('amount_paid'))
         source_account = data.get('source_account')
         sasapay_merchant_code = data.get('sasapay_merchant_code')
         notes = data.get('notes', '')
- 
+
         try:
             # ---- Validate inventory ----
             inventory = InventoryV2.query.get(inventory_id)
             if not inventory:
                 return {'message': 'Inventory not found'}, 404
- 
+
             if inventory.ballance <= 0:
                 return {'message': 'This inventory has no outstanding balance'}, 400
- 
+
             if amount_paid <= 0:
                 return {'message': 'Payment amount must be greater than 0'}, 400
- 
+
             if amount_paid > inventory.ballance:
                 return {
                     'message': f'Payment amount exceeds outstanding balance of {inventory.ballance}'
                 }, 400
- 
+
             # ---- Get supplier + their SasaPay payment details ----
             supplier = Suppliers.query.filter_by(
                 supplier_name=inventory.Suppliername,
                 supplier_location=inventory.Supplier_location
             ).first()
- 
+
             if not supplier:
                 return {'message': 'Supplier not found'}, 404
- 
+
             # ---- Get bank account (funds are still tracked against your books) ----
             account = BankAccount.query.filter_by(Account_name=source_account).first()
             if not account:
                 return {'message': f'Bank account "{source_account}" not found'}, 404
- 
+
             if account.Account_Balance < amount_paid:
                 return {'message': f'Insufficient balance in account "{source_account}"'}, 400
- 
+
             # ---- Build our own transaction reference before calling SasaPay ----
             our_reference = f"SUP{supplier.supplier_id}-INV{inventory_id}-{uuid.uuid4().hex[:8]}"
- 
+
             # ---- Route to the right SasaPay method based on supplier's payment_method ----
-            method = (supplier.payment_method or '').lower()
- 
+            # Normalize stored value: legacy 'mobile' is treated as 'send_money'
+            raw_method = (supplier.payment_method or '').strip().lower()
+            method = 'send_money' if raw_method == 'mobile' else raw_method
+
+            # ---- Channel (network) comes from the supplier's bank_name / bank_code ----
+            # NO hardcoding. Both must be present.
+            channel_code = (supplier.bank_code or '').strip()
+            channel_name = (supplier.bank_name or '').strip()
+
+            if not channel_code and not channel_name:
+                return {
+                    'message': 'Supplier missing provider details. '
+                               'Please set the supplier\'s bank_name and bank_code before paying.'
+                }, 400
+
+            if not channel_code:
+                return {
+                    'message': 'Supplier missing provider bank_code. '
+                               'Please set the supplier\'s bank_code before paying.'
+                }, 400
+
+            if not channel_name:
+                return {
+                    'message': 'Supplier missing provider bank_name. '
+                               'Please set the supplier\'s bank_name before paying.'
+                }, 400
+
+            if method not in ('till', 'paybill', 'send_money'):
+                return {
+                    'message': f'Supplier has no valid payment_method configured '
+                               f'(got "{supplier.payment_method}"). '
+                               f'Expected one of: till, paybill, send_money.'
+                }, 400
+
+            # ---- Dispatch to SasaPay ----
             if method == 'till':
                 if not supplier.till_number:
                     return {'message': 'Supplier has no till_number configured'}, 400
+
                 sasapay_result = sasapay_service.pay_till(
                     sender_merchant_code=sasapay_merchant_code,
                     transaction_reference=our_reference,
                     amount=amount_paid,
                     till_number=supplier.till_number,
                     account_reference=supplier.supplier_name,
-                    reason=f"Payment for {inventory.itemname}"
+                    reason=f"Payment for {inventory.itemname}",
+                    channel=channel_code
                 )
- 
+
             elif method == 'paybill':
                 if not supplier.paybill_number:
                     return {'message': 'Supplier has no paybill_number configured'}, 400
+
                 sasapay_result = sasapay_service.pay_paybill(
                     sender_merchant_code=sasapay_merchant_code,
                     transaction_reference=our_reference,
                     amount=amount_paid,
                     paybill_number=supplier.paybill_number,
                     account_reference=supplier.paybill_account or supplier.supplier_name,
-                    reason=f"Payment for {inventory.itemname}"
+                    reason=f"Payment for {inventory.itemname}",
+                    channel=channel_code
                 )
- 
-            elif method == 'mobile':
+
+            elif method == 'send_money':
                 if not supplier.mobile_number:
                     return {'message': 'Supplier has no mobile_number configured'}, 400
+
                 sasapay_result = sasapay_service.initiate_b2c_payment(
                     sender_merchant_code=sasapay_merchant_code,
                     transaction_reference=our_reference,
                     amount=amount_paid,
                     receiver_number=supplier.mobile_number,
-                    reason=f"Payment for {inventory.itemname}"
+                    reason=f"Payment for {inventory.itemname}",
+                    channel=channel_code
                 )
- 
-            else:
-                return {
-                    'message': f'Supplier has no valid payment_method configured (got "{supplier.payment_method}"). '
-                                f'Expected one of: till, paybill, mobile.'
-                }, 400
- 
+
             # ---- Bail out if SasaPay rejected the request outright ----
             if not sasapay_result.get('status'):
                 return {
                     'message': 'SasaPay payment request failed',
                     'sasapay_response': sasapay_result
                 }, 502
- 
+
             sasapay_data = sasapay_result.get('data', {})
             # Prefer SasaPay's own request ID; fall back to our generated reference
             payment_reference = (
@@ -2628,7 +2673,7 @@ class SasaPayProcessPayment(Resource):
                 or sasapay_data.get('ConversationID')
                 or our_reference
             )
- 
+
             # ---- NOTE: SasaPay has only ACCEPTED the request at this point.       ----
             # ---- Final success/failure arrives later via your callback endpoint.  ----
             # ---- Committing the balance/inventory update here mirrors the        ----
@@ -2636,38 +2681,38 @@ class SasaPayProcessPayment(Resource):
             # ---- can say "paid" before SasaPay confirms the transfer landed.      ----
             # ---- Consider moving this block into process_callback() keyed on     ----
             # ---- payment_reference if you want it to only finalize on success.   ----
- 
+
             account.Account_Balance -= amount_paid
- 
+
             inventory.amountPaid += amount_paid
             inventory.ballance -= amount_paid
- 
+
             if inventory.paymentRef:
                 inventory.paymentRef = f"{inventory.paymentRef}, {payment_reference}"
             else:
                 inventory.paymentRef = payment_reference
- 
+
             if source_account not in ["Unknown", "External funding"]:
                 inventory.source = source_account
- 
+
             if inventory.ballance == 0:
                 inventory.payment_status = 'paid'
                 inventory.credits_amount = 0
             else:
                 inventory.payment_status = 'partially_paid'
                 inventory.credits_amount = inventory.ballance
- 
+
             supplier.total_amount_received += amount_paid
             if supplier.credit_amount:
                 supplier.credit_amount -= amount_paid
- 
+
             transaction = BankingTransaction(
                 account_id=account.id,
                 Transaction_type_debit=amount_paid,
                 Transaction_type_credit=None,
             )
             db.session.add(transaction)
- 
+
             supplier_history = SupplierHistory(
                 supplier_id=supplier.supplier_id,
                 amount_received=amount_paid,
@@ -2678,21 +2723,23 @@ class SasaPayProcessPayment(Resource):
                 inventory_id=inventory_id,
             )
             db.session.add(supplier_history)
- 
+
             inventory_payment = InventoryPayment(
                 inventory_id=inventory.inventoryV2_id,
                 amount_paid=amount_paid,
                 payment_reference=payment_reference
             )
             db.session.add(inventory_payment)
- 
+
             db.session.commit()
- 
+
             return {
                 'message': 'SasaPay payment initiated successfully',
                 'inventory_id': inventory_id,
                 'supplier_id': supplier.supplier_id,
                 'payment_method': method,
+                'channel_code': channel_code,
+                'channel_name': channel_name,
                 'amount_paid': amount_paid,
                 'new_balance': inventory.ballance,
                 'payment_status': inventory.payment_status,
@@ -2701,11 +2748,13 @@ class SasaPayProcessPayment(Resource):
                 'updated_payment_ref': inventory.paymentRef,
                 'sasapay_response': sasapay_data
             }, 200
- 
+
         except Exception as e:
             db.session.rollback()
             return {
                 'message': 'Error processing SasaPay payment',
                 'error': str(e)
             }, 500
- 
+
+
+
