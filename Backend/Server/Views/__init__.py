@@ -8,6 +8,7 @@ from tenant import  get_engine_for_tenant
 # add all file inputs 
 from Server.Views.Usersviews import (
     CheckShopOpeningReports, CountUsers, Addusers, UsersResourceById, UserLogin, GetAllUsers,PostShopReport,
+    CountUsers, Addusers, UsersResourceById, UserLogin, GetAllUsers,PostShopReport,CloseShopReport,
     UserLoginWith2FA,Resend2FACode,Enable2FA,Disable2FA,Get2FAStatus,VerifyBackupCode,TestEmail
 )
 
@@ -65,12 +66,14 @@ from Server.Views.employeeloanview import (
 )
 
 from Server.Views.Sales import (
-    AddSale, SasaPaySaleResource , GetSales, GetSalesByShop, SalesResources, GetPaymentTotals,GetSalesGraphData,
+    AddSale, SasaPaySaleResource , GetSales, GetSalesByShop, SalesResources, GetPaymentTotals,GetSalesGraphData,SasaPayReconciliationResource,
     SalesBalanceResource, TotalBalanceSummary,SasaPayPaymentStatusResource,
     UpdateSalePayment, GetUnpaidSales, PaymentMethodsResource,
     CapturePaymentResource, CreditHistoryResource, GetSingleSaleByShop,
     SalesByEmployeeResource, GetSale, GetUnpaidSalesByClerk,
     TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport,ProductEarningsSummary,CategoryEarningsSummary, ItemsSoldSummary, DeliverySalesSummary, CashAtHandByUser, TotalAmountPaidDeliverySales
+    SalesByEmployeeResource, GetSale, GetUnpaidSalesByClerk,SalesReport,
+    TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport,ProductEarningsSummary,CategoryEarningsSummary, ItemsSoldSummary, DeliverySalesSummary, CashAtHandByUser
 )
 
 from Server.Views.ManagerDashbordViews import (
@@ -205,7 +208,7 @@ from Server.Views.Balancesheet import (BalanceSheet)
 from Server.Views.DirajaAI import (RefreshSchema,AskAI)
 from Server.Views.Sasapyaviews import (
     SasaPayBalanceResource,SasaPayChannelCodesResource,SasaPayTransactionStatementResource,TestSasaPayConnection,TestSasaPaySingleMerchant,TestNetworkConnectivity,
-    SasaPaySingleBalanceResource,SasaPayBusinessToBeneficiaryResource,SasaPayTransferResource,SasaPayTransferStatusResource)
+    SasaPaySingleBalanceResource,SasaPayBusinessToBeneficiaryResource,SasaPayTransferResource,SasaPayTransferStatusResource, SasaPayBatchTransferResource,SasaPayBatchUtilityFundingResource )
 from Server.Views.Services.sasapay_callback import SasaPayCallbackResource
 from Server.Views.ETimsSale import  (
     BulkPublishSalesResource,
@@ -220,9 +223,9 @@ from Server.Views.ETimsSale import  (
 # -------------------------------
 # Blueprint + API setup
 # -------------------------------
-api_endpoint = Blueprint('auth', __name__, url_prefix='/api/<tenant>')
+api_endpoint = Blueprint('auth', __name__, url_prefix='/api/<tenant>')      
 api = Api(api_endpoint)
-
+    
 
 # -------------------------------
 # Tenant DB binding middleware
@@ -233,14 +236,10 @@ def bind_tenant_db():
     engine = get_engine_for_tenant(tenant)   # aborts 404 if tenant unknown
 
     db.session.remove()
-    db.session.configure(bind=engine)
+    g.tenant_engine = engine
     g.tenant = tenant
     request.view_args.pop('tenant', None)
 
-    # -------------------------------
-    # Tenant lock: if a JWT is present, its 'tenant' claim
-    # must match the tenant in the URL.
-    # -------------------------------
     try:
         verify_jwt_in_request(optional=True)  # decodes token if present; no-op if absent
         claims = get_jwt()
@@ -283,6 +282,7 @@ api.add_resource(UsersResourceById, '/user/<int:users_id>')
 api.add_resource(UserLogin, '/login')
 api.add_resource(PostShopReport, "/shop-reports")
 api.add_resource(CheckShopOpeningReports,'/shop-reports/check-opening')
+api.add_resource(CloseShopReport, "/shop-report/close")
 
 # 2FA Routes
 api.add_resource(UserLoginWith2FA, '/verify-2fa')
@@ -366,6 +366,7 @@ api.add_resource(AddSale, '/newsale')
 api.add_resource(SasaPaySaleResource, '/sasapay/sale')
 api.add_resource(SasaPayPaymentStatusResource,'/sasapay/payment/status/<string:checkout_request_id>')
 api.add_resource(GetSales, '/allsales')
+api.add_resource(SalesReport, '/sales-report')
 api.add_resource(GetSalesGraphData, '/graphs/sales-data')
 api.add_resource(GetSalesByShop,'/sales/shop/<int:shop_id>')
 api.add_resource(SalesResources,'/sale/<int:sales_id>')
@@ -385,6 +386,7 @@ api.add_resource(ItemsSoldSummary, '/sold-items-summary', '/sold-items-summary/<
 api.add_resource(DeliverySalesSummary, '/delivery-sales-summary','/delivery-sales-summary/<int:shop_id>', '/sold-items-summary/<int:shop_id>')
 api.add_resource(ProductEarningsSummary, '/shops/<int:shop_id>/product-earnings', '/product-earnings')
 api.add_resource(CategoryEarningsSummary, "/category-earnings-summary", "/category-earnings-summary/<int:shop_id>")
+api.add_resource(SasaPayReconciliationResource, '/reconciliation/sasapay')
 
 
 #Distribution
@@ -714,6 +716,8 @@ api.add_resource(SasaPayTransactionStatementResource, "/sasapay/transactions")
 api.add_resource(TestNetworkConnectivity, '/test/network/connectivity')
 api.add_resource(SasaPaySingleBalanceResource, '/sasapay/balance')
 api.add_resource(SasaPayBusinessToBeneficiaryResource, '/sasapay/internal-transfer')
+api.add_resource(SasaPayBatchTransferResource, '/sasapay/batch-transfer')
+api.add_resource(SasaPayBatchUtilityFundingResource , '/sasapay/batch-utility-transfer')
 
 # Register the callback endpoint
 api.add_resource(SasaPayCallbackResource, '/sasapay/callback')

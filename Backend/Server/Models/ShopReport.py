@@ -27,6 +27,12 @@ class ShopReport(db.Model):
         nullable=False
     )
 
+    closed_at = db.Column(
+            db.DateTime,
+            server_default=db.func.now(),
+            
+    )
+
     location = db.Column(db.String(255))
     latitude = db.Column(db.Float)
     longitude = db.Column(db.Float)

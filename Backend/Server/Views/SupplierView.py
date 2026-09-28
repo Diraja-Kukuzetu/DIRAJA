@@ -39,6 +39,10 @@ class AddSupplier(Resource):
         paybill_number = data.get('paybill_number')
         paybill_account = data.get('paybill_account')
 
+        # Bank details (optional)
+        bank_name = data.get('bank_name')
+        bank_code = data.get('bank_code')
+
         new_supplier = Suppliers(
             supplier_name=supplier_name,
             supplier_location=supplier_location,
@@ -50,7 +54,9 @@ class AddSupplier(Resource):
             mobile_number=mobile_number,
             till_number=till_number,
             paybill_number=paybill_number,
-            paybill_account=paybill_account
+            paybill_account=paybill_account,
+            bank_name=bank_name,
+            bank_code=bank_code
         )
 
         db.session.add(new_supplier)
@@ -92,6 +98,8 @@ class GetAllSuppliers(Resource):
                     'till_number': supplier.till_number,
                     'paybill_number': supplier.paybill_number,
                     'paybill_account': supplier.paybill_account,
+                    'bank_name': supplier.bank_name,
+                    'bank_code': supplier.bank_code,
                     'items_sold': supplier.items_sold if supplier.items_sold else []
                 })
 
@@ -142,6 +150,8 @@ class GetSingleSupplier(Resource):
                 'till_number': supplier.till_number,
                 'paybill_number': supplier.paybill_number,
                 'paybill_account': supplier.paybill_account,
+                'bank_name': supplier.bank_name,
+                'bank_code': supplier.bank_code,
                 'items_sold': supplier.items_sold if supplier.items_sold else [],
                 'history': history_list
             }
@@ -191,6 +201,12 @@ class UpdateSupplier(Resource):
                 supplier.paybill_number = data['paybill_number']
             if 'paybill_account' in data:
                 supplier.paybill_account = data['paybill_account']
+
+            # Update bank details (optional)
+            if 'bank_name' in data:
+                supplier.bank_name = data['bank_name']
+            if 'bank_code' in data:
+                supplier.bank_code = data['bank_code']
             
             if 'items_sold' in data:
                 supplier.items_sold = data['items_sold']
@@ -213,6 +229,8 @@ class UpdateSupplier(Resource):
                     'till_number': supplier.till_number,
                     'paybill_number': supplier.paybill_number,
                     'paybill_account': supplier.paybill_account,
+                    'bank_name': supplier.bank_name,
+                    'bank_code': supplier.bank_code,
                     'items_sold': supplier.items_sold if supplier.items_sold else []
                 }
             }, 200
@@ -415,6 +433,8 @@ class GetSupplierByPhone(Resource):
                     'till_number': supplier.till_number,
                     'paybill_number': supplier.paybill_number,
                     'paybill_account': supplier.paybill_account,
+                    'bank_name': supplier.bank_name,
+                    'bank_code': supplier.bank_code,
                     'items_sold': supplier.items_sold if supplier.items_sold else [],
                     'recent_history': history_list
                 }

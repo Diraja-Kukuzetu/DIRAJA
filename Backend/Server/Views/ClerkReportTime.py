@@ -7,6 +7,7 @@ from Server.Models.ShopReport import ShopReport
 from Server.Models.Shops import Shops
 from app import db
 
+
 class GetShopReports(Resource):
     
     @jwt_required()
@@ -93,17 +94,30 @@ class GetShopReports(Resource):
             total_reports = query.count()
             reports = query.limit(limit).offset(offset).all()
             
+            # ---- EAT offset (UTC+3) ----
+            EAT = timedelta(hours=3)
+            
             # Prepare response
             reports_list = []
             for report in reports:
+                # Opening time, converted to EAT
+                opened_eat = (report.reported_at + EAT) if report.reported_at else None
+                
+                # NEW — Closing time, converted to EAT
+                closed_eat = (report.closed_at + EAT) if report.closed_at else None
+                
                 reports_list.append({
                     "id": report.id,
                     "user_id": report.user_id,
                     "username": report.username,
                     "shop_id": report.shop_id,
-                    "reported_at": report.reported_at.isoformat() if report.reported_at else None,
-                    "date": report.reported_at.date().isoformat() if report.reported_at else None,
-                    "time": report.reported_at.time().isoformat() if report.reported_at else None,
+                    "reported_at": opened_eat.isoformat() if opened_eat else None,
+                    "date": opened_eat.date().isoformat() if opened_eat else None,
+                    "time": opened_eat.time().isoformat() if opened_eat else None,
+                    # NEW — closing time fields
+                    "closed_at": closed_eat.isoformat() if closed_eat else None,
+                    "close_date": closed_eat.date().isoformat() if closed_eat else None,
+                    "close_time": closed_eat.time().isoformat() if closed_eat else None,
                     "location": report.location,
                     "latitude": report.latitude,
                     "longitude": report.longitude,
@@ -147,7 +161,7 @@ class GetShopReports(Resource):
                 "reports": reports_list
             }, 200
             
-        except Exception as e:
+        except Exception as e:  
             db.session.rollback()
             print(f"Error fetching shop reports: {str(e)}")
             return {"message": "An error occurred while fetching reports"}, 500

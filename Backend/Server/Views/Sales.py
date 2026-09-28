@@ -43,6 +43,8 @@ from Server.Views.Services.journal_service import JournalService
 from flask import send_file
 from io import BytesIO
 from collections import defaultdict
+from decimal import Decimal, InvalidOperation
+from Server.Views.Sasapyaviews import SasaPayTransactionStatementResource
 
 logger = logging.getLogger(__name__)
 
@@ -1291,6 +1293,7 @@ class GetSales(Resource):
             current_app.logger.error(f"Unexpected error: {str(e)}")
             return {"error": "An unexpected error occurred."}, 500
         
+
 class SalesReport(Resource):
     @jwt_required()
     def get(self):
@@ -1312,28 +1315,50 @@ class SalesReport(Resource):
                 }, 400
 
             sql = text("""
-                SELECT 
-                    s.sales_id AS sale_id,
-                    s.created_at AS transaction_date,
-                    si.item_name,
+                SELECT
+                    s.sales_id                AS sale_id,
+                    s.created_at              AS transaction_date,
+                    s.customer_name,
+                    s.customer_number,
+                    s.status,
+                    s.balance,
+                    s.note,
+                    s.delivery,
+                    s.promocode,
+                    s.user_id,
+                    u.username,
                     s.shop_id,
                     sh.shopname,
 
-                    COALESCE(SUM(DISTINCT si.total_price), 0) AS sale_amount,
+                    -- Sold item details
+                    si.item_name,
+                    si.quantity,
+                    si.metric,
+                    si.unit_price,
+                    si.total_price            AS item_total_price,
+                    si.BatchNumber            AS batch_number,
 
-                    COALESCE(SUM(DISTINCT spm.amount_paid), 0) AS amount_paid,
+                    -- Payment details
+                    spm.payment_method,
+                    spm.amount_paid,
+                    spm.discount,
+                    spm.balance               AS payment_balance,
+                    spm.created_at            AS payment_created_at,
+                    spm.transaction_code,
 
-                    s.status,
-
-                    COALESCE(SUM(DISTINCT csl.amount), 0) AS cost_of_sale
+                    -- Cost of sale
+                    csl.amount                AS cost_of_sale
 
                 FROM sales s
 
-                LEFT JOIN sold_items si
-                    ON si.sales_id = s.sales_id
+                LEFT JOIN users u
+                    ON u.users_id = s.user_id
 
                 LEFT JOIN shops sh
                     ON sh.shops_id = s.shop_id
+
+                LEFT JOIN sold_items si
+                    ON si.sales_id = s.sales_id
 
                 LEFT JOIN sales_payment_methods spm
                     ON spm.sale_id = s.sales_id
@@ -1344,15 +1369,7 @@ class SalesReport(Resource):
                 WHERE s.created_at >= :start_date
                   AND s.created_at < DATE_ADD(:end_date, INTERVAL 1 DAY)
 
-                GROUP BY
-                    s.sales_id,
-                    s.created_at,
-                    si.item_name,
-                    s.shop_id,
-                    sh.shopname,
-                    s.status
-
-                ORDER BY s.created_at DESC
+                ORDER BY s.created_at DESC, s.sales_id DESC
             """)
 
             result = db.session.execute(
@@ -1363,27 +1380,91 @@ class SalesReport(Resource):
                 }
             )
 
-            report_data = []
+            # Group rows by sale_id so each sale is a single record
+            # with nested sold_items, payment_methods, etc.
+            sales_map = {}
 
             for row in result:
-                report_data.append({
-                    "sale_id": row.sale_id,
-                    "transaction_date": (
-                        row.transaction_date.strftime("%Y-%m-%d %H:%M:%S")
-                        if row.transaction_date else None
-                    ),
-                    "item_name": row.item_name,
-                    "shop_id": row.shop_id,
-                    "shopname": row.shopname,
-                    "sale_amount": float(row.sale_amount or 0),
-                    "amount_paid": float(row.amount_paid or 0),
-                    "status": row.status,
-                    "cost_of_sale": float(row.cost_of_sale or 0),
-                    "profit": float(
-                        (row.sale_amount or 0) -
-                        (row.cost_of_sale or 0)
-                    )
-                })
+                sale_id = row.sale_id
+
+                if sale_id not in sales_map:
+                    sales_map[sale_id] = {
+                        "sale_id": sale_id,
+                        "transaction_date": (
+                            row.transaction_date.strftime("%Y-%m-%d %H:%M:%S")
+                            if row.transaction_date else None
+                        ),
+                        "user_id": row.user_id,
+                        "username": row.username or "Unknown User",
+                        "shop_id": row.shop_id,
+                        "shopname": row.shopname or "Unknown Shop",
+                        "customer_name": row.customer_name or "Walk-in Customer",
+                        "customer_number": row.customer_number,
+                        "status": row.status,
+                        "balance": float(row.balance or 0),
+                        "note": row.note,
+                        "delivery": row.delivery,
+                        "promocode": row.promocode,
+                        "sold_items": [],
+                        "payment_methods": [],
+                        "cost_of_sale": 0.0,
+                        "sale_amount": 0.0,
+                        "amount_paid": 0.0,
+                        "total_discount": 0.0,
+                    }
+
+                sale = sales_map[sale_id]
+
+                # Sold item — only add if not already present
+                if row.item_name is not None:
+                    item = {
+                        "item_name": row.item_name,
+                        "quantity": float(row.quantity or 0),
+                        "metric": row.metric,
+                        "unit_price": float(row.unit_price or 0),
+                        "total_price": float(row.item_total_price or 0),
+                        "batch_number": row.batch_number,
+                    }
+                    if item not in sale["sold_items"]:
+                        sale["sold_items"].append(item)
+                        sale["sale_amount"] += item["total_price"]
+
+                # Payment — only add if not already present
+                if row.payment_method is not None:
+                    payment = {
+                        "payment_method": row.payment_method,
+                        "amount_paid": float(row.amount_paid or 0),
+                        "discount": float(row.discount or 0),
+                        "balance": float(row.payment_balance or 0),
+                        "created_at": (
+                            row.payment_created_at.strftime("%Y-%m-%d %H:%M:%S")
+                            if row.payment_created_at else None
+                        ),
+                        "transaction_code": row.transaction_code,
+                    }
+                    if payment not in sale["payment_methods"]:
+                        sale["payment_methods"].append(payment)
+                        sale["amount_paid"] += payment["amount_paid"]
+                        sale["total_discount"] += payment["discount"]
+
+                # Cost of sale — only set once
+                if row.cost_of_sale is not None and sale["cost_of_sale"] == 0.0:
+                    sale["cost_of_sale"] = float(row.cost_of_sale)
+
+            # Build final list (no profit)
+            report_data = []
+            for sale in sales_map.values():
+                sale["sale_amount"] = round(sale["sale_amount"], 2)
+                sale["amount_paid"] = round(sale["amount_paid"], 2)
+                sale["total_discount"] = round(sale["total_discount"], 2)
+                sale["cost_of_sale"] = round(sale["cost_of_sale"], 2)
+                report_data.append(sale)
+
+            # Sort in Python to preserve sale order from SQL (created_at DESC)
+            report_data.sort(
+                key=lambda x: x["transaction_date"] or "",
+                reverse=True
+            )
 
             return {
                 "count": len(report_data),
@@ -1399,7 +1480,6 @@ class SalesReport(Resource):
             return {
                 "error": "Failed to generate report"
             }, 500
-
 
 class GetSalesByShop(Resource):
     @jwt_required()
@@ -4497,3 +4577,408 @@ class GetSalesGraphData(Resource):
 
         except Exception as e:
             return {"error": str(e)}, 500
+
+
+"""
+SasaPay <-> Sales reconciliation endpoint.
+
+User journey: pick a shop (or "all") + a date/period. For each shop, its
+sales (payment_method='sasapay') are matched against that shop's SasaPay
+merchant statement, primarily on transaction_code, falling back to
+last-4-digit suffix match, then finally date+amount when a sale's
+transaction_code wasn't captured.
+"""
+
+from collections import defaultdict
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
+
+from flask import request
+from flask_jwt_extended import jwt_required
+
+# shop_id -> SasaPay merchant_code. Two shops can share a merchant_code
+# (same physical account) — matching is done per merchant_code so their
+# sales are reconciled against one shared statement, not double-checked.
+SHOP_TO_MERCHANT_MAPPING = {
+    2: "570257",   # Kuku Zetu - Mirema
+    5: "577960",   # Kuku Zetu - Lumumba Drive
+    3: "577480",   # Kuku Zetu - Zimmerman
+    8: "577668",   # Kukuzetu - Ngoingwa Stockist
+    1: "577666",   # KUKUZETU - TRM
+    20: "222333",  # Kukuzetu - Kasarani Equity
+    19: "577123",  # Kukuzetu - Kasarani Maternity
+    16: "577556",  # Kukuzetu - Turi
+    9: "570257",   # Kuku Zetu - Mirema (second account/till on same shop)
+}
+
+
+class SasaPayFetchError(Exception):
+    pass
+
+
+class SasaPayReconciliationResource(SasaPayTransactionStatementResource):
+    """
+    GET /api/reconciliation/sasapay
+
+    Query params:
+      shop_id           required - a shop id from SHOP_TO_MERCHANT_MAPPING, or "all"
+      date              optional - single day, YYYY-MM-DD
+      start_date        optional - range start, YYYY-MM-DD (used if 'date' not given)
+      end_date          optional - range end, YYYY-MM-DD
+      payment_method    optional - default 'sasapay'
+      amount_tolerance  optional - default 1 (KES). Abs diff above this -> mismatch, not silent match.
+
+    Matching order (per sale):
+      1. Exact full transaction_code match (most reliable)
+      2. Last-4-digit suffix match, disambiguated by sale date + amount
+      3. Same-day + same-amount fallback (when sale has no txn code)
+    """
+
+    @jwt_required()
+    def get(self):
+        raw_shop_id = request.args.get('shop_id')
+        if not raw_shop_id:
+            return {"error": "shop_id is required (a shop id, or 'all')"}, 400
+
+        payment_method = request.args.get('payment_method', 'sasapay')
+
+        try:
+            amount_tolerance = Decimal(request.args.get('amount_tolerance', '1'))
+        except InvalidOperation:
+            return {"error": "amount_tolerance must be numeric"}, 400
+
+        # ---- resolve shop_id(s) ----
+        if raw_shop_id.lower() == 'all':
+            shop_ids = list(SHOP_TO_MERCHANT_MAPPING.keys())
+        else:
+            try:
+                shop_id = int(raw_shop_id)
+            except ValueError:
+                return {"error": "shop_id must be an integer or 'all'"}, 400
+            if shop_id not in SHOP_TO_MERCHANT_MAPPING:
+                return {"error": f"shop_id {shop_id} has no SasaPay merchant mapping"}, 400
+            shop_ids = [shop_id]
+
+        # ---- resolve date range ----
+        single_date = request.args.get('date')
+        start_date_str = request.args.get('start_date')
+        end_date_str = request.args.get('end_date')
+
+        try:
+            if single_date:
+                start_date = end_date = datetime.strptime(single_date, '%Y-%m-%d').date()
+            elif start_date_str and end_date_str:
+                start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+                end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+            else:
+                return {"error": "Provide either 'date' or both 'start_date' and 'end_date' (YYYY-MM-DD)"}, 400
+        except ValueError:
+            return {"error": "Invalid date format. Use YYYY-MM-DD."}, 400
+
+        if start_date > end_date:
+            return {"error": "start_date must be before end_date"}, 400
+
+        # ---- group shops by merchant_code (shared statement per merchant) ----
+        shops_by_merchant = defaultdict(list)
+        for sid in shop_ids:
+            shops_by_merchant[SHOP_TO_MERCHANT_MAPPING[sid]].append(sid)
+
+        rows = []
+        per_shop_summary = defaultdict(lambda: {"matched": 0, "unmatched": 0, "amount_mismatches": 0})
+        unmatched_statement_all = []
+        errors = []
+
+        for merchant_code, merchant_shop_ids in shops_by_merchant.items():
+            try:
+                statement_transactions = self._fetch_statement_range(
+                    merchant_code, merchant_code, start_date, end_date
+                )
+            except SasaPayFetchError as e:
+                errors.append({"merchant_code": merchant_code, "shop_ids": merchant_shop_ids, "error": str(e)})
+                continue
+
+            sale_payment_rows = self._get_sale_payment_rows(
+                merchant_shop_ids, payment_method, start_date, end_date
+            )
+
+            # ---- build indexes ----
+            # full code -> [tx, ...]
+            by_code = defaultdict(list)
+            # last 4 chars of code -> [tx, ...]
+            by_suffix4 = defaultdict(list)
+            for tx in statement_transactions:
+                code = (tx.get('code') or '').strip()
+                if code:
+                    by_code[code].append(tx)
+                    if len(code) >= 4:
+                        by_suffix4[code[-4:]].append(tx)
+
+            used_tx_ids = set()
+
+            for sale, payment, shop in sale_payment_rows:
+                tx_code = getattr(payment, 'transaction_code', None)
+                sale_amount = Decimal(str(payment.amount_paid or 0))
+
+                match, match_basis = self._find_match(
+                    tx_code, sale, sale_amount, statement_transactions,
+                    by_code, by_suffix4, used_tx_ids, amount_tolerance
+                )
+
+                item_names = ", ".join(i.item_name for i in sale.items) if sale.items else None
+
+                if match:
+                    used_tx_ids.add(id(match))
+                    diff = match['amount'] - sale_amount
+                    mismatch = abs(diff) > amount_tolerance
+                    rows.append({
+                        "shop_id": shop.shops_id,
+                        "shop_name": shop.shopname,
+                        "sale_id": sale.sales_id,
+                        "sale_date": sale.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                        "item_name": item_names,
+                        "amount": float(sale_amount),
+                        "payment_method": payment_method,
+                        "match_status": "mismatch" if mismatch else "matched",
+                        "matched_by": match_basis,
+                        "transaction_amount": float(match['amount']),
+                        "transaction_code": match['code'],
+                        "reason": (
+                            f"matched but amounts differ by {float(diff)}" if mismatch else None
+                        ),
+                    })
+                    per_shop_summary[shop.shops_id]["matched"] += 1
+                    if mismatch:
+                        per_shop_summary[shop.shops_id]["amount_mismatches"] += 1
+                else:
+                    if not tx_code:
+                        reason = ("no transaction_code recorded and no statement entry "
+                                  "with matching date/amount")
+                    else:
+                        tail = str(tx_code).strip()[-4:]
+                        reason = (f"transaction_code ending '{tail}' not found in statement "
+                                  f"for this date range")
+                    rows.append({
+                        "shop_id": shop.shops_id,
+                        "shop_name": shop.shopname,
+                        "sale_id": sale.sales_id,
+                        "sale_date": sale.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                        "item_name": item_names,
+                        "amount": float(sale_amount),
+                        "payment_method": payment_method,
+                        "match_status": "not_matched",
+                        "matched_by": None,
+                        "transaction_amount": None,
+                        "transaction_code": tx_code,
+                        "reason": reason,
+                    })
+                    per_shop_summary[shop.shops_id]["unmatched"] += 1
+
+            unmatched_statement_all.extend({
+                "merchant_code": merchant_code,
+                "shop_ids": merchant_shop_ids,
+                "transaction_code": tx['code'],
+                "date": tx['date'].strftime('%Y-%m-%d'),
+                "amount": float(tx['amount']),
+                "channel": tx['channel'],
+                "reference": tx['reference'],
+                "status": tx['status'],
+                "reason": "no sale with this date/amount/code found — verify manually "
+                          "(could be a deposit not tied to a sale, or an unrecorded sale)",
+            } for tx in statement_transactions if id(tx) not in used_tx_ids)
+
+        summary = {
+            "shops_checked": len(shop_ids),
+            "total_rows": len(rows),
+            "matched": sum(v["matched"] for v in per_shop_summary.values()),
+            "amount_mismatches": sum(v["amount_mismatches"] for v in per_shop_summary.values()),
+            "unmatched_sales": sum(v["unmatched"] for v in per_shop_summary.values()),
+            "unmatched_statement_transactions": len(unmatched_statement_all),
+            "per_shop": {
+                sid: {"shop_id": sid, **stats} for sid, stats in per_shop_summary.items()
+            },
+        }
+
+        return {
+            "shop_ids": shop_ids,
+            "date_range": {"start": start_date.isoformat(), "end": end_date.isoformat()},
+            "payment_method": payment_method,
+            "summary": summary,
+            "rows": rows,
+            "unmatched_statement": unmatched_statement_all,
+            "errors": errors,
+        }, 200
+
+    # ------------------------------------------------------------------
+    def _get_sale_payment_rows(self, shop_ids, payment_method, start_date, end_date):
+        sales_query = (
+            Sales.query.join(Users).join(Shops)
+            .join(SalesPaymentMethods, SalesPaymentMethods.sale_id == Sales.sales_id)
+            .filter(SalesPaymentMethods.payment_method == payment_method)
+            .filter(Sales.shop_id.in_(shop_ids))
+            .filter(db.func.date(Sales.created_at) >= start_date)
+            .filter(db.func.date(Sales.created_at) <= end_date)
+        )
+        sales = sales_query.all()
+
+        rows = []
+        for sale in sales:
+            shop = sale.shops
+            for p in sale.payment:
+                if p.payment_method != payment_method:
+                    continue
+                rows.append((sale, p, shop))
+        return rows
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _find_match(tx_code, sale, sale_amount, statement_transactions,
+                    by_code, by_suffix4, used_tx_ids, amount_tolerance):
+        """
+        Try, in order:
+          1. Exact full-code match.
+          2. Last-4-digit suffix match, disambiguated by sale date + amount.
+          3. Same-day + same-amount fallback.
+        Returns (matched_tx_or_None, basis_string_or_None).
+        """
+        sale_date = sale.created_at.date()
+
+        if tx_code:
+            code = str(tx_code).strip()
+
+            # 1. exact full-code match
+            for candidate in by_code.get(code, []):
+                if id(candidate) not in used_tx_ids:
+                    return candidate, "transaction_code"
+
+            # 2. last-4-digit suffix match
+            if len(code) >= 4:
+                suffix = code[-4:]
+                candidates = [c for c in by_suffix4.get(suffix, [])
+                              if id(c) not in used_tx_ids]
+
+                if candidates:
+                    # Prefer candidates on the same day AND within amount tolerance
+                    preferred = [
+                        c for c in candidates
+                        if c['date'] == sale_date
+                        and abs(c['amount'] - sale_amount) <= amount_tolerance
+                    ]
+                    if preferred:
+                        return preferred[0], "transaction_code_suffix"
+
+                    # No amount+date match; only accept if unambiguous
+                    if len(candidates) == 1:
+                        return candidates[0], "transaction_code_suffix"
+
+                    # Ambiguous — don't guess; fall through to date+amount
+                    # (which is basically same-day + same-amount anyway)
+
+        # 3. fallback: same date + same amount, first unused candidate
+        for candidate in statement_transactions:
+            if id(candidate) in used_tx_ids:
+                continue
+            if candidate['date'] != sale_date:
+                continue
+            if abs(candidate['amount'] - sale_amount) <= amount_tolerance:
+                return candidate, "date_and_amount_fallback"
+
+        return None, None
+
+    # ------------------------------------------------------------------
+    # Statement fetching (paginates the SasaPay API, filters to date range)
+    # ------------------------------------------------------------------
+    def _fetch_statement_range(self, merchant_code, account_number, start_date, end_date):
+        import os
+        import requests
+
+        sasapay_env = os.getenv("SASAPAY_ENVIRONMENT", "sandbox")
+
+        if sasapay_env != "production":
+            raise SasaPayFetchError(
+                "Transaction statements are only available in PRODUCTION environment"
+            )
+
+        merchants = self._get_all_merchant_configs(sasapay_env)
+        merchant = next((m for m in merchants if m['code'] == merchant_code), None)
+        if not merchant:
+            raise SasaPayFetchError(f"Merchant {merchant_code} not found or not configured")
+
+        access_token = self._get_access_token(
+            merchant['base_url'], merchant['client_id'], merchant['client_secret']
+        )
+        if not access_token:
+            raise SasaPayFetchError("Failed to obtain SasaPay access token")
+
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        transactions_url = "https://api.sasapay.app/api/v2/waas/transactions/"
+
+        results = []
+        page = 1
+        page_size = 100
+        max_pages = 200  # safety cap
+
+        # Statement rows are date-desc. Stop once a page's oldest row is
+        # older than start_date.
+        while page <= max_pages:
+            params = {
+                "merchantCode": merchant_code,
+                "accountNumber": account_number,
+                "page": page,
+                "page_size": page_size,
+            }
+            resp = requests.get(transactions_url, headers=headers, params=params, timeout=30)
+            if resp.status_code != 200:
+                raise SasaPayFetchError(
+                    f"Statement fetch failed (HTTP {resp.status_code}): {resp.text[:200]}"
+                )
+
+            data = resp.json()
+            raw_txs = (
+                data.get('data', {}).get('transactions')
+                if isinstance(data.get('data'), dict)
+                else data.get('transactions', [])
+            ) or []
+
+            if not raw_txs:
+                break
+
+            page_min_date = None
+            for tx in raw_txs:
+                tx_date = self._parse_statement_date(tx.get('transaction_date') or tx.get('Date'))
+                if tx_date is None:
+                    continue
+                page_min_date = tx_date if page_min_date is None else min(page_min_date, tx_date)
+
+                if start_date <= tx_date <= end_date:
+                    results.append({
+                        "date": tx_date,
+                        "amount": Decimal(str(tx.get('transaction_amount', tx.get('Amount', 0)))),
+                        "code": tx.get('transaction_code') or tx.get('Code'),
+                        "reference": tx.get('transaction_reference') or tx.get('Reference'),
+                        "channel": (tx.get('payment_details') or {}).get('channel_name') or tx.get('Channel'),
+                        "status": tx.get('result_description') or tx.get('Status'),
+                    })
+
+            total_pages = data.get('pages', 1)
+            if page_min_date and page_min_date < start_date:
+                break
+            if page >= total_pages:
+                break
+            page += 1
+
+        return results
+
+    @staticmethod
+    def _parse_statement_date(raw):
+        if not raw:
+            return None
+        for fmt in ('%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d'):
+            try:
+                return datetime.strptime(raw[:19] if 'T' in raw else raw, fmt).date()
+            except ValueError:
+                continue
+        return None
