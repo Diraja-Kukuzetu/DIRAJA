@@ -7,6 +7,7 @@ from tenant import  get_engine_for_tenant
 
 # add all file inputs 
 from Server.Views.Usersviews import (
+    CheckShopOpeningReports, CountUsers, Addusers, UsersResourceById, UserLogin, GetAllUsers,PostShopReport,
     CountUsers, Addusers, UsersResourceById, UserLogin, GetAllUsers,PostShopReport,CloseShopReport,
     UserLoginWith2FA,Resend2FACode,Enable2FA,Disable2FA,Get2FAStatus,VerifyBackupCode,TestEmail
 )
@@ -69,6 +70,8 @@ from Server.Views.Sales import (
     SalesBalanceResource, TotalBalanceSummary,SasaPayPaymentStatusResource,
     UpdateSalePayment, GetUnpaidSales, PaymentMethodsResource,
     CapturePaymentResource, CreditHistoryResource, GetSingleSaleByShop,
+    SalesByEmployeeResource, GetSale, GetUnpaidSalesByClerk,
+    TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport,ProductEarningsSummary,CategoryEarningsSummary, ItemsSoldSummary, DeliverySalesSummary, CashAtHandByUser, TotalAmountPaidDeliverySales
     SalesByEmployeeResource, GetSale, GetUnpaidSalesByClerk,SalesReport,
     TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport,ProductEarningsSummary,CategoryEarningsSummary, ItemsSoldSummary, DeliverySalesSummary, CashAtHandByUser
 )
@@ -278,6 +281,7 @@ api.add_resource(Addusers , '/newuser')
 api.add_resource(UsersResourceById, '/user/<int:users_id>')
 api.add_resource(UserLogin, '/login')
 api.add_resource(PostShopReport, "/shop-reports")
+api.add_resource(CheckShopOpeningReports,'/shop-reports/check-opening')
 api.add_resource(CloseShopReport, "/shop-report/close")
 
 # 2FA Routes
@@ -377,6 +381,7 @@ api.add_resource(CapturePaymentResource, "/sales/<int:sale_id>/capture-payment")
 api.add_resource(CreditHistoryResource, "/credit-history")
 api.add_resource(GetSingleSaleByShop, "/sale/<int:shop_id>/<int:sales_id>")
 api.add_resource(GetUnpaidSalesByClerk, "/unpaidsales/clerk") 
+api.add_resource(TotalAmountPaidDeliverySales, "/totaldeliverysales") 
 api.add_resource(ItemsSoldSummary, '/sold-items-summary', '/sold-items-summary/<int:shop_id>')
 api.add_resource(DeliverySalesSummary, '/delivery-sales-summary','/delivery-sales-summary/<int:shop_id>', '/sold-items-summary/<int:shop_id>')
 api.add_resource(ProductEarningsSummary, '/shops/<int:shop_id>/product-earnings', '/product-earnings')

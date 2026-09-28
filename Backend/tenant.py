@@ -13,7 +13,7 @@ from flask import abort
 TENANT_DATABASES = {
     "diraja": os.getenv(
         "DIRAJA_DB_URI",
-        "mysql+pymysql://admin:MyNewPass@localhost/Diraja"
+        "mysql+pymysql://root:@localhost/Diraja"
     ),
     "shwariliving": os.getenv(
         "SHWARILIVING_DB_URI",
