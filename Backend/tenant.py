@@ -10,10 +10,11 @@ from flask import abort
 # Ideally pull these from env vars rather than hardcoding
 # credentials here, e.g. os.getenv("DIRAJA_DB_URI")
 # ---------------------------------------------------------
+
 TENANT_DATABASES = {
     "diraja": os.getenv(
         "DIRAJA_DB_URI",
-        "mysql+pymysql://root:@localhost/Diraja"
+        "mysql+pymysql://admin:MyNewPass@localhost/Diraja"
     ),
     "shwariliving": os.getenv(
         "SHWARILIVING_DB_URI",

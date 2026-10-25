@@ -3,13 +3,11 @@ from flask_restful import Api
 from flask_jwt_extended import verify_jwt_in_request, get_jwt
 
 from app import db
-from tenant import  get_engine_for_tenant
+from tenant import get_engine_for_tenant
 
-# add all file inputs 
 from Server.Views.Usersviews import (
-    CheckShopOpeningReports, CountUsers, Addusers, UsersResourceById, UserLogin, GetAllUsers,PostShopReport,
-    CountUsers, Addusers, UsersResourceById, UserLogin, GetAllUsers,PostShopReport,CloseShopReport,
-    UserLoginWith2FA,Resend2FACode,Enable2FA,Disable2FA,Get2FAStatus,VerifyBackupCode,TestEmail
+     CountUsers, Addusers, UsersResourceById, UserLogin, GetAllUsers, 
+     UserLoginWith2FA, Resend2FACode, Enable2FA, Disable2FA, Get2FAStatus, VerifyBackupCode, TestEmail
 )
 
 from Server.Views.Shopsviews import (
@@ -48,12 +46,12 @@ from Server.Views.Bankviews import (
 
 from Server.Views.Expenses import (
     AllExpenses, AddExpense, GetShopExpenses, ExpensesResources, TotalBalance,
-    CreditPaymentResource,GetCreditorDetails,GetCreditors,DeleteCreditor,CreateExpenseCreditor
-    ,UpdateCreditor,DistributeExpense
+    CreditPaymentResource, GetCreditorDetails, GetCreditors, DeleteCreditor, CreateExpenseCreditor,
+    UpdateCreditor, DistributeExpense
 )
 
 from Server.Views.Customersviews import (
-    AddCustomer, GetAllCustomers, GetCustomerById, GetCustomersByShop,GetCustomerByNumber
+    AddCustomer, GetAllCustomers, GetCustomerById, GetCustomersByShop, GetCustomerByNumber
 )
 
 from Server.Views.Employeeviews import (
@@ -66,14 +64,12 @@ from Server.Views.employeeloanview import (
 )
 
 from Server.Views.Sales import (
-    AddSale, SasaPaySaleResource , GetSales, GetSalesByShop, SalesResources, GetPaymentTotals,GetSalesGraphData,SasaPayReconciliationResource,
-    SalesBalanceResource, TotalBalanceSummary,SasaPayPaymentStatusResource,
+    AddSale, SasaPaySaleResource, GetSales, GetSalesByShop, SalesResources, GetPaymentTotals, GetSalesGraphData, SasaPayReconciliationResource,
+    SalesBalanceResource, TotalBalanceSummary, SasaPayPaymentStatusResource,
     UpdateSalePayment, GetUnpaidSales, PaymentMethodsResource,
     CapturePaymentResource, CreditHistoryResource, GetSingleSaleByShop,
     SalesByEmployeeResource, GetSale, GetUnpaidSalesByClerk,
-    TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport,ProductEarningsSummary,CategoryEarningsSummary, ItemsSoldSummary, DeliverySalesSummary, CashAtHandByUser, TotalAmountPaidDeliverySales
-    SalesByEmployeeResource, GetSale, GetUnpaidSalesByClerk,SalesReport,
-    TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport,ProductEarningsSummary,CategoryEarningsSummary, ItemsSoldSummary, DeliverySalesSummary, CashAtHandByUser
+    TotalCashSalesByUser, CashSales, CashSalesByUser, GenerateSalesReport, ProductEarningsSummary, CategoryEarningsSummary, ItemsSoldSummary, DeliverySalesSummary, CashAtHandByUser, TotalAmountPaidDeliverySales, SalesReport
 )
 
 from Server.Views.ManagerDashbordViews import (
@@ -82,7 +78,7 @@ from Server.Views.ManagerDashbordViews import (
     TotalAmountPaidPurchases, StockAlert, TotalSalesByShop,
     TotalUnpaidAmountAllSales, TotalAmountPaidForMabanda,
     TotalAmountPaidPurchasesInventory, SalesSummary, TotalFinancialSummary,
-    TotalUnpaidAmountPerClerk, TotalExpensesForMabanda,StockMovement,GetInventoryStock, MonthlyIncome,SendNotification
+    TotalUnpaidAmountPerClerk, TotalExpensesForMabanda, StockMovement, GetInventoryStock, MonthlyIncome, SendNotification
 )
 
 from Server.Views.Emailnotifications import (
@@ -90,25 +86,25 @@ from Server.Views.Emailnotifications import (
 )
 
 from Server.Views.Accountingviews import (
-    CreateChartOfAccounts, ChartOfAccountsList, SalesLedger, PurchasesLedger,GetItems,CreateItem
+    CreateChartOfAccounts, ChartOfAccountsList, SalesLedger, PurchasesLedger, GetItems, CreateItem
 )
 
 from Server.Views.AccountBalances import (
-    PostBankAccount, DepositToAccount, BankAccountResource,MultipleToOneTransfer,
+    PostBankAccount, DepositToAccount, BankAccountResource, MultipleToOneTransfer,
     GetAllBankAccounts, DailySalesDeposit, TotalBankBalance
 )
 
 from Server.Views.SpoiltStock import (
-    AddSpoiltStock, SpoiltStockResource, ApproveSpoiltStock,RejectSpoiltStock,ApproveAllSpoiltStock,
+    AddSpoiltStock, SpoiltStockResource, ApproveSpoiltStock, RejectSpoiltStock, ApproveAllSpoiltStock,
     GetPendingSpoiltStock, SpoiltStockHistory, AddSpoiltFromInventory, SpoiltValue
 )
 
 from Server.Views.StockItems import (
-    PostStockItem, GetAllStockItems, StockItem, SyncAllItemsResource,SyncSingleItemResource,ETimsItemsResource,ETimsReferenceResource
+    PostStockItem, GetAllStockItems, StockItem, SyncAllItemsResource, SyncSingleItemResource, ETimsItemsResource, ETimsReferenceResource
 )
 
 from Server.Views.CashDepositviews import (
-    AddCashDeposit, CashDepositResource
+    AddCashDeposit, CashDepositResource ,GetCashDepositsByUser
 )
 
 from Server.Views.Saledepartmentviews import (
@@ -125,7 +121,7 @@ from Server.Views.MeritandDemerit import (
 )
 
 from Server.Views.SupplierView import (
-    AddSupplier, GetAllSuppliers, GetSingleSupplier,UpdateSupplier
+    AddSupplier, GetAllSuppliers, GetSingleSupplier, UpdateSupplier
 )
 
 from Server.Views.ShopstockviewsV2 import (
@@ -139,57 +135,50 @@ from Server.Views.ShopstockviewsV2 import (
 
 from Server.Views.InventoryV2Views import (
     GetInventoryByBatchV2, DistributeInventoryV2, DeleteShopStockV2,
-    GetTransferV2, GetTransferByIdV2, UpdateTransferV2, AddInventoryV2,ProcessInventoryPayment,SelfCheckoutInventory,
+    GetTransferV2, GetTransferByIdV2, UpdateTransferV2, AddInventoryV2, ProcessInventoryPayment, SelfCheckoutInventory,
     GetAllInventoryV2, AllInventoryV2, InventoryResourceByIdV2, StockDeletionResourceV2,
-    ManualTransferV2, ReceiveTransfer, DeclineTransfer, PendingTransfers,SasaPayProcessPayment,
+    ManualTransferV2, ReceiveTransfer, DeclineTransfer, PendingTransfers, SasaPayProcessPayment,
     ProcessInventoryV2
 )
 
-from Server.Views.ShopstockviewsV2 import (
-    AddShopStockV2, GetAllStockV2, GetBatchStockV2, GetItemsByShopIdV2, GetItemStockV2, GetStockValueByShopV2, GetShopStockByShopIdV2, GetShopStockV2, BatchDetailsResourceForShopV2, BatchDetailsResourceV2, AvailableBatchesByShopResourceV2, AvailableBatchesResourceV2, ShopStockByDateV2, AvailableItemsByShopResourceV2, ShopStockDeleteV2, ItemDetailsResourceForShopV2, StockReturns
-)
 from Server.Views.ExpenseCategoies import (
-    PostExpenseCategory, GetAllExpenseCategories, ExpenseCategoryResource,PostExpenseItem,GetAllExpenseItems,ExpenseItemResource,CategoryWithItemsResource
+    PostExpenseCategory, GetAllExpenseCategories, ExpenseCategoryResource, PostExpenseItem, GetAllExpenseItems, ExpenseItemResource, CategoryWithItemsResource
 )
 from Server.Views.Shoptoshoptransferviews import (
-    ShopToShopTransfer,  ConfirmTransfer, GetAllShopToShopTransfers, GetPendingShopToShopTransfers, DeclineTransfers
+    ShopToShopTransfer, ConfirmTransfer, GetAllShopToShopTransfers, GetPendingShopToShopTransfers, DeclineTransfers
 )
 from Server.Views.StockReport import (
     SubmitStockReport, ResetShopReportStatus, GetStockReports, GetStockReportById, StockReconciliationList, StockReconciliationResource,
     GetReportedStock, StockReconciliationByShop, GetReconciliationItemsByShop, ReconciliationItemsByShop, InventoryCount
-    
 )
 
 from Server.Views.Sasapaycodes import (
     ProcessCSV
 )
-from Server.Views.PushSubscription import  (
+from Server.Views.PushSubscription import (
     PushSubscribe
 )
 
 from Server.Views.TaskManagerViews import (
     # Task Management
-    CreateTask, TaskResource, GetTasks, CompleteTask, GetUserTasks,TaskProgressResource,TaskStatsResource,TaskCommentResource,CommentResource,TaskEvaluationResource,
-    CancelRecurringTask,ProcessRecurringTasks,CreateTaskCategory,GetAllTaskCategories
+    CreateTask, TaskResource, GetTasks, CompleteTask, GetUserTasks, TaskProgressResource, TaskStatsResource, TaskCommentResource, CommentResource, TaskEvaluationResource,
+    CancelRecurringTask, ProcessRecurringTasks, CreateTaskCategory, GetAllTaskCategories
 )
-from Server.Views.CookedItemsView import  (
+from Server.Views.CookedItemsView import (
     AddCookedItems
 )
 from Server.Views.credirors import (
-    CreateCreditor,CreditorsList,SingleCreditor,CreditorsByShop
+    CreateCreditor, CreditorsList, SingleCreditor, CreditorsByShop
 )
 from Server.Views.Permissions import (
-    GetAllPermissions,GetUserPermissions,UpdateUserPermissions
+    GetAllPermissions, GetUserPermissions, UpdateUserPermissions
 )
 from Server.Views.ShopTargets import (
-    PostShopTarget,GetShopTargets,TargetResource
+    PostShopTarget, GetShopTargets, TargetResource
 )
 
 from Server.Views.LedgerViews import (
-
-    SalesLedgerList,CreditSalesLedgerList,DistributionLedgerList,PurchaseLedgerInventoryList,BankTransfersLedgerList, ExpensesLedgerList, SpoiltStockLedgerList, CreateManualLedger, ManualLedgerList
-
-
+    SalesLedgerList, CreditSalesLedgerList, DistributionLedgerList, PurchaseLedgerInventoryList, BankTransfersLedgerList, ExpensesLedgerList, SpoiltStockLedgerList, CreateManualLedger, ManualLedgerList
 )
 from Server.Views.Notifications import (
     NotificationsResource,
@@ -201,31 +190,35 @@ from Server.Views.Notifications import (
 )
 
 from Server.Views.ClerkReportTime import (
-    GetShopReports,GetShopReportStats,GetTodayShopReportStatus
+    GetShopReports, GetShopReportStats, GetTodayShopReportStatus,CheckShopOpeningReports,PostShopReport,CloseShopReport,
 )
 from Server.Views.IncomeStatement import (IncomeStatement)
 from Server.Views.Balancesheet import (BalanceSheet)
-from Server.Views.DirajaAI import (RefreshSchema,AskAI)
+from Server.Views.DirajaAI import (RefreshSchema, AskAI)
 from Server.Views.Sasapyaviews import (
-    SasaPayBalanceResource,SasaPayChannelCodesResource,SasaPayTransactionStatementResource,TestSasaPayConnection,TestSasaPaySingleMerchant,TestNetworkConnectivity,
-    SasaPaySingleBalanceResource,SasaPayBusinessToBeneficiaryResource,SasaPayTransferResource,SasaPayTransferStatusResource, SasaPayBatchTransferResource,SasaPayBatchUtilityFundingResource )
+    SasaPayBalanceResource,AddSasaPayMerchants, SasaPayChannelCodesResource, SasaPayTransactionStatementResource, TestSasaPayConnection, TestSasaPaySingleMerchant, TestNetworkConnectivity,
+    SasaPaySingleBalanceResource, SasaPayBusinessToBeneficiaryResource, SasaPayTransferResource, SasaPayTransferStatusResource, SasaPayBatchTransferResource, SasaPayBatchUtilityFundingResource
+)
 from Server.Views.Services.sasapay_callback import SasaPayCallbackResource
-from Server.Views.ETimsSale import  (
+from Server.Views.ETimsSale import (
     BulkPublishSalesResource,
     PublishSingleSaleResource,
     GetETimsSalesResource,
     GetETimsSaleStatusResource,
     RetryFailedSalesResource,
-    GetETimsSaleStatsResource,GetETimsSaleReceiptResource
+    GetETimsSaleStatsResource, GetETimsSaleReceiptResource
 )
-
+from Server.Views.SasaPayStatementSales import (
+    SasaPayUnclaimedStatement,
+    AddSaleFromStatement,
+)
 
 # -------------------------------
 # Blueprint + API setup
 # -------------------------------
-api_endpoint = Blueprint('auth', __name__, url_prefix='/api/<tenant>')      
+api_endpoint = Blueprint('auth', __name__, url_prefix='/api/<tenant>')
 api = Api(api_endpoint)
-    
+
 
 # -------------------------------
 # Tenant DB binding middleware
@@ -270,19 +263,17 @@ def cleanup_tenant_db(exc):
 # Email reports
 api.add_resource(Report, '/send-report')
 
-api.add_resource(PushSubscribe ,'/subscribe')
+api.add_resource(PushSubscribe, '/subscribe')
 # Register the route
 api.add_resource(TestEmail, '/test-email')
 
 # users endpoints 
 api.add_resource(CountUsers, '/countusers')
-api.add_resource(GetAllUsers,'/allusers')
-api.add_resource(Addusers , '/newuser')
+api.add_resource(GetAllUsers, '/allusers')
+api.add_resource(Addusers, '/newuser')
 api.add_resource(UsersResourceById, '/user/<int:users_id>')
 api.add_resource(UserLogin, '/login')
-api.add_resource(PostShopReport, "/shop-reports")
-api.add_resource(CheckShopOpeningReports,'/shop-reports/check-opening')
-api.add_resource(CloseShopReport, "/shop-report/close")
+
 
 # 2FA Routes
 api.add_resource(UserLoginWith2FA, '/verify-2fa')
@@ -321,16 +312,16 @@ api.add_resource(GetItemsByShopId, '/items/<int:shop_id>')
 
 #Employess Routes
 api.add_resource(AddNewemployee, '/newemployee')
-api.add_resource(GetAllemployees,'/allemployees')
+api.add_resource(GetAllemployees, '/allemployees')
 api.add_resource(Employeeresource, '/employee/<int:employee_id>')
 api.add_resource(UpdateEmployeeShop, '/update-shop/<int:employee_id>')
-api.add_resource(AddEmployeeLoan,'/newloan')
+api.add_resource(AddEmployeeLoan, '/newloan')
 api.add_resource(GetEmployeeLeaderboard, '/leaderboard/employee')
-api.add_resource(GetEmployeeLoan,'/employee/loan/<int:employee_id>')
+api.add_resource(GetEmployeeLoan, '/employee/loan/<int:employee_id>')
 
 # inventory endpoints 
 api.add_resource(AddInventory, '/newinventory')
-api.add_resource(GetAllInventory,'/allinventories')
+api.add_resource(GetAllInventory, '/allinventories')
 api.add_resource(InventoryResourceById, '/inventory/<int:inventory_id>')
 api.add_resource(DeleteShopStock, '/deleteshopstock/<int:shop_stock_id>')
 api.add_resource(GetInventoryByBatch, '/inventory-by-batch')
@@ -348,7 +339,7 @@ api.add_resource(GetCreditorDetails, '/expense-creditors/<int:creditor_id>')
 api.add_resource(CreateExpenseCreditor, '/expense-creditors/create')
 api.add_resource(UpdateCreditor, '/expense-creditors/update/<int:creditor_id>')
 api.add_resource(DeleteCreditor, '/expense-creditors/delete/<int:creditor_id>')
-api.add_resource(DistributeExpense ,'/expenses/<expense_id>/distribute')
+api.add_resource(DistributeExpense, '/expenses/<expense_id>/distribute')
 
 # banks endpoint
 api.add_resource(AddBank, '/newbank')
@@ -364,12 +355,12 @@ api.add_resource(GetCustomerByNumber, '/customers/by-number')
 #Sales 
 api.add_resource(AddSale, '/newsale')
 api.add_resource(SasaPaySaleResource, '/sasapay/sale')
-api.add_resource(SasaPayPaymentStatusResource,'/sasapay/payment/status/<string:checkout_request_id>')
+api.add_resource(SasaPayPaymentStatusResource, '/sasapay/payment/status/<string:checkout_request_id>')
 api.add_resource(GetSales, '/allsales')
 api.add_resource(SalesReport, '/sales-report')
 api.add_resource(GetSalesGraphData, '/graphs/sales-data')
-api.add_resource(GetSalesByShop,'/sales/shop/<int:shop_id>')
-api.add_resource(SalesResources,'/sale/<int:sales_id>')
+api.add_resource(GetSalesByShop, '/sales/shop/<int:shop_id>')
+api.add_resource(SalesResources, '/sale/<int:sales_id>')
 api.add_resource(GetPaymentTotals, '/get_payment_totals')
 api.add_resource(SalesBalanceResource, '/sales/totalsalesbalance')
 api.add_resource(TotalBalanceSummary, '/accountspayable')
@@ -383,63 +374,63 @@ api.add_resource(GetSingleSaleByShop, "/sale/<int:shop_id>/<int:sales_id>")
 api.add_resource(GetUnpaidSalesByClerk, "/unpaidsales/clerk") 
 api.add_resource(TotalAmountPaidDeliverySales, "/totaldeliverysales") 
 api.add_resource(ItemsSoldSummary, '/sold-items-summary', '/sold-items-summary/<int:shop_id>')
-api.add_resource(DeliverySalesSummary, '/delivery-sales-summary','/delivery-sales-summary/<int:shop_id>', '/sold-items-summary/<int:shop_id>')
+api.add_resource(DeliverySalesSummary, '/delivery-sales-summary', '/delivery-sales-summary/<int:shop_id>', '/sold-items-summary/<int:shop_id>')
 api.add_resource(ProductEarningsSummary, '/shops/<int:shop_id>/product-earnings', '/product-earnings')
 api.add_resource(CategoryEarningsSummary, "/category-earnings-summary", "/category-earnings-summary/<int:shop_id>")
 api.add_resource(SasaPayReconciliationResource, '/reconciliation/sasapay')
 
 
 #Distribution
-api.add_resource(DistributeInventory,'/transfer')
-api.add_resource(GetTransfer,'/alltransfers')
+api.add_resource(DistributeInventory, '/transfer')
+api.add_resource(GetTransfer, '/alltransfers')
 api.add_resource(UpdateTransfer, "/updatetransfer/<int:transfer_id>")
-api.add_resource(ManualTransfer,'/manualtransfer')
+api.add_resource(ManualTransfer, '/manualtransfer')
 api.add_resource(GetTransferById, '/singletransfer/<int:transfer_id>')
 
 #Live stock
-api.add_resource(GetStock,"/get-stock/<int:shop_id>")
-api.add_resource(RegisterStock , '/registerstock')
+api.add_resource(GetStock, "/get-stock/<int:shop_id>")
+api.add_resource(RegisterStock, '/registerstock')
 api.add_resource(CheckInStock, '/stockcheckin')
-api.add_resource(DeleteStock, "/delete-stock/<int:stock_id>" )
+api.add_resource(DeleteStock, "/delete-stock/<int:stock_id>")
 api.add_resource(AddStock, "/addstock")
 api.add_resource(CheckoutStock, "/checkout")
-api.add_resource(GetAllLiveStock , "/all-shop-stocks")
-api.add_resource(TransferStock , "/transfer-shop-stock")
-api.add_resource(GetShopTransfers, '/allshoptransfers' )
+api.add_resource(GetAllLiveStock, "/all-shop-stocks")
+api.add_resource(TransferStock, "/transfer-shop-stock")
+api.add_resource(GetShopTransfers, '/allshoptransfers')
 api.add_resource(AutoCheckoutStock, "/auto-checkout")
 
 #manager dashbord
 api.add_resource(CountShops, '/totalshops')
-api.add_resource(CountEmployees,'/totalemployees')
-api.add_resource(TotalAmountPaidExpenses,'/totalexpenses')
-api.add_resource(TotalAmountPaidSalesPerShop,'/totalsales')
-api.add_resource(TotalAmountPaidAllSales,"/allshopstotal")
-api.add_resource(TotalAmountPaidPurchases,"/totalpurchases")
-api.add_resource(TotalAmountPaidPurchasesInventory,"/Invetory-purchase")
-api.add_resource(StockAlert,"/checkstock")
-api.add_resource(TotalUnpaidAmountAllSales,"/allunpaidtotal")
-api.add_resource(TotalAmountPaidForMabanda,'/totalmabandasales')
-api.add_resource(TotalExpensesForMabanda,'/totalmabandaexpenses')
-api.add_resource(SalesSummary,'/Sale-Summery')
-api.add_resource(TotalFinancialSummary,'/summery')
+api.add_resource(CountEmployees, '/totalemployees')
+api.add_resource(TotalAmountPaidExpenses, '/totalexpenses')
+api.add_resource(TotalAmountPaidSalesPerShop, '/totalsales')
+api.add_resource(TotalAmountPaidAllSales, "/allshopstotal")
+api.add_resource(TotalAmountPaidPurchases, "/totalpurchases")
+api.add_resource(TotalAmountPaidPurchasesInventory, "/Invetory-purchase")
+api.add_resource(StockAlert, "/checkstock")
+api.add_resource(TotalUnpaidAmountAllSales, "/allunpaidtotal")
+api.add_resource(TotalAmountPaidForMabanda, '/totalmabandasales')
+api.add_resource(TotalExpensesForMabanda, '/totalmabandaexpenses')
+api.add_resource(SalesSummary, '/Sale-Summery')
+api.add_resource(TotalFinancialSummary, '/summery')
 api.add_resource(TotalUnpaidAmountPerClerk, "/unpaidsales/totalperclerk")
-api.add_resource(TotalAmountPaidPerShop,"/totalsalespershop")
-api.add_resource(TotalSalesByShop,"/totalsalesbyshop/<int:shop_id>")
+api.add_resource(TotalAmountPaidPerShop, "/totalsalespershop")
+api.add_resource(TotalSalesByShop, "/totalsalesbyshop/<int:shop_id>")
 api.add_resource(StockMovement, '/stock-movement')
 api.add_resource(GetInventoryStock, '/inventory-stock-level')
 api.add_resource(MonthlyIncome, '/monthly-analytics')
 api.add_resource(SendNotification, "/send_notification")
 
 # Mabanda shop 
-api.add_resource(AddMabandaSale,'/newmabandasale')
-api.add_resource(AddMabandaExpense,'/newmabandaexpense')
-api.add_resource(AddMabandaPurchase,'/newmabandapurchase')
-api.add_resource(AddMabandaStock,'/newmabandastock')
-api.add_resource(MabandaSaleResource,'/getmabandasale')
-api.add_resource(MabandaPurchaseResource,'/getmabandapurchase')
-api.add_resource(MabandaStockResource,'/getmabandastock')
-api.add_resource(MabandaExpenseResource,'/getmabandaexpense')
-api.add_resource(TotalAmountPaidSalesMabanda,'/totalsalesmabanda')
+api.add_resource(AddMabandaSale, '/newmabandasale')
+api.add_resource(AddMabandaExpense, '/newmabandaexpense')
+api.add_resource(AddMabandaPurchase, '/newmabandapurchase')
+api.add_resource(AddMabandaStock, '/newmabandastock')
+api.add_resource(MabandaSaleResource, '/getmabandasale')
+api.add_resource(MabandaPurchaseResource, '/getmabandapurchase')
+api.add_resource(MabandaStockResource, '/getmabandastock')
+api.add_resource(MabandaExpenseResource, '/getmabandaexpense')
+api.add_resource(TotalAmountPaidSalesMabanda, '/totalsalesmabanda')
 api.add_resource(MabandaProfitLossAPI, '/mabandap&l')
 
 #Accounting 
@@ -451,8 +442,8 @@ api.add_resource(ChartOfAccountsList, '/chart-of-accounts')
 # api.add_resource(CreateItemAccount, '/itemaccounts')
 # api.add_resource(GetAllItemAccounts, '/itemaccounts/all')
 api.add_resource(SalesLedger, '/sale-ledger')
-api.add_resource(PurchasesLedger , '/purchases-ledger')
-api.add_resource(CreateItem,'/create-items')
+api.add_resource(PurchasesLedger, '/purchases-ledger')
+api.add_resource(CreateItem, '/create-items')
 api.add_resource(GetItems, '/created-items-list')
 
 #Account Ballance 
@@ -461,7 +452,7 @@ api.add_resource(GetAllBankAccounts, '/all-acounts')
 api.add_resource(DailySalesDeposit, '/sales/daily-deposit', '/sales/daily-deposit/<string:date_str>')
 api.add_resource(BankAccountResource, '/bankaccount/<int:account_id>/deposit')
 api.add_resource(TotalBankBalance, '/total-balance')
-api.add_resource(MultipleToOneTransfer,"/bulk-transfer")
+api.add_resource(MultipleToOneTransfer, "/bulk-transfer")
 
 #Spoiltstock
 api.add_resource(AddSpoiltStock, '/newspoilt')
@@ -496,6 +487,7 @@ api.add_resource(CashAtHandByUser, '/users/cash-at-hand')
 #Cash Deposits
 api.add_resource(AddCashDeposit, '/cashdeposits/add')
 api.add_resource(CashDepositResource, '/cashdeposits', '/cashdeposits/<int:deposit_id>')
+api.add_resource(GetCashDepositsByUser,'/cashdeposits/user/<int:user_id>')
 
 #reports 
 api.add_resource(GenerateSalesReport, '/generate-sales-report')
@@ -504,9 +496,9 @@ api.add_resource(GenerateSalesReport, '/generate-sales-report')
 api.add_resource(SalesdepartmentSale, '/salesdepartmentnew')
 api.add_resource(GetSalesdepartmentSales, '/allsalesdepartmentsales')
 api.add_resource(GetSalesDepartmentSalesByUser, '/salesdepartmentsales/<int:user_id>')
-api.add_resource(TotalAmountDepartmentSales,"/salesdepartmenttotal")
-api.add_resource(TotalAmountDepartmentSalesByUser,"/salesdepartmenttotal/<int:user_id>")
-api.add_resource(TopSalesUsers,'/promo-sales-rank')
+api.add_resource(TotalAmountDepartmentSales, "/salesdepartmenttotal")
+api.add_resource(TotalAmountDepartmentSalesByUser, "/salesdepartmenttotal/<int:user_id>")
+api.add_resource(TopSalesUsers, '/promo-sales-rank')
 
 #Merit points
 api.add_resource(PostMeritPoint, '/newmeritpoint')
@@ -520,8 +512,8 @@ api.add_resource(GetEmployeeMeritLedger, '/employees-merit/<int:user_id>')
 
 
 #Suppliers endpoints 
-api.add_resource(AddSupplier , '/creat-supplier')
-api.add_resource(GetAllSuppliers,'/all-suppliers' )
+api.add_resource(AddSupplier, '/creat-supplier')
+api.add_resource(GetAllSuppliers, '/all-suppliers')
 api.add_resource(GetSingleSupplier, '/suppliers/<int:supplier_id>')
 api.add_resource(UpdateSupplier, '/suppliers/update/<int:supplier_id>')
 
@@ -673,30 +665,33 @@ api.add_resource(GetShopTargets, "/targets")
 #LEdgers 
 api.add_resource(SalesLedgerList, "/accounting/sales-ledger")
 api.add_resource(CreateManualLedger, "/create-manual-ledger")
-api.add_resource(CreditSalesLedgerList,"/accounting/credit-sales-ledger")
+api.add_resource(CreditSalesLedgerList, "/accounting/credit-sales-ledger")
 api.add_resource(DistributionLedgerList, '/accounting/distribution-ledger')
 api.add_resource(PurchaseLedgerInventoryList, '/accounting/purchase-ledger-inventory')
 api.add_resource(BankTransfersLedgerList, '/accounting/bank-transfers-ledger')
 api.add_resource(SpoiltStockLedgerList, "/accounting/spoilt-ledger")
 api.add_resource(ExpensesLedgerList, "/accounting/expenses-ledger")
-api.add_resource(ManualLedgerList,"/accounting/manual-ledger")
+api.add_resource(ManualLedgerList, "/accounting/manual-ledger")
 
 
 # clerkShopReportTime
-api.add_resource(GetShopReports, '/shop-reports')
+api.add_resource(GetShopReports, '/clerk-reporting-time')
 api.add_resource(GetTodayShopReportStatus, '/shop-reports/today-status')
 api.add_resource(GetShopReportStats, '/shop-reports/stats')
+api.add_resource(PostShopReport, "/shop-reports")
+api.add_resource(CheckShopOpeningReports, '/shop-reports/check-opening')
+api.add_resource(CloseShopReport, "/shop-report/close")
 
 
 #income statement 
-api.add_resource(IncomeStatement,'/income-statement')
+api.add_resource(IncomeStatement, '/income-statement')
 
 #balance sheet
-api.add_resource(BalanceSheet,'/balance-sheet')
+api.add_resource(BalanceSheet, '/balance-sheet')
 
 #diraja ai 
 api.add_resource(RefreshSchema, '/refreshschema')
-api.add_resource(AskAI,"/askdiraja")
+api.add_resource(AskAI, "/askdiraja")
 
 # Notifications
 api.add_resource(NotificationsResource, '/notifications')
@@ -708,7 +703,8 @@ api.add_resource(NotificationTypesResource, '/notifications/types')
 
 #sasapay
 # api.add_resource(SasaPayBalanceResource,"/sasapay/balance")
-api.add_resource(SasaPayBalanceResource,"/sasapay/account")
+api.add_resource(SasaPayBalanceResource, "/sasapay/account")
+api.add_resource(AddSasaPayMerchants, "/add-merchants")
 api.add_resource(SasaPayChannelCodesResource, "/channel-codes")
 api.add_resource(SasaPayTransferResource, '/sasapay/transfer')
 api.add_resource(SasaPayTransferStatusResource, '/sasapay/transfer/status')
@@ -717,7 +713,7 @@ api.add_resource(TestNetworkConnectivity, '/test/network/connectivity')
 api.add_resource(SasaPaySingleBalanceResource, '/sasapay/balance')
 api.add_resource(SasaPayBusinessToBeneficiaryResource, '/sasapay/internal-transfer')
 api.add_resource(SasaPayBatchTransferResource, '/sasapay/batch-transfer')
-api.add_resource(SasaPayBatchUtilityFundingResource , '/sasapay/batch-utility-transfer')
+api.add_resource(SasaPayBatchUtilityFundingResource, '/sasapay/batch-utility-transfer')
 
 # Register the callback endpoint
 api.add_resource(SasaPayCallbackResource, '/sasapay/callback')
@@ -733,3 +729,8 @@ api.add_resource(GetETimsSaleStatusResource, '/etims-sales/<int:sale_id>/status'
 api.add_resource(RetryFailedSalesResource, '/etims-sales/retry-failed')
 api.add_resource(GetETimsSaleStatsResource, '/etims-sales/stats')
 api.add_resource(GetETimsSaleReceiptResource, '/etims-sales/<int:sale_id>/receipt')
+
+
+#statement  reconciliation
+api.add_resource(SasaPayUnclaimedStatement, '/sasapay/statement/unclaimed')
+api.add_resource(AddSaleFromStatement, '/sasapay/statement/sale')

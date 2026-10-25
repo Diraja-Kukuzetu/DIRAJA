@@ -45,7 +45,7 @@ class Customers(db.Model):
 
     @validates('payment_method')
     def validate_payment_method(self, key, payment_method):
-        valid_method = ['bank', 'cash', 'mpesa', 'sasapay']
+        valid_method = ['bank', 'cash', 'mpesa', 'sasapay', 'sasapay deliveries', 'not payed']
         if payment_method not in valid_method:
             raise ValueError(f"Invalid Payment Method. Must be one of: {', '.join(valid_method)}")
         return payment_method

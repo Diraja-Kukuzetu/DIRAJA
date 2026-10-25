@@ -45,6 +45,7 @@ from io import BytesIO
 from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 from Server.Views.Sasapyaviews import SasaPayTransactionStatementResource
+from Server.Models.SasaPayMerchantConfig import SasaPayMerchantConfig
 
 logger = logging.getLogger(__name__)
 
@@ -1482,6 +1483,7 @@ class SalesReport(Resource):
             }, 500
 
 class GetSalesByShop(Resource):
+
     @jwt_required()
     def get(self, shop_id):
         try:
@@ -1503,45 +1505,74 @@ class GetSalesByShop(Resource):
             if search_query:
                 sales_query = sales_query.join(SoldItem).filter(
                     or_(
-                        Sales.customer_name.ilike(f'%{search_query}%'),
-                        SoldItem.item_name.ilike(f'%{search_query}%')
+                        Sales.customer_name.ilike(
+                            f'%{search_query}%'
+                        ),
+                        SoldItem.item_name.ilike(
+                            f'%{search_query}%'
+                        )
                     )
                 )
 
             # Date range filter
             if start_date and end_date:
                 try:
-                    start = datetime.strptime(start_date, '%Y-%m-%d').date()
-                    end = datetime.strptime(end_date, '%Y-%m-%d').date()
+                    start = datetime.strptime(
+                        start_date,
+                        '%Y-%m-%d'
+                    ).date()
+
+                    end = datetime.strptime(
+                        end_date,
+                        '%Y-%m-%d'
+                    ).date()
 
                     sales_query = sales_query.filter(
-                        db.func.date(Sales.created_at).between(start, end)
+                        db.func.date(
+                            Sales.created_at
+                        ).between(start, end)
                     )
 
                 except ValueError:
-                    return {"error": "Invalid date format. Use YYYY-MM-DD"}, 400
+                    return {
+                        "error": "Invalid date format. Use YYYY-MM-DD"
+                    }, 400
 
             elif start_date:
                 try:
-                    start = datetime.strptime(start_date, '%Y-%m-%d').date()
+                    start = datetime.strptime(
+                        start_date,
+                        '%Y-%m-%d'
+                    ).date()
 
                     sales_query = sales_query.filter(
-                        db.func.date(Sales.created_at) >= start
+                        db.func.date(
+                            Sales.created_at
+                        ) >= start
                     )
 
                 except ValueError:
-                    return {"error": "Invalid start_date format"}, 400
+                    return {
+                        "error": "Invalid start_date format"
+                    }, 400
 
             elif end_date:
                 try:
-                    end = datetime.strptime(end_date, '%Y-%m-%d').date()
+                    end = datetime.strptime(
+                        end_date,
+                        '%Y-%m-%d'
+                    ).date()
 
                     sales_query = sales_query.filter(
-                        db.func.date(Sales.created_at) <= end
+                        db.func.date(
+                            Sales.created_at
+                        ) <= end
                     )
 
                 except ValueError:
-                    return {"error": "Invalid end_date format"}, 400
+                    return {
+                        "error": "Invalid end_date format"
+                    }, 400
 
             # Count after filters
             total_sales = sales_query.count()
@@ -1556,27 +1587,44 @@ class GetSalesByShop(Resource):
             )
 
             if not sales:
-                return {"message": "No sales found for this shop"}, 404
+                return {
+                    "message": "No sales found for this shop"
+                }, 404
 
             sales_data = []
 
             for sale in sales:
-                username = sale.users.username if sale.users else "Unknown User"
-                shopname = sale.shops.shopname if sale.shops else "Unknown Shop"
 
+                username = (
+                    sale.users.username
+                    if sale.users
+                    else "Unknown User"
+                )
+
+                shopname = (
+                    sale.shops.shopname
+                    if sale.shops
+                    else "Unknown Shop"
+                )
+
+                # Payment information
                 payment_data = [
                     {
+                        "payment_index": index,
                         "payment_method": payment.payment_method,
                         "amount_paid": payment.amount_paid,
                         "balance": payment.balance,
+                        "transaction_code": payment.transaction_code
                     }
-                    for payment in sale.payment
+                    for index, payment in enumerate(sale.payment)
                 ]
 
                 total_amount_paid = sum(
-                    p["amount_paid"] for p in payment_data
+                    (p["amount_paid"] or 0)
+                    for p in payment_data
                 )
 
+                # Sold items
                 sold_items = [
                     {
                         "item_id": item.id,
@@ -1594,7 +1642,8 @@ class GetSalesByShop(Resource):
                 ]
 
                 total_items_price = sum(
-                    item["total_price"] for item in sold_items
+                    (item["total_price"] or 0)
+                    for item in sold_items
                 )
 
                 sales_data.append({
@@ -1611,25 +1660,355 @@ class GetSalesByShop(Resource):
                     "total_amount_paid": total_amount_paid,
                     "balance": sale.balance,
                     "payment_methods": payment_data,
-                    "created_at": sale.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                    "created_at": (
+                        sale.created_at.strftime(
+                            '%Y-%m-%d %H:%M:%S'
+                        )
+                        if sale.created_at
+                        else None
+                    ),
                     "note": sale.note,
                     "delivery": sale.delivery,
                     "promocode": sale.promocode
                 })
 
-            total_pages = (total_sales + limit - 1) // limit
+            total_pages = (
+                (total_sales + limit - 1) // limit
+                if limit > 0
+                else 0
+            )
 
             return {
                 "shop_id": shop_id,
-                "shop_name": shopname,
+                "shop_name": (
+                    sales[0].shops.shopname
+                    if sales[0].shops
+                    else "Unknown Shop"
+                ),
                 "total_sales": total_sales,
                 "sales": sales_data,
                 "current_page": page,
-                "total_pages": total_pages,
+                "total_pages": total_pages
             }, 200
 
         except Exception as e:
-            return {"error": f"An error occurred: {str(e)}"}, 500
+            return {
+                "error": f"An error occurred: {str(e)}"
+            }, 500
+
+    # ============================================================
+    # PUT - UPDATE SALE
+    # ============================================================
+
+    @jwt_required()
+    def put(self, shop_id):
+        try:
+            data = request.get_json()
+
+            if not data:
+                return {
+                    "error": "Request body is required"
+                }, 400
+
+            # ----------------------------------------------------
+            # SALES ID
+            # ----------------------------------------------------
+
+            sale_id = data.get("sales_id")
+
+            if not sale_id:
+                return {
+                    "error": "sales_id is required"
+                }, 400
+
+            # ----------------------------------------------------
+            # FIND SALE
+            # ----------------------------------------------------
+
+            sale = Sales.query.filter_by(
+                sales_id=sale_id,
+                shop_id=shop_id
+            ).first()
+
+            if not sale:
+                return {
+                    "error": "Sale not found for this shop"
+                }, 404
+
+            updated_fields = []
+
+            # ----------------------------------------------------
+            # UPDATE SALES INFORMATION
+            # ----------------------------------------------------
+
+            allowed_fields = [
+                "customer_name",
+                "status",
+                "customer_number",
+                "balance",
+                "note",
+                "delivery",
+                "promocode",
+                "created_at"
+            ]
+
+            for field in allowed_fields:
+
+                if field not in data:
+                    continue
+
+                value = data[field]
+
+                # -----------------------------------------------
+                # CREATED AT
+                # -----------------------------------------------
+
+                if field == "created_at":
+
+                    if not value:
+                        return {
+                            "error": "created_at cannot be empty"
+                        }, 400
+
+                    if not isinstance(value, str):
+                        return {
+                            "error": (
+                                "Invalid created_at format. "
+                                "Use YYYY-MM-DD or "
+                                "YYYY-MM-DD HH:MM:SS"
+                            )
+                        }, 400
+
+                    try:
+                        value = datetime.strptime(
+                            value,
+                            "%Y-%m-%d %H:%M:%S"
+                        )
+
+                    except ValueError:
+
+                        try:
+                            value = datetime.strptime(
+                                value,
+                                "%Y-%m-%d"
+                            )
+
+                        except ValueError:
+                            return {
+                                "error": (
+                                    "Invalid created_at format. "
+                                    "Use YYYY-MM-DD or "
+                                    "YYYY-MM-DD HH:MM:SS"
+                                )
+                            }, 400
+
+                setattr(sale, field, value)
+
+                updated_fields.append(field)
+
+            # ----------------------------------------------------
+            # UPDATE PAYMENT
+            # ----------------------------------------------------
+
+            payment_data = data.get("payment")
+
+            if payment_data is not None:
+
+                if not isinstance(payment_data, dict):
+                    return {
+                        "error": "payment must be an object"
+                    }, 400
+
+                # Payment is identified by its position because
+                # SalesPaymentMethods does not have payment_id.
+                payment_index = payment_data.get(
+                    "payment_index"
+                )
+
+                if payment_index is None:
+                    return {
+                        "error": (
+                            "payment_index is required "
+                            "to update a payment"
+                        )
+                    }, 400
+
+                try:
+                    payment_index = int(payment_index)
+
+                except (ValueError, TypeError):
+                    return {
+                        "error": "payment_index must be an integer"
+                    }, 400
+
+                # ------------------------------------------------
+                # CHECK PAYMENT EXISTS
+                # ------------------------------------------------
+
+                if (
+                    payment_index < 0
+                    or payment_index >= len(sale.payment)
+                ):
+                    return {
+                        "error": "Payment not found for this sale"
+                    }, 404
+
+                payment = sale.payment[payment_index]
+
+                # ------------------------------------------------
+                # TRANSACTION CODE
+                # ------------------------------------------------
+
+                if "transaction_code" in payment_data:
+
+                    transaction_code = (
+                        payment_data["transaction_code"]
+                    )
+
+                    if transaction_code is not None:
+                        transaction_code = str(
+                            transaction_code
+                        ).strip()
+
+                    payment.transaction_code = transaction_code
+
+                    updated_fields.append(
+                        "transaction_code"
+                    )
+
+                # ------------------------------------------------
+                # PAYMENT METHOD
+                # ------------------------------------------------
+
+                if "payment_method" in payment_data:
+
+                    payment.payment_method = (
+                        payment_data["payment_method"]
+                    )
+
+                    updated_fields.append(
+                        "payment_method"
+                    )
+
+                # ------------------------------------------------
+                # AMOUNT PAID
+                # ------------------------------------------------
+
+                if "amount_paid" in payment_data:
+
+                    try:
+                        payment.amount_paid = float(
+                            payment_data["amount_paid"]
+                        )
+
+                    except (ValueError, TypeError):
+                        return {
+                            "error": (
+                                "amount_paid must be "
+                                "a valid number"
+                            )
+                        }, 400
+
+                    updated_fields.append(
+                        "amount_paid"
+                    )
+
+                # ------------------------------------------------
+                # PAYMENT BALANCE
+                # ------------------------------------------------
+
+                if "balance" in payment_data:
+
+                    try:
+                        payment.balance = float(
+                            payment_data["balance"]
+                        )
+
+                    except (ValueError, TypeError):
+                        return {
+                            "error": (
+                                "Payment balance must be "
+                                "a valid number"
+                            )
+                        }, 400
+
+                    updated_fields.append(
+                        "payment_balance"
+                    )
+
+            # ----------------------------------------------------
+            # CHECK WHETHER ANYTHING WAS UPDATED
+            # ----------------------------------------------------
+
+            if not updated_fields:
+                return {
+                    "error": "No valid fields provided for update"
+                }, 400
+
+            # ----------------------------------------------------
+            # SAVE CHANGES
+            # ----------------------------------------------------
+
+            db.session.commit()
+
+            # ----------------------------------------------------
+            # BUILD PAYMENT RESPONSE
+            # ----------------------------------------------------
+
+            payment_response = []
+
+            for index, payment in enumerate(sale.payment):
+
+                payment_response.append({
+                    "payment_index": index,
+                    "payment_method": payment.payment_method,
+                    "amount_paid": payment.amount_paid,
+                    "balance": payment.balance,
+                    "transaction_code": payment.transaction_code
+                })
+
+            # ----------------------------------------------------
+            # RESPONSE
+            # ----------------------------------------------------
+
+            return {
+                "message": "Sale updated successfully",
+
+                "sales_id": sale.sales_id,
+
+                "shop_id": sale.shop_id,
+
+                "updated_fields": updated_fields,
+
+                "sale": {
+                    "sales_id": sale.sales_id,
+                    "customer_name": sale.customer_name,
+                    "status": sale.status,
+                    "customer_number": sale.customer_number,
+                    "balance": sale.balance,
+                    "note": sale.note,
+                    "delivery": sale.delivery,
+                    "promocode": sale.promocode,
+
+                    "created_at": (
+                        sale.created_at.strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        )
+                        if sale.created_at
+                        else None
+                    ),
+
+                    "payment_methods": payment_response
+                }
+            }, 200
+
+        except Exception as e:
+
+            db.session.rollback()
+
+            return {
+                "error": f"An error occurred: {str(e)}"
+            }, 500
 
 
 
@@ -3765,12 +4144,11 @@ class CategoryEarningsSummary(Resource):
             return {"error": "Database error", "details": str(e)}, 500
 
 
-
 class SasaPaySaleResource(Resource):
     @jwt_required()
     def post(self):
-        """Handle SasaPay-only sales with merchant mapping - Pending callback"""
-        data = request.get_json()
+        """Handle SasaPay-only sales; merchant is resolved from the DB via shop_id - Pending callback"""
+        data = request.get_json(silent=True) or {}
         current_user_id = get_jwt_identity()
         new_sale = None
         payment_result = None
@@ -3797,9 +4175,9 @@ class SasaPaySaleResource(Resource):
 
             # SasaPay payment details
             sasapay_payment = data['sasapay_payment']
-            required_sasapay_fields = ['amount', 'transaction_reference', 'sender_account_number', 
-                                      'account_reference', 'network_code']
-            
+            required_sasapay_fields = ['amount', 'transaction_reference', 'sender_account_number',
+                                       'account_reference', 'network_code']
+
             for field in required_sasapay_fields:
                 if field not in sasapay_payment:
                     return {
@@ -3831,15 +4209,20 @@ class SasaPaySaleResource(Resource):
                         'invalid_item': item
                     }, 400
 
+                quantity = float(item['quantity'])
+                unit_price = float(item['unit_price'])
+                # total_price is optional; fall back to quantity * unit_price
+                item_total = float(item['total_price']) if item.get('total_price') is not None else round(quantity * unit_price, 2)
+
                 items.append({
                     'item_name': item['item_name'],
-                    'quantity': float(item['quantity']),
+                    'quantity': quantity,
                     'metric': metric,
-                    'unit_price': float(item['unit_price']),
-                    'total_price': float(item['total_price']) 
+                    'unit_price': unit_price,
+                    'total_price': item_total
                 })
-                total_quantity += float(item['quantity'])
-                total_price += float(item['total_price'])
+                total_quantity += quantity
+                total_price += item_total
 
         except (ValueError, KeyError, TypeError) as e:
             return {'message': f'Invalid data format: {str(e)}'}, 400
@@ -3852,41 +4235,39 @@ class SasaPaySaleResource(Resource):
                 creditor = Creditors.query.filter_by(id=creditor_id, shop_id=shop_id).first()
                 if not creditor:
                     return {'message': f'Creditor with ID {creditor_id} not found for this shop'}, 404
-                
+
                 if status not in ["unpaid", "partially_paid"]:
                     return {'message': 'Creditor sales must have status "unpaid" or "partially paid"'}, 400
-                    
+
             except (ValueError, TypeError):
                 return {'message': 'Invalid creditor ID format'}, 400
 
-        # ===== SHOP TO SASAPAY MERCHANT MAPPING =====
-        shop_to_merchant_mapping = {
-            2: "570257",   # Kuku Zetu - Mirema
-            5: "577960",   # Kuku Zetu - Lumumba Drive
-            3: "577480",   # Kuku Zetu - Zimmerman
-            8: "577668",   # Kukuzetu - Ngoingwa Stockist
-            1: "577666",   # KUKUZETU - TRM
-            20: "222333",   # Kukuzetu - Kasarani Equity
-            19: "577123",   # Kukuzetu - Kasarani Maternity
-            16: "577556",   # Kukuzetu - Turi
-            9: "570257",   # Kuku Zetu - Mirema
-        }
+        # ===== RESOLVE SASAPAY MERCHANT FROM DB (shop_id -> merchant config) =====
+        environment = sasapay_service.environment
 
-        # Get environment and determine merchant code
-        environment = os.getenv("SASAPAY_ENVIRONMENT", "sandbox")
-        requested_merchant_code = shop_to_merchant_mapping.get(shop_id)
-        
-        # ===== SANDBOX OVERRIDE =====
         if environment == "sandbox":
-            merchant_code = os.getenv("SASAPAY_SANDBOX_MERCHANT_CODE", "600980")
-            current_app.logger.info(f"[SASAPAY] Sandbox mode: Using test merchant {merchant_code} for shop {shop_id}")
+            # Sandbox has one shared test merchant
+            merchant_code = sasapay_service.sandbox_merchant_code
+            current_app.logger.info(
+                f"[SASAPAY] Sandbox mode: Using test merchant {merchant_code} for shop {shop_id}"
+            )
         else:
-            merchant_code = requested_merchant_code
-            if not merchant_code:
+            merchant_cfg = SasaPayMerchantConfig.get_for_shop(shop_id)
+            if not merchant_cfg:
                 return {
-                    'message': f'No SasaPay merchant configured for shop {shop_id}',
+                    'message': f'No active SasaPay merchant configured for shop {shop_id}',
                     'shop_id': shop_id
                 }, 400
+
+            merchant_code = merchant_cfg.merchant_code
+
+            # Confirm stored credentials decrypt and are usable before touching stock/payment
+            if not sasapay_service.get_merchant(merchant_code):
+                return {
+                    'message': f'SasaPay merchant {merchant_code} for shop {shop_id} has unusable credentials',
+                    'shop_id': shop_id,
+                    'merchant_code': merchant_code
+                }, 500
 
         # ===== STOCK CHECK (Reserve only, don't deduct yet) =====
         stock_errors = []
@@ -3917,7 +4298,7 @@ class SasaPaySaleResource(Resource):
 
                     deduct_qty = min(batch.quantity, remaining_qty)
                     remaining_qty -= deduct_qty
-                    
+
                     # Store reservation data (don't deduct yet)
                     item_batch_deductions.append({
                         'batch_id': batch.stockv2_id,
@@ -3942,7 +4323,7 @@ class SasaPaySaleResource(Resource):
                         deduct_qty = min(livestock_entry.current_quantity, remaining_qty)
                         remaining_qty -= deduct_qty
                         item_livestock_deduction = deduct_qty
-                        
+
                         livestock_reservations.append({
                             'livestock_id': livestock_entry.liveStock_id,
                             'item_name': item['item_name'],
@@ -3950,7 +4331,7 @@ class SasaPaySaleResource(Resource):
                             'original_quantity': livestock_entry.current_quantity,
                             'original_clock_out': livestock_entry.clock_out_quantity
                         })
-                        
+
                         livestock_deductions.append({
                             'item_name': item['item_name'],
                             'quantity': deduct_qty,
@@ -3994,13 +4375,13 @@ class SasaPaySaleResource(Resource):
         # ===== PROCESS SASAPAY PAYMENT =====
         sasapay_amount = float(sasapay_payment['amount'])
         total_sale_amount = total_price
-        
+
         # Auto-discount logic
         auto_discount_applied = False
         balance_percentage = 0
         discount_amount = 0
         final_balance = balance
-        
+
         if balance > 0 and status == "paid":
             balance_percentage = (balance / total_sale_amount) * 100 if total_sale_amount > 0 else 0
             if balance_percentage <= 3.0:
@@ -4011,19 +4392,14 @@ class SasaPaySaleResource(Resource):
 
         try:
             # ===== INITIATE SASAPAY PAYMENT =====
-            sasapay_service = SasaPayPaymentService()
-            
-            callback_url = sasapay_payment.get('callback_url')
-            if not callback_url:
-                merchant_callback_key = f"SASAPAY_MERCHANT_{merchant_code}_CALLBACK_URL"
-                callback_url = os.getenv(merchant_callback_key)
-                
-                if not callback_url:
-                    callback_url = sasapay_service._get_merchant_callback_url(merchant_code)
-            
+            # Request override first, otherwise the service resolves env/default callback URL
+            callback_url = (
+                sasapay_payment.get('callback_url')
+                or sasapay_service._get_merchant_callback_url(merchant_code)
+            )
+
             current_app.logger.info(f"[SASAPAY] Using callback URL: {callback_url}")
-            
-            # Initiate payment
+
             payment_result = sasapay_service.initiate_payment(
                 merchant_code=merchant_code,
                 transaction_reference=sasapay_payment['transaction_reference'],
@@ -4039,7 +4415,7 @@ class SasaPaySaleResource(Resource):
             if not payment_result or not payment_result.get('status'):
                 return {
                     'message': 'SasaPay payment initiation failed',
-                    'error': payment_result.get('message', 'Unknown error'),
+                    'error': (payment_result or {}).get('message', 'Unknown error'),
                     'payment_details': payment_result
                 }, 400
 
@@ -4049,7 +4425,7 @@ class SasaPaySaleResource(Resource):
                 shop_id=shop_id,
                 customer_name=data['customer_name'],
                 customer_number=data['customer_number'],
-                status='pending',  # Using the new 'pending' status
+                status='pending',
                 delivery=delivery,
                 created_at=created_at,
                 balance=final_balance,
@@ -4087,8 +4463,7 @@ class SasaPaySaleResource(Resource):
 
             # ===== SAVE PAYMENT METHOD WITH RESERVATION DATA =====
             checkout_request_id = payment_result.get('data', {}).get('CheckoutRequestID')
-            
-            # Store all reservation data in payment method's callback_data field
+
             reservation_data = {
                 'batch_reservations': batch_reservations,
                 'livestock_reservations': livestock_reservations,
@@ -4115,7 +4490,7 @@ class SasaPaySaleResource(Resource):
                 checkout_request_id=checkout_request_id,
                 merchant_code=merchant_code,
                 payment_status='pending',
-                callback_data=json.dumps(reservation_data),  # Store reservations here
+                callback_data=json.dumps(reservation_data),
                 created_at=created_at
             )
             db.session.add(payment_method)
@@ -4193,13 +4568,13 @@ class SasaPaySaleResource(Resource):
             db.session.rollback()
             error_msg = str(e)
             clean_error = ''.join(char for char in error_msg if ord(char) < 128)
-            
+
             if clean_error != error_msg:
                 current_app.logger.error(f"Original error with unicode: {error_msg}")
                 error_msg = clean_error
-            
+
             current_app.logger.error(f"SasaPay sale transaction failed: {error_msg}", exc_info=True)
-            
+
             return {
                 'message': 'Transaction failed',
                 'error': error_msg,
@@ -4212,71 +4587,126 @@ class SasaPaySaleResource(Resource):
                     'environment': environment if 'environment' in locals() else "Unknown"
                 }
             }, 500
-            
-            
 
+
+            
 class SasaPayPaymentStatusResource(Resource):
+    """
+    Check the status of a SasaPay payment by checkout_request_id.
+
+    GET /api/sasapay/payment/status/<checkout_request_id>
+    """
+
     @jwt_required()
     def get(self, checkout_request_id):
-        """
-        Check the status of a SasaPay payment by checkout_request_id.
-        GET /api/sasapay/payment/status/<checkout_request_id>
-        """
         try:
+            # ── Validate input ───────────────────────────────────────
             if not checkout_request_id:
                 return {
-                    'status': 'error',
-                    'message': 'Checkout request ID is required'
+                    "status": "error",
+                    "message": "Checkout request ID is required",
                 }, 400
 
-            # Find the payment method
+            # ── Find the payment method ──────────────────────────────
             payment_method = SalesPaymentMethods.query.filter_by(
                 checkout_request_id=checkout_request_id
             ).first()
 
             if not payment_method:
                 return {
-                    'status': 'error',
-                    'message': 'Payment not found',
-                    'checkout_request_id': checkout_request_id
+                    "status": "error",
+                    "message": "Payment not found",
+                    "checkout_request_id": checkout_request_id,
                 }, 404
 
-            # Get the sale for additional info
-            sale = payment_method.related_sale if payment_method.related_sale else None
+            # ── Find the sale via sale_id ────────────────────────────
+            sale = None
+            if payment_method.sale_id:
+                sale = Sales.query.get(payment_method.sale_id)
 
+            # ── Safe timestamp formatting ────────────────────────────
+            # Some backends (SQLite) return datetimes as strings. Guard
+            # against calling .isoformat() on a str.
+            def _iso(value):
+                if value is None:
+                    return None
+                if hasattr(value, "isoformat"):
+                    return value.isoformat()
+                return str(value)
+
+            # ── Build the base response ──────────────────────────────
             response_data = {
-                'status': 'success',
-                'payment_status': payment_method.payment_status,  # pending, success, failed
-                'checkout_request_id': payment_method.checkout_request_id,
-                'amount_paid': payment_method.amount_paid,
-                'transaction_code': payment_method.transaction_code,
-                'sasapay_transaction_id': payment_method.sasapay_transaction_id,
-                'result_code': payment_method.result_code,
-                'result_desc': payment_method.result_desc,
-                'failure_reason': payment_method.failure_reason,
-                'created_at': payment_method.created_at.isoformat() if payment_method.created_at else None,
-                'callback_received_at': payment_method.callback_received_at.isoformat() if payment_method.callback_received_at else None,
+                "status": "success",
+                "environment": os.getenv("SASAPAY_ENVIRONMENT", "sandbox"),
+                "payment_status": payment_method.payment_status,
+                "checkout_request_id": payment_method.checkout_request_id,
+                "amount_paid": payment_method.amount_paid,
+                "transaction_code": getattr(
+                    payment_method, "transaction_code", None
+                ),
+                "sasapay_transaction_id": getattr(
+                    payment_method, "sasapay_transaction_id", None
+                ),
+                "merchant_code": getattr(payment_method, "merchant_code", None),
+                "result_code": getattr(payment_method, "result_code", None),
+                "result_desc": getattr(payment_method, "result_desc", None),
+                "failure_reason": getattr(
+                    payment_method, "failure_reason", None
+                ),
+                "journal_posting_error": getattr(
+                    payment_method, "journal_posting_error", None
+                ),
+                "created_at": _iso(getattr(payment_method, "created_at", None)),
+                "callback_received_at": _iso(
+                    getattr(payment_method, "callback_received_at", None)
+                ),
             }
 
-            # Add sale info if available
+            # ── Attach sale info if available ────────────────────────
             if sale:
-                response_data['sale'] = {
-                    'sale_id': sale.sales_id,
-                    'status': sale.status,
-                    'total_amount': sale.total_amount if hasattr(sale, 'total_amount') else None,
-                    'balance': sale.balance,
-                    'shop_id': sale.shop_id,
-                    'customer_name': sale.customer_name,
-                    'customer_number': sale.customer_number
+                response_data["sale"] = {
+                    "sale_id": sale.sales_id,
+                    "status": sale.status,
+                    "total_amount": getattr(sale, "total_amount", None),
+                    "balance": getattr(sale, "balance", None),
+                    "shop_id": getattr(sale, "shop_id", None),
+                    "customer_name": getattr(sale, "customer_name", None),
+                    "customer_number": getattr(sale, "customer_number", None),
+                    "created_at": _iso(getattr(sale, "created_at", None)),
                 }
+
+            # ── Pending-time hint (UX nicety for polling frontends) ──
+            if (
+                payment_method.payment_status == "pending"
+                and getattr(payment_method, "created_at", None) is not None
+            ):
+                try:
+                    created = payment_method.created_at
+                    if isinstance(created, str):
+                        created = datetime.fromisoformat(created)
+                    elapsed = (datetime.utcnow() - created).total_seconds()
+                    response_data["pending_seconds"] = int(elapsed)
+                    if elapsed > 300:  # 5 minutes
+                        response_data["hint"] = (
+                            "Payment has been pending for over 5 minutes. "
+                            "The customer may not have completed the STK push. "
+                            "Consider asking them to retry."
+                        )
+                except Exception:
+                    # Never let a hint calculation break the status check
+                    pass
 
             return response_data, 200
 
         except Exception as e:
-            current_app.logger.error(f"[SASAPAY] Error checking payment status: {str(e)}")
+            current_app.logger.error(
+                f"[SASAPAY] Error checking payment status "
+                f"for {checkout_request_id}: {str(e)}",
+                exc_info=True,
+            )
             return {
-                'status': 'error',
-                'message': f'Error checking payment status: {str(e)}'
+                "status": "error",
+                "message": f"Error checking payment status: {str(e)}",
             }, 500
 
 
@@ -4587,14 +5017,30 @@ sales (payment_method='sasapay') are matched against that shop's SasaPay
 merchant statement, primarily on transaction_code, falling back to
 last-4-digit suffix match, then finally date+amount when a sale's
 transaction_code wasn't captured.
+
+Merchant credentials come from the SasaPayMerchantConfig table via
+SasaPayPaymentService (no env vars, no dependency on the statement view).
 """
 
+import logging
 from collections import defaultdict
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from flask import request
 from flask_jwt_extended import jwt_required
+from flask_restful import Resource
+
+from app import db
+from Server.Models.Sales import Sales
+from Server.Models.Users import Users
+from Server.Models.Shops import Shops
+from Server.Models.Paymnetmethods import SalesPaymentMethods
+from Server.Views.Services.sasapay_service import SasaPayPaymentService
+
+logger = logging.getLogger(__name__)
+
+sasapay_service = SasaPayPaymentService()
 
 # shop_id -> SasaPay merchant_code. Two shops can share a merchant_code
 # (same physical account) — matching is done per merchant_code so their
@@ -4616,7 +5062,7 @@ class SasaPayFetchError(Exception):
     pass
 
 
-class SasaPayReconciliationResource(SasaPayTransactionStatementResource):
+class SasaPayReconciliationResource(Resource):
     """
     GET /api/reconciliation/sasapay
 
@@ -4702,10 +5148,8 @@ class SasaPayReconciliationResource(SasaPayTransactionStatementResource):
             )
 
             # ---- build indexes ----
-            # full code -> [tx, ...]
-            by_code = defaultdict(list)
-            # last 4 chars of code -> [tx, ...]
-            by_suffix4 = defaultdict(list)
+            by_code = defaultdict(list)      # full code -> [tx, ...]
+            by_suffix4 = defaultdict(list)   # last 4 chars of code -> [tx, ...]
             for tx in statement_transactions:
                 code = (tx.get('code') or '').strip()
                 if code:
@@ -4857,7 +5301,6 @@ class SasaPayReconciliationResource(SasaPayTransactionStatementResource):
                               if id(c) not in used_tx_ids]
 
                 if candidates:
-                    # Prefer candidates on the same day AND within amount tolerance
                     preferred = [
                         c for c in candidates
                         if c['date'] == sale_date
@@ -4871,7 +5314,6 @@ class SasaPayReconciliationResource(SasaPayTransactionStatementResource):
                         return candidates[0], "transaction_code_suffix"
 
                     # Ambiguous — don't guess; fall through to date+amount
-                    # (which is basically same-day + same-amount anyway)
 
         # 3. fallback: same date + same amount, first unused candidate
         for candidate in statement_transactions:
@@ -4888,33 +5330,16 @@ class SasaPayReconciliationResource(SasaPayTransactionStatementResource):
     # Statement fetching (paginates the SasaPay API, filters to date range)
     # ------------------------------------------------------------------
     def _fetch_statement_range(self, merchant_code, account_number, start_date, end_date):
-        import os
-        import requests
-
-        sasapay_env = os.getenv("SASAPAY_ENVIRONMENT", "sandbox")
-
-        if sasapay_env != "production":
+        if sasapay_service.environment != "production":
             raise SasaPayFetchError(
                 "Transaction statements are only available in PRODUCTION environment"
             )
 
-        merchants = self._get_all_merchant_configs(sasapay_env)
-        merchant = next((m for m in merchants if m['code'] == merchant_code), None)
-        if not merchant:
-            raise SasaPayFetchError(f"Merchant {merchant_code} not found or not configured")
-
-        access_token = self._get_access_token(
-            merchant['base_url'], merchant['client_id'], merchant['client_secret']
-        )
-        if not access_token:
-            raise SasaPayFetchError("Failed to obtain SasaPay access token")
-
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-        transactions_url = "https://api.sasapay.app/api/v2/waas/transactions/"
+        # Credentials are read from SasaPayMerchantConfig (decrypted in the service)
+        if not sasapay_service.get_merchant(merchant_code):
+            raise SasaPayFetchError(
+                f"Merchant {merchant_code} not found, inactive, or has unusable credentials in the database"
+            )
 
         results = []
         page = 1
@@ -4924,13 +5349,13 @@ class SasaPayReconciliationResource(SasaPayTransactionStatementResource):
         # Statement rows are date-desc. Stop once a page's oldest row is
         # older than start_date.
         while page <= max_pages:
-            params = {
-                "merchantCode": merchant_code,
-                "accountNumber": account_number,
-                "page": page,
-                "page_size": page_size,
-            }
-            resp = requests.get(transactions_url, headers=headers, params=params, timeout=30)
+            try:
+                resp = sasapay_service.get_transactions(
+                    merchant_code, account_number, page=page, page_size=page_size
+                )
+            except Exception as e:
+                raise SasaPayFetchError(f"Statement fetch error: {e}")
+
             if resp.status_code != 200:
                 raise SasaPayFetchError(
                     f"Statement fetch failed (HTTP {resp.status_code}): {resp.text[:200]}"
@@ -4982,3 +5407,338 @@ class SasaPayReconciliationResource(SasaPayTransactionStatementResource):
             except ValueError:
                 continue
         return None
+
+
+
+
+
+
+# """ New reconciliation """  
+
+# """
+# SasaPay <-> Sales reconciliation endpoint.
+
+# Pick a shop (or "all") + a date/period. For each shop, its sales
+# (payment_method='sasapay') are matched against that shop's SasaPay merchant
+# statement (merchant resolved from SasaPayMerchantConfig), primarily on
+# transaction_code, then last-4-digit suffix, then date+amount when a sale's
+# transaction_code wasn't captured.
+# """
+
+# from collections import defaultdict
+# from datetime import datetime
+# from decimal import Decimal, InvalidOperation
+
+# from flask import request
+# from flask_jwt_extended import jwt_required
+
+# from Server.Models.SasaPayMerchantConfig import SasaPayMerchantConfig
+# from Server.Views.SasaPayStatementSales import _is_incoming_success
+
+# _recon_sasapay_service = SasaPayPaymentService()
+
+
+# class SasaPayFetchError(Exception):
+#     pass
+
+
+# class SasaPayReconciliationResource(Resource):
+#     """
+#     GET /api/reconciliation/sasapay
+
+#     Query params:
+#       shop_id           required - a shop id with an active SasaPay merchant config, or "all"
+#       date              optional - single day, YYYY-MM-DD
+#       start_date        optional - range start, YYYY-MM-DD (used if 'date' not given)
+#       end_date          optional - range end, YYYY-MM-DD
+#       payment_method    optional - default 'sasapay'
+#       amount_tolerance  optional - default 1 (KES). Abs diff above this -> mismatch, not silent match.
+
+#     Matching order (per sale):
+#       1. Exact full transaction_code match (most reliable)
+#       2. Last-4-digit suffix match, disambiguated by sale date + amount
+#       3. Same-day + same-amount fallback (when sale has no txn code)
+#     """
+
+#     @jwt_required()
+#     def get(self):
+#         raw_shop_id = request.args.get('shop_id')
+#         if not raw_shop_id:
+#             return {"error": "shop_id is required (a shop id, or 'all')"}, 400
+
+#         payment_method = request.args.get('payment_method', 'sasapay')
+
+#         try:
+#             amount_tolerance = Decimal(request.args.get('amount_tolerance', '1'))
+#         except InvalidOperation:
+#             return {"error": "amount_tolerance must be numeric"}, 400
+
+#         # ---- resolve shop_id(s) -> merchant_code from DB ----
+#         shop_to_merchant = {}
+#         if raw_shop_id.lower() == 'all':
+#             for cfg in SasaPayMerchantConfig.list_active():
+#                 if cfg.shop_id is not None:
+#                     shop_to_merchant[cfg.shop_id] = cfg.merchant_code
+#             if not shop_to_merchant:
+#                 return {"error": "No active SasaPay merchant configs linked to a shop"}, 404
+#         else:
+#             try:
+#                 shop_id = int(raw_shop_id)
+#             except ValueError:
+#                 return {"error": "shop_id must be an integer or 'all'"}, 400
+#             cfg = SasaPayMerchantConfig.get_for_shop(shop_id)
+#             if not cfg:
+#                 return {"error": f"shop_id {shop_id} has no active SasaPay merchant config"}, 400
+#             shop_to_merchant[shop_id] = cfg.merchant_code
+
+#         shop_ids = list(shop_to_merchant.keys())
+
+#         # ---- resolve date range ----
+#         single_date = request.args.get('date')
+#         start_date_str = request.args.get('start_date')
+#         end_date_str = request.args.get('end_date')
+
+#         try:
+#             if single_date:
+#                 start_date = end_date = datetime.strptime(single_date, '%Y-%m-%d').date()
+#             elif start_date_str and end_date_str:
+#                 start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+#                 end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+#             else:
+#                 return {"error": "Provide either 'date' or both 'start_date' and 'end_date' (YYYY-MM-DD)"}, 400
+#         except ValueError:
+#             return {"error": "Invalid date format. Use YYYY-MM-DD."}, 400
+
+#         if start_date > end_date:
+#             return {"error": "start_date must be before end_date"}, 400
+
+#         # ---- group shops by merchant_code (shared statement per merchant) ----
+#         shops_by_merchant = defaultdict(list)
+#         for sid, mcode in shop_to_merchant.items():
+#             shops_by_merchant[mcode].append(sid)
+
+#         rows = []
+#         per_shop_summary = defaultdict(lambda: {"matched": 0, "unmatched": 0, "amount_mismatches": 0})
+#         unmatched_statement_all = []
+#         errors = []
+
+#         for merchant_code, merchant_shop_ids in shops_by_merchant.items():
+#             try:
+#                 statement_transactions = self._fetch_statement_range(
+#                     merchant_code, start_date, end_date
+#                 )
+#             except SasaPayFetchError as e:
+#                 errors.append({"merchant_code": merchant_code, "shop_ids": merchant_shop_ids, "error": str(e)})
+#                 continue
+
+#             sale_payment_rows = self._get_sale_payment_rows(
+#                 merchant_shop_ids, payment_method, start_date, end_date
+#             )
+
+#             # ---- build indexes ----
+#             by_code = defaultdict(list)
+#             by_suffix4 = defaultdict(list)
+#             for tx in statement_transactions:
+#                 code = (tx.get('code') or '').strip()
+#                 if code:
+#                     by_code[code].append(tx)
+#                     if len(code) >= 4:
+#                         by_suffix4[code[-4:]].append(tx)
+
+#             used_tx_ids = set()
+
+#             for sale, payment, shop in sale_payment_rows:
+#                 tx_code = getattr(payment, 'transaction_code', None)
+#                 sale_amount = Decimal(str(payment.amount_paid or 0))
+
+#                 match, match_basis = self._find_match(
+#                     tx_code, sale, sale_amount, statement_transactions,
+#                     by_code, by_suffix4, used_tx_ids, amount_tolerance
+#                 )
+
+#                 item_names = ", ".join(i.item_name for i in sale.items) if sale.items else None
+
+#                 if match:
+#                     used_tx_ids.add(id(match))
+#                     diff = match['amount'] - sale_amount
+#                     mismatch = abs(diff) > amount_tolerance
+#                     rows.append({
+#                         "shop_id": shop.shops_id,
+#                         "shop_name": shop.shopname,
+#                         "sale_id": sale.sales_id,
+#                         "sale_date": sale.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+#                         "item_name": item_names,
+#                         "amount": float(sale_amount),
+#                         "payment_method": payment_method,
+#                         "match_status": "mismatch" if mismatch else "matched",
+#                         "matched_by": match_basis,
+#                         "transaction_amount": float(match['amount']),
+#                         "transaction_code": match['code'],
+#                         "reason": (
+#                             f"matched but amounts differ by {float(diff)}" if mismatch else None
+#                         ),
+#                     })
+#                     per_shop_summary[shop.shops_id]["matched"] += 1
+#                     if mismatch:
+#                         per_shop_summary[shop.shops_id]["amount_mismatches"] += 1
+#                 else:
+#                     if not tx_code:
+#                         reason = ("no transaction_code recorded and no statement entry "
+#                                   "with matching date/amount")
+#                     else:
+#                         tail = str(tx_code).strip()[-4:]
+#                         reason = (f"transaction_code ending '{tail}' not found in statement "
+#                                   f"for this date range")
+#                     rows.append({
+#                         "shop_id": shop.shops_id,
+#                         "shop_name": shop.shopname,
+#                         "sale_id": sale.sales_id,
+#                         "sale_date": sale.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+#                         "item_name": item_names,
+#                         "amount": float(sale_amount),
+#                         "payment_method": payment_method,
+#                         "match_status": "not_matched",
+#                         "matched_by": None,
+#                         "transaction_amount": None,
+#                         "transaction_code": tx_code,
+#                         "reason": reason,
+#                     })
+#                     per_shop_summary[shop.shops_id]["unmatched"] += 1
+
+#             unmatched_statement_all.extend({
+#                 "merchant_code": merchant_code,
+#                 "shop_ids": merchant_shop_ids,
+#                 "transaction_code": tx['code'],
+#                 "date": tx['date'].strftime('%Y-%m-%d'),
+#                 "amount": float(tx['amount']),
+#                 "channel": tx['channel'],
+#                 "reference": tx['reference'],
+#                 "status": tx['status'],
+#                 "reason": "no sale with this date/amount/code found - verify manually "
+#                           "(could be a deposit not tied to a sale, or an unrecorded sale)",
+#             } for tx in statement_transactions if id(tx) not in used_tx_ids)
+
+#         summary = {
+#             "shops_checked": len(shop_ids),
+#             "total_rows": len(rows),
+#             "matched": sum(v["matched"] for v in per_shop_summary.values()),
+#             "amount_mismatches": sum(v["amount_mismatches"] for v in per_shop_summary.values()),
+#             "unmatched_sales": sum(v["unmatched"] for v in per_shop_summary.values()),
+#             "unmatched_statement_transactions": len(unmatched_statement_all),
+#             "per_shop": {
+#                 sid: {"shop_id": sid, **stats} for sid, stats in per_shop_summary.items()
+#             },
+#         }
+
+#         return {
+#             "shop_ids": shop_ids,
+#             "date_range": {"start": start_date.isoformat(), "end": end_date.isoformat()},
+#             "payment_method": payment_method,
+#             "summary": summary,
+#             "rows": rows,
+#             "unmatched_statement": unmatched_statement_all,
+#             "errors": errors,
+#         }, 200
+
+#     # ------------------------------------------------------------------
+#     def _get_sale_payment_rows(self, shop_ids, payment_method, start_date, end_date):
+#         sales_query = (
+#             Sales.query.join(Users).join(Shops)
+#             .join(SalesPaymentMethods, SalesPaymentMethods.sale_id == Sales.sales_id)
+#             .filter(SalesPaymentMethods.payment_method == payment_method)
+#             .filter(Sales.shop_id.in_(shop_ids))
+#             .filter(db.func.date(Sales.created_at) >= start_date)
+#             .filter(db.func.date(Sales.created_at) <= end_date)
+#         )
+#         sales = sales_query.all()
+
+#         rows = []
+#         for sale in sales:
+#             shop = sale.shops
+#             for p in sale.payment:
+#                 if p.payment_method != payment_method:
+#                     continue
+#                 # pending/failed STK pushes are not money received
+#                 if getattr(p, 'payment_status', None) not in (None, 'success'):
+#                     continue
+#                 rows.append((sale, p, shop))
+#         return rows
+
+#     # ------------------------------------------------------------------
+#     @staticmethod
+#     def _find_match(tx_code, sale, sale_amount, statement_transactions,
+#                     by_code, by_suffix4, used_tx_ids, amount_tolerance):
+#         """
+#         Try, in order:
+#           1. Exact full-code match.
+#           2. Last-4-digit suffix match, disambiguated by sale date + amount.
+#           3. Same-day + same-amount fallback.
+#         Returns (matched_tx_or_None, basis_string_or_None).
+#         """
+#         sale_date = sale.created_at.date()
+
+#         if tx_code:
+#             code = str(tx_code).strip().upper()
+
+#             # 1. exact full-code match
+#             for candidate in by_code.get(code, []):
+#                 if id(candidate) not in used_tx_ids:
+#                     return candidate, "transaction_code"
+
+#             # 2. last-4-digit suffix match
+#             if len(code) >= 4:
+#                 suffix = code[-4:]
+#                 candidates = [c for c in by_suffix4.get(suffix, [])
+#                               if id(c) not in used_tx_ids]
+
+#                 if candidates:
+#                     preferred = [
+#                         c for c in candidates
+#                         if c['date'] == sale_date
+#                         and abs(c['amount'] - sale_amount) <= amount_tolerance
+#                     ]
+#                     if preferred:
+#                         return preferred[0], "transaction_code_suffix"
+
+#                     if len(candidates) == 1:
+#                         return candidates[0], "transaction_code_suffix"
+
+#                     # Ambiguous - don't guess; fall through to date+amount
+
+#         # 3. fallback: same date + same amount, first unused candidate
+#         for candidate in statement_transactions:
+#             if id(candidate) in used_tx_ids:
+#                 continue
+#             if candidate['date'] != sale_date:
+#                 continue
+#             if abs(candidate['amount'] - sale_amount) <= amount_tolerance:
+#                 return candidate, "date_and_amount_fallback"
+
+#         return None, None
+
+#     # ------------------------------------------------------------------
+#     # Statement fetching: delegates to the shared service method
+#     # ------------------------------------------------------------------
+#     def _fetch_statement_range(self, merchant_code, start_date, end_date):
+#         if _recon_sasapay_service.environment != "production":
+#             raise SasaPayFetchError(
+#                 "Transaction statements are only available in PRODUCTION environment"
+#             )
+#         try:
+#             raw = _recon_sasapay_service.fetch_statement_range(merchant_code, start_date, end_date)
+#         except Exception as e:
+#             raise SasaPayFetchError(str(e))
+
+#         results = []
+#         for tx in raw:
+#             if not _is_incoming_success(tx):
+#                 continue
+#             results.append({
+#                 "date": tx["date"],
+#                 "amount": Decimal(str(tx["amount"])),
+#                 "code": tx["code"],
+#                 "reference": tx["reference"],
+#                 "channel": tx["channel"],
+#                 "status": tx["result_description"],
+#             })
+#         return results

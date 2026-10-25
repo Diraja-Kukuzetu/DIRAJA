@@ -255,3 +255,224 @@ class CashDepositResource(Resource):
         db.session.commit()
 
         return {"message": "Cash deposit deleted successfully."}, 200
+
+
+
+class GetCashDepositsByUser(Resource):
+    @jwt_required()
+    def get(self, user_id):
+        try:
+            # Optional deposit_id query parameter
+            deposit_id = request.args.get('deposit_id', type=int)
+
+            # Filter deposits by user_id
+            query = CashDeposits.query.filter_by(user_id=user_id)
+
+            # If deposit_id is provided, filter by both IDs
+            if deposit_id is not None:
+                query = query.filter_by(deposit_id=deposit_id)
+
+            deposits = query.order_by(
+                CashDeposits.created_at.desc()
+            ).all()
+
+            if not deposits:
+                return make_response(jsonify({
+                    "message": "No cash deposits found for the specified user and deposit ID."
+                    if deposit_id is not None
+                    else "No cash deposits found for the specified user.",
+                    "user_id": user_id,
+                    "deposit_id": deposit_id
+                }), 404)
+
+            all_deposits = []
+
+            for deposit in deposits:
+                user = Users.query.filter_by(
+                    users_id=deposit.user_id
+                ).first()
+
+                shop = Shops.query.filter_by(
+                    shops_id=deposit.shop_id
+                ).first()
+
+                username = user.username if user else "Unknown User"
+                shopname = shop.shopname if shop else "Unknown Shop"
+
+                created_at = (
+                    deposit.created_at.strftime('%Y-%m-%d %H:%M:%S')
+                    if deposit.created_at else None
+                )
+
+                all_deposits.append({
+                    "deposit_id": deposit.deposit_id,
+                    "user_id": deposit.user_id,
+                    "username": username,
+                    "shop_id": deposit.shop_id,
+                    "shop_name": shopname,
+                    "amount": float(deposit.amount),
+                    "deductions": (
+                        float(deposit.deductions)
+                        if deposit.deductions is not None
+                        else None
+                    ),
+                    "reason": deposit.reason,
+                    "transaction_code": deposit.transaction_code,
+                    "created_at": created_at
+                })
+
+            # Return a single object when deposit_id is specified
+            if deposit_id is not None:
+                return make_response(jsonify(all_deposits[0]), 200)
+
+            # Otherwise, return all deposits for the user
+            return make_response(jsonify(all_deposits), 200)
+
+        except Exception as e:
+            return make_response(jsonify({
+                "error": f"An error occurred: {str(e)}"
+            }), 500)
+            
+    @jwt_required()
+    def put(self, user_id):
+        try:
+            # deposit_id is required for updating a specific deposit
+            deposit_id = request.args.get('deposit_id', type=int)
+
+            if deposit_id is None:
+                return make_response(jsonify({
+                    "error": "deposit_id is required as a query parameter."
+                }), 400)
+
+            # Find the deposit belonging to this user
+            deposit = CashDeposits.query.filter_by(
+                user_id=user_id,
+                deposit_id=deposit_id
+            ).first()
+
+            if not deposit:
+                return make_response(jsonify({
+                    "message": "Cash deposit not found for the specified user.",
+                    "user_id": user_id,
+                    "deposit_id": deposit_id
+                }), 404)
+
+            data = request.get_json(silent=True)
+
+            if not isinstance(data, dict) or not data:
+                return make_response(jsonify({
+                    "error": "A valid, non-empty JSON object is required."
+                }), 400)
+
+            allowed_fields = {
+                "amount",
+                "deductions",
+                "reason",
+                "transaction_code"
+            }
+
+            invalid_fields = set(data.keys()) - allowed_fields
+
+            if invalid_fields:
+                return make_response(jsonify({
+                    "error": "One or more fields cannot be updated.",
+                    "invalid_fields": sorted(invalid_fields),
+                    "allowed_fields": sorted(allowed_fields)
+                }), 400)
+
+            # Validate and update amount
+            if "amount" in data:
+                try:
+                    amount = float(data["amount"])
+
+                    if amount < 0:
+                        raise ValueError()
+
+                    deposit.amount = amount
+
+                except (TypeError, ValueError):
+                    return make_response(jsonify({
+                        "error": "amount must be a valid non-negative number."
+                    }), 400)
+
+            # Validate and update deductions
+            if "deductions" in data:
+                if data["deductions"] is None:
+                    deposit.deductions = None
+                else:
+                    try:
+                        deductions = float(data["deductions"])
+
+                        if deductions < 0:
+                            raise ValueError()
+
+                        deposit.deductions = deductions
+
+                    except (TypeError, ValueError):
+                        return make_response(jsonify({
+                            "error": "deductions must be a non-negative number or null."
+                        }), 400)
+
+            # Update reason
+            if "reason" in data:
+                if data["reason"] is not None and not isinstance(
+                    data["reason"], str
+                ):
+                    return make_response(jsonify({
+                        "error": "reason must be a string or null."
+                    }), 400)
+
+                deposit.reason = data["reason"]
+
+            # Update transaction code
+            if "transaction_code" in data:
+                transaction_code = data["transaction_code"]
+
+                if transaction_code is not None and not isinstance(
+                    transaction_code, str
+                ):
+                    return make_response(jsonify({
+                        "error": "transaction_code must be a string or null."
+                    }), 400)
+
+                deposit.transaction_code = transaction_code
+
+            db.session.commit()
+
+            # Fetch related user and shop
+            user = Users.query.filter_by(
+                users_id=deposit.user_id
+            ).first()
+
+            shop = Shops.query.filter_by(
+                shops_id=deposit.shop_id
+            ).first()
+
+            updated_deposit = {
+                "message": "Cash deposit updated successfully.",
+                "deposit_id": deposit.deposit_id,
+                "user_id": deposit.user_id,
+                "username": user.username if user else "Unknown User",
+                "shop_id": deposit.shop_id,
+                "shop_name": shop.shopname if shop else "Unknown Shop",
+                "amount": float(deposit.amount),
+                "deductions": (
+                    float(deposit.deductions)
+                    if deposit.deductions is not None else None
+                ),
+                "reason": deposit.reason,
+                "transaction_code": deposit.transaction_code,
+                "created_at": (
+                    deposit.created_at.strftime('%Y-%m-%d %H:%M:%S')
+                    if deposit.created_at else None
+                )
+            }
+
+            return make_response(jsonify(updated_deposit), 200)
+
+        except Exception as e:
+            db.session.rollback()
+
+            return make_response(jsonify({
+                "error": f"An error occurred: {str(e)}"
+            }), 500)

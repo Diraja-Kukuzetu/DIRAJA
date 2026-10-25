@@ -1,3 +1,5 @@
+# app.py file 2 
+
 import os
 from flask import Flask, g
 from flask_sqlalchemy import SQLAlchemy
@@ -13,6 +15,10 @@ from openai import OpenAI
 # Load env
 load_dotenv()
 
+# Base directory for local asset folders
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+
+
 # ---------- Tenant-aware Session ----------
 class TenantAwareSession(FSASession):
     def get_bind(self, mapper=None, clause=None, **kwargs):
@@ -21,11 +27,13 @@ class TenantAwareSession(FSASession):
             return engine
         return super().get_bind(mapper=mapper, clause=clause, **kwargs)
 
+
 # ---------- Extensions ----------
 db = SQLAlchemy(session_options={"class_": TenantAwareSession})
 jwt = JWTManager()
 mail = Mail()
 socketio = SocketIO()
+
 
 # ---------- Models Import ----------
 def initialize_models():
@@ -56,93 +64,19 @@ def initialize_models():
     from Server.Models.StockReport import StockReport
     from Server.Models.Permission import Permission
     from Server.Models.TaskManager import TaskManager, TaskComment, TaskEvaluation
+    from Server.Models.Users import Users
+    from Server.Models.TwoFactorAuth import TwoFactorAuth
+    from Server.Models.SasaPayMerchantConfig import SasaPayMerchantConfig
+    from Server.Models.Shops import Shops
+    from Server.Models.Creditors import Creditors
+    from Server.Models.Accounting.SalesLedger import SalesLedger
+    from Server.Models.StockItems import StockItems
 
 
 # ---------- Views Import ----------
 def initialize_views(app):
     from Server.Views import api_endpoint
     app.register_blueprint(api_endpoint)
-
-
-# ---------- SasaPay Service ----------
-import requests
-import time
-
-class SasaPayService:
-    def __init__(self, app):
-        self.app = app
-        self.base_url = app.config.get("SASAPAY_BASE_URL")
-        self.client_id = app.config.get("SASAPAY_CLIENT_ID")
-        self.client_secret = app.config.get("SASAPAY_CLIENT_SECRET")
-        self.token_expiry = 0
-
-        if not self.base_url or not self.client_id or not self.client_secret:
-            print("⚠️ SasaPay service initialized with missing configuration")
-            print(f"  Base URL: {self.base_url}")
-            print(f"  Client ID: {'Set' if self.client_id else 'Missing'}")
-            print(f"  Client Secret: {'Set' if self.client_secret else 'Missing'}")
-
-    def get_token(self):
-        if self.app.sasapay_token and time.time() < self.token_expiry:
-            return self.app.sasapay_token
-
-        if not self.base_url or not self.client_id or not self.client_secret:
-            print("❌ Cannot get token: Missing SasaPay configuration")
-            return None
-
-        url = f"{self.base_url}/auth/token"
-        payload = {
-            "client_id": self.client_id,
-            "client_secret": self.client_secret
-        }
-
-        try:
-            response = requests.post(url, json=payload, timeout=30)
-            data = response.json()
-            token = data.get("access_token")
-            self.app.sasapay_token = token
-            self.token_expiry = time.time() + 3500
-            return token
-        except Exception as e:
-            print(f"❌ Error getting SasaPay token: {str(e)}")
-            return None
-
-    def request_payment(self, amount, phone, reference):
-        token = self.get_token()
-        if not token:
-            return {"error": "Failed to get access token"}
-
-        url = f"{self.base_url}/payments/request"
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "amount": amount,
-            "phone_number": phone,
-            "account_reference": reference,
-            "transaction_desc": "Payment"
-        }
-
-        try:
-            response = requests.post(url, json=payload, headers=headers, timeout=30)
-            return response.json()
-        except Exception as e:
-            return {"error": str(e)}
-
-    def check_status(self, transaction_id):
-        token = self.get_token()
-        if not token:
-            return {"error": "Failed to get access token"}
-
-        url = f"{self.base_url}/transactions/{transaction_id}"
-        headers = {"Authorization": f"Bearer {token}"}
-
-        try:
-            response = requests.get(url, headers=headers, timeout=30)
-            return response.json()
-        except Exception as e:
-            return {"error": str(e)}
 
 
 # ---------- App Factory ----------
@@ -154,66 +88,87 @@ def create_app(config_name):
     CORS(app, origins=[
         "https://beta.kulima.co.ke",
         "http://localhost:3000",
-        "http://127.0.0.1:3000"
+        "http://127.0.0.1:3000",
     ])
 
-    # Load config from config object
+    # Load config from config object FIRST
     app.config.from_object(config_name)
+
+    # ── Upload storage (works locally and on VPS) ────────────────
+    env = os.getenv("FLASK_ENV", "development")
+
+    if env == "production":
+        upload_root = os.getenv("UPLOAD_FOLDER", "/var/www/dirauploads")
+        uploads_base = os.getenv(
+            "UPLOADS_BASE_URL", "https://server.kukuzetu.co.ke"
+        )
+    else:
+        upload_root = os.getenv(
+            "UPLOAD_FOLDER", os.path.join(BASE_DIR, "dirauploads")
+        )
+        uploads_base = os.getenv("UPLOADS_BASE_URL", "http://127.0.0.1:8000")
+
+    app.config["UPLOAD_FOLDER"] = upload_root
+    app.config["CLOSING_IMAGES_FOLDER"] = os.path.join(
+        upload_root, "closing_stock_images"
+    )
+    app.config["UPLOADS_BASE_URL"] = uploads_base
+    app.config["UPLOADS_URL_PREFIX"] = os.getenv(
+        "UPLOADS_URL_PREFIX", "dirauploads"
+    )
+    app.config["MAX_CONTENT_LENGTH"] = int(
+        os.getenv("MAX_CONTENT_LENGTH", 10 * 1024 * 1024)
+    )
+
+    os.makedirs(app.config["CLOSING_IMAGES_FOLDER"], exist_ok=True)
+
+    print("\n" + "=" * 50)
+    print("UPLOAD STORAGE CONFIGURATION")
+    print("=" * 50)
+    print(f"Environment:            {env}")
+    print(f"UPLOAD_FOLDER:          {app.config['UPLOAD_FOLDER']}")
+    print(f"CLOSING_IMAGES_FOLDER:  {app.config['CLOSING_IMAGES_FOLDER']}")
+    print(f"UPLOADS_BASE_URL:       {app.config['UPLOADS_BASE_URL']}")
+    print(f"UPLOADS_URL_PREFIX:     {app.config['UPLOADS_URL_PREFIX']}")
+    print(f"MAX_CONTENT_LENGTH:     {app.config['MAX_CONTENT_LENGTH']} bytes")
+    print("=" * 50 + "\n")
+
+    # ── Dev-only: serve uploaded files locally (Apache handles this in prod) ──
+    if env != "production":
+        from flask import send_from_directory
+
+        @app.route(f"/{app.config['UPLOADS_URL_PREFIX']}/<path:filename>")
+        def serve_uploads(filename):
+            return send_from_directory(app.config["UPLOAD_FOLDER"], filename)
 
     # -------------------------------
     # Database
     # -------------------------------
-    # NOTE: This is now only the "primary/default" bind — used for
-    # Flask-Migrate and as a fallback if a request somehow bypasses
-    # the tenant middleware. Actual per-request DB selection happens
-    # in Views/__init__.py via before_request + tenants.get_engine_for_tenant().
     from tenant import TENANT_DATABASES
 
     app.config["SQLALCHEMY_DATABASE_URI"] = TENANT_DATABASES["diraja"]
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-    app.config["SQLALCHEMY_BINDS"] = TENANT_DATABASES  # optional: lets Flask-SQLAlchemy know about all tenant URIs
+    app.config["SQLALCHEMY_BINDS"] = TENANT_DATABASES
 
     # JWT
-    app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET_KEY", "Soweto@2024")
-    app.config['JWT_ACCESS_TOKEN_EXPIRES'] = int(
-        os.getenv('JWT_ACCESS_TOKEN_EXPIRES', 2592000)
+    app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "Soweto@2024")
+    app.config["JWT_ACCESS_TOKEN_EXPIRES"] = int(
+        os.getenv("JWT_ACCESS_TOKEN_EXPIRES", 2592000)
     )
 
     # Mail
-    app.config['MAIL_SERVER'] = 'mail.kukuzetu.co.ke'
-    app.config['MAIL_PORT'] = 465
-    app.config['MAIL_USERNAME'] = 'no-reply@kukuzetu.co.ke'
-    app.config['MAIL_PASSWORD'] = os.getenv("MAIL_PASSWORD")
-    app.config['MAIL_USE_SSL'] = True
-    app.config['MAIL_USE_TLS'] = False
-    app.config['MAIL_DEFAULT_SENDER'] = 'no-reply@kukuzetu.co.ke'
+    app.config["MAIL_SERVER"] = "mail.kukuzetu.co.ke"
+    app.config["MAIL_PORT"] = 465
+    app.config["MAIL_USERNAME"] = "no-reply@kukuzetu.co.ke"
+    app.config["MAIL_PASSWORD"] = os.getenv("MAIL_PASSWORD")
+    app.config["MAIL_USE_SSL"] = True
+    app.config["MAIL_USE_TLS"] = False
+    app.config["MAIL_DEFAULT_SENDER"] = "no-reply@kukuzetu.co.ke"
 
     # VAPID
-    app.config['VAPID_PUBLIC_KEY'] = os.getenv("VAPID_PUBLIC_KEY")
-    app.config['VAPID_PRIVATE_KEY'] = os.getenv("VAPID_PRIVATE_KEY")
-    app.config['VAPID_EMAIL'] = os.getenv("VAPID_EMAIL")
-
-    # SasaPay config checks
-    if not app.config.get("SASAPAY_BASE_URL"):
-        print("⚠️ Warning: SASAPAY_BASE_URL not configured")
-    if not app.config.get("SASAPAY_CLIENT_ID"):
-        print("⚠️ Warning: SASAPAY_CLIENT_ID not configured")
-    if not app.config.get("SASAPAY_CLIENT_SECRET"):
-        print("⚠️ Warning: SASAPAY_CLIENT_SECRET not configured")
-
-    print("\n" + "="*50)
-    print("SASAPAY CONFIGURATION STATUS")
-    print("="*50)
-    print(f"Environment: {os.getenv('SASAPAY_ENVIRONMENT', 'sandbox')}")
-    print(f"Base URL: {app.config.get('SASAPAY_BASE_URL', 'NOT SET')}")
-    print(f"Merchant Code: {app.config.get('SASAPAY_MERCHANT_CODE', 'NOT SET')}")
-    print(f"Client ID: {'✓ SET' if app.config.get('SASAPAY_CLIENT_ID') else '✗ MISSING'}")
-    print(f"Client Secret: {'✓ SET' if app.config.get('SASAPAY_CLIENT_SECRET') else '✗ MISSING'}")
-    print(f"Callback URL: {app.config.get('SASAPAY_CALLBACK_URL', 'NOT SET')}")
-    print(f"Use Mock: {app.config.get('SASAPAY_USE_MOCK', False)}")
-    print("="*50 + "\n")
-
-    app.sasapay_token = None
+    app.config["VAPID_PUBLIC_KEY"] = os.getenv("VAPID_PUBLIC_KEY")
+    app.config["VAPID_PRIVATE_KEY"] = os.getenv("VAPID_PRIVATE_KEY")
+    app.config["VAPID_EMAIL"] = os.getenv("VAPID_EMAIL")
 
     # Init extensions
     db.init_app(app)
@@ -222,7 +177,7 @@ def create_app(config_name):
     mail.init_app(app)
 
     # Init socket
-    socketio.init_app(app, cors_allowed_origins='*')
+    socketio.init_app(app, cors_allowed_origins="*")
 
     # -------------------------------
     # Initialize models + schema
@@ -233,7 +188,49 @@ def create_app(config_name):
             from schema_generator import write_schema_file
             write_schema_file()
         except ImportError:
-            print("⚠️ schema_generator not found, skipping schema generation")
+            print("schema_generator not found, skipping schema generation")
+
+    # -------------------------------
+    # SasaPay startup checks (DB-backed credentials)
+    # -------------------------------
+    # The encryption key is required for storing and reading merchant
+    # credentials. Fail fast rather than silently breaking the first time
+    # someone tries to save or read a merchant config.
+    if not os.getenv("SASAPAY_ENCRYPTION_KEY"):
+        raise RuntimeError(
+            "SASAPAY_ENCRYPTION_KEY is not set. Generate one with:\n"
+            "  python -c \"from cryptography.fernet import Fernet; "
+            "print(Fernet.generate_key().decode())\"\n"
+            "and add it to your .env file."
+        )
+
+    print("\n" + "=" * 50)
+    print("SASAPAY CONFIGURATION STATUS")
+    print("=" * 50)
+    print(f"Environment:      {os.getenv('SASAPAY_ENVIRONMENT', 'sandbox')}")
+    print("Encryption key:   ✓ SET")
+    print(
+        f"Callback URL:     "
+        f"{os.getenv('SASAPAY_CALLBACK_URL', 'falls back to BASE_URL')}"
+    )
+    print(
+        f"Sandbox Merchant: "
+        f"{os.getenv('SASAPAY_SANDBOX_MERCHANT_CODE', '600980')}"
+    )
+
+    # Count configured merchants in the DB (safe — models already loaded)
+    try:
+        from Server.Models.SasaPayMerchantConfig import SasaPayMerchantConfig
+
+        with app.app_context():
+            active_count = SasaPayMerchantConfig.query.filter_by(
+                is_active=True
+            ).count()
+            print(f"Merchants (DB):   {active_count} active")
+    except Exception as e:
+        print(f"Merchants (DB):   could not query — {e}")
+
+    print("=" * 50 + "\n")
 
     # -------------------------------
     # OpenAI Setup
@@ -255,17 +252,7 @@ def create_app(config_name):
     app.chat_history = []
 
     # -------------------------------
-    # Attach SasaPay Service
-    # -------------------------------
-    if app.config.get("SASAPAY_BASE_URL") and app.config.get("SASAPAY_CLIENT_ID"):
-        app.sasapay = SasaPayService(app)
-    else:
-        print("⚠️ SasaPay service not initialized due to missing configuration")
-        app.sasapay = None
-
-    # -------------------------------
-    # Register Views (tenant-aware blueprint + before_request hook
-    # live inside Server/Views/__init__.py)
+    # Register Views
     # -------------------------------
     initialize_views(app)
 
@@ -280,9 +267,9 @@ def generate_sql(app, user_prompt):
         model="gpt-5-mini",
         messages=[
             {"role": "system", "content": app.llm_system_prompt},
-            {"role": "user", "content": user_prompt}
+            {"role": "user", "content": user_prompt},
         ],
-        max_completion_tokens=1000
+        max_completion_tokens=1000,
     )
 
     return response.choices[0].message.content.strip()

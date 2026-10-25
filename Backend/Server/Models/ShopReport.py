@@ -1,5 +1,10 @@
 from app import db
-from datetime import datetime
+from datetime import datetime, timedelta
+
+
+def now_eat():
+    """Current time in East Africa Time (UTC+3), naive."""
+    return datetime.utcnow() + timedelta(hours=3)
 
 
 class ShopReport(db.Model):
@@ -21,20 +26,23 @@ class ShopReport(db.Model):
         nullable=False
     )
 
-    reported_at = db.Column(
-        db.DateTime,
-        server_default=db.func.now(),
-        nullable=False
-    )
+    # Stored in EAT, set by the app (not the DB clock)
+    reported_at = db.Column(db.DateTime, default=now_eat, nullable=False)
 
-    closed_at = db.Column(
-            db.DateTime,
-            server_default=db.func.now(),
-            
-    )
+    # NULL until the shop is closed. No default.
+    closed_at = db.Column(db.DateTime, nullable=True)
 
+    # ── Opening location ─────────────────────────────────────────
     location = db.Column(db.String(255))
     latitude = db.Column(db.Float)
     longitude = db.Column(db.Float)
+
+    # ── Closing location ─────────────────────────────────────────
+    closing_location = db.Column(db.String(255))
+    closing_latitude = db.Column(db.Float)
+    closing_longitude = db.Column(db.Float)
+
+    # ── Closing image ────────────────────────────────────────────
+    closing_image_url = db.Column(db.String(500))
 
     note = db.Column(db.Text)

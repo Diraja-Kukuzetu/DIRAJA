@@ -524,6 +524,89 @@ Columns:
 - id (INTEGER)
 - category_name (VARCHAR(150))
 
+Table: two_factor_auth
+Columns:
+- id (INTEGER)
+- user_id (INTEGER)
+- code (VARCHAR(6))
+- secret (VARCHAR(255))
+- is_used (BOOLEAN)
+- created_at (DATETIME)
+- expires_at (DATETIME)
+
+Table: sasapay_merchant_configs
+Columns:
+- id (INTEGER)
+- merchant_code (VARCHAR(20))
+- merchant_name (VARCHAR(120))
+- location (VARCHAR(120))
+- merchant_type (VARCHAR(30))
+- client_id_encrypted (TEXT)
+- client_secret_encrypted (TEXT)
+- is_active (BOOLEAN)
+- created_at (DATETIME)
+- shop_id (INTEGER)
+
+Table: creditors
+Columns:
+- id (INTEGER)
+- name (VARCHAR(50))
+- shop_id (INTEGER)
+- total_credit (FLOAT)
+- credit_amount (FLOAT)
+- phone_number (VARCHAR(20))
+
+Table: sales_ledger
+Columns:
+- id (INTEGER)
+- created_at (DATETIME)
+- sales_id (INTEGER)
+- description (VARCHAR(255))
+- debit_account_id (INTEGER)
+- credit_account_id (INTEGER)
+- amount (FLOAT)
+- shop_id (INTEGER)
+
+Table: stock_item
+Columns:
+- id (INTEGER)
+- item_name (VARCHAR(150))
+- item_code (VARCHAR(150))
+- unit_price (FLOAT)
+- pack_price (FLOAT)
+- pack_quantity (INTEGER)
+- category (VARCHAR(14))
+- stock_item_type (VARCHAR(7))
+- etims_item_code (VARCHAR(50))
+- etims_synced (BOOLEAN)
+- etims_sync_date (DATETIME)
+- org_country_code (VARCHAR(10))
+- item_type_code (VARCHAR(10))
+- tax_code (VARCHAR(10))
+- qty_unit_code (VARCHAR(10))
+- pkg_unit_code (VARCHAR(10))
+- item_class_code (VARCHAR(20))
+- initial_stock (FLOAT)
+- created_at (DATETIME)
+- updated_at (DATETIME)
+
+Table: etims_items
+Columns:
+- id (INTEGER)
+- item_code (VARCHAR(50))
+- name (VARCHAR(200))
+- org_country_code (VARCHAR(10))
+- unit_price (FLOAT)
+- item_type_code (VARCHAR(10))
+- tax_code (VARCHAR(10))
+- qty_unit_code (VARCHAR(10))
+- pkg_unit_code (VARCHAR(10))
+- item_class_code (VARCHAR(20))
+- stock (FLOAT)
+- local_item_id (INTEGER)
+- created_at (DATETIME)
+- updated_at (DATETIME)
+
 
 
 Relationships:
@@ -588,6 +671,14 @@ Relationships:
 - task_comments.parent_comment_id → task_comments.comment_id
 - task_evaluations.task_id → task_manager.task_id
 - task_evaluations.evaluator_id → users.users_id
+- two_factor_auth.user_id → users.users_id
+- sasapay_merchant_configs.shop_id → shops.shops_id
+- creditors.shop_id → shops.shops_id
+- sales_ledger.sales_id → sales.sales_id
+- sales_ledger.debit_account_id → chart_of_accounts.id
+- sales_ledger.credit_account_id → chart_of_accounts.id
+- sales_ledger.shop_id → shops.shops_id
+- etims_items.local_item_id → stock_item.id
 
 
 
