@@ -92,8 +92,13 @@ class UserLogin(Resource):
             }), 403)
 
         # Validate the password
-        if not bcrypt.checkpw(password.encode('utf-8'), user.password.encode('utf-8')):
+        # if not bcrypt.checkpw(password.encode('utf-8'), user.password.encode('utf-8')):
+        #     return make_response(jsonify({"error": "Wrong password"}), 401)
+        
+        if not user.verify_password(password, user.password):
             return make_response(jsonify({"error": "Wrong password"}), 401)
+        
+        
 
         # Check if 2FA is enabled for this user
         if user.two_factor_enabled:
