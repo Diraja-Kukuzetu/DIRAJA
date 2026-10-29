@@ -1,12 +1,17 @@
 from flask_sqlalchemy import SQLAlchemy
 from app import db
-import bcrypt
+import bcrypt, hashlib, base64
 from sqlalchemy.orm import validates
 from sqlalchemy import func
 from datetime import datetime
 import secrets
 import string
 
+PREFIX = "bcrypt_sha256$"
+
+def _prehash(password: str) -> bytes:
+    digest = hashlib.sha256(password.encode("utf-8")).digest()
+    return base64.b64encode(digest)  # always 44 bytes
 
 class Users(db.Model):
     __tablename__ = "users"
@@ -48,11 +53,24 @@ class Users(db.Model):
         assert '.' in email.split('@')[-1], "Email address must have a valid domain name."
         return email
     
+    # def hash_password(self, password):
+    #     # Hash the password using bcrypt
+    #     salt = bcrypt.gensalt()
+    #     hashed_password = bcrypt.hashpw(password.encode('utf-8'), salt)
+    #     return hashed_password.decode('utf-8')
+    
     def hash_password(self, password):
-        # Hash the password using bcrypt
-        salt = bcrypt.gensalt()
-        hashed_password = bcrypt.hashpw(password.encode('utf-8'), salt)
-        return hashed_password.decode('utf-8')
+        hashed = bcrypt.hashpw(_prehash(password), bcrypt.gensalt())
+        return PREFIX + hashed.decode("utf-8")
+
+    def verify_password(self, password, stored_hash):
+        if stored_hash.startswith(PREFIX):
+            return bcrypt.checkpw(
+                _prehash(password),
+                stored_hash[len(PREFIX):].encode("utf-8"),
+            )
+        # Legacy hashes: old bcrypt behavior (silent truncation at 72 bytes)
+        return bcrypt.checkpw(password.encode("utf-8")[:72], stored_hash.encode("utf-8"))
     
     @validates('role')
     def validate_role(self, key, role):
