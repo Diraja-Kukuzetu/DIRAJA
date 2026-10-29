@@ -42,6 +42,69 @@ RECON_RULES_PATH = PROMPTS_DIR / "reconciliation_rules.txt"
 
 
 # -------------------------------
+# Visualization contract prompt
+# -------------------------------
+VIZ_FORMAT_PROMPT = """
+You are a UI response formatter. Given a user question, the SQL that was
+run, and the result rows, produce a SINGLE JSON object (no prose, no
+markdown fences, no comments) that describes how to render the answer in
+a dashboard.
+
+Return exactly this shape:
+
+{
+  "answer": "<1-3 sentence natural-language summary>",
+  "viz": {
+    "type": "table" | "stat" | "ranked_list" | "bar_chart" | "kv" | "text",
+    "title": "<short title>",
+    "subtitle": "<optional subtitle>",
+    ...type-specific fields...
+  }
+}
+
+Type-specific fields:
+
+- "table":
+    "columns": [{"key","label","type"}],   // type: "id"|"number"|"currency"|"date"|"badge"|"text"
+    "rows": [...],                         // cleaned objects, one per row
+    "footer": {"label","value"} | null
+
+- "stat":
+    "data": {"value","unit","label","sublabel","tone","icon"}
+        // tone: "success"|"warning"|"danger"|"info"|"neutral"
+        // icon: short semantic name like "award","cash","users","box"
+
+- "ranked_list":
+    "items": [{"rank","label","value","meta"}]
+
+- "bar_chart":
+    "series": [{"label","value"}],
+    "unit": "<optional>"
+
+- "kv":
+    "pairs": [{"key","value"}]
+
+- "text": (fallback — use only if nothing else fits)
+    "body": "<markdown>"
+
+RULES:
+- Strip internal columns (user_id, promocode, note, timestamp, delivery)
+  unless the user explicitly asked about them.
+- Format currency values as numbers; the UI formats them.
+- Format dates as ISO strings (YYYY-MM-DD).
+- If there are <= 3 rows and a single dominant number → use "stat".
+- If the question asks for "top"/"least"/"most"/"best"/"worst" →
+  "stat" + "ranked_list" as secondary.
+- If it asks for "compare"/"trend over time" and rows have a date + number →
+  "bar_chart".
+- If the user asks for a single employee/shop/item detail → "kv".
+- Otherwise → "table".
+- Never invent data that is not present in the rows.
+- Do not include markdown, code fences, or explanation outside the JSON.
+"""
+
+
+# -------------------------------
 # File loader (cached, reloads when file changes)
 # -------------------------------
 _file_cache = {}
@@ -531,6 +594,46 @@ def fallback_format(rows):
 
 
 # -------------------------------
+# Fallback visualization builder
+# -------------------------------
+def build_fallback_viz(rows):
+    """Build a basic table viz when the LLM viz step fails."""
+    if not rows:
+        return {
+            "type": "text",
+            "title": "No results",
+            "body": "No records matched your question.",
+        }
+
+    # Use the first row's keys as columns
+    keys = list(rows[0].keys())
+    columns = [
+        {"key": k, "label": k.replace("_", " ").title(), "type": "text"}
+        for k in keys
+    ]
+
+    # Strip internal columns from fallback output too
+    INTERNAL = {"user_id", "promocode", "note", "timestamp", "delivery"}
+    display_keys = [k for k in keys if k not in INTERNAL]
+    if display_keys:
+        columns = [
+            {"key": k, "label": k.replace("_", " ").title(), "type": "text"}
+            for k in display_keys
+        ]
+
+    return {
+        "type": "table",
+        "title": "Results",
+        "columns": columns,
+        "rows": [
+            {k: (str(v) if not isinstance(v, (int, float, str, type(None))) else v)
+             for k, v in row.items() if k in {c["key"] for c in columns}}
+            for row in rows[:50]
+        ],
+    }
+
+
+# -------------------------------
 # LLM helpers
 # -------------------------------
 def extract_message_text(msg):
@@ -622,6 +725,79 @@ def generate_sql(client, system_prompt_with_schema, user_prompt):
         last_choice, last_resp = choice, resp
 
     return "", last_choice, last_resp
+
+
+def generate_viz(client, question, sql, rows):
+    """
+    Call the LLM to produce a structured viz payload.
+    Returns (answer_text, viz_dict).
+    Falls back to a plain table if the LLM step fails or produces bad JSON.
+    """
+    try:
+        rows_for_viz = rows[:EXPLANATION_ROW_LIMIT]
+        result_json = json.dumps(rows_for_viz, default=str)
+
+        viz_prompt = f"""
+User question: {question}
+
+SQL executed:
+{sql}
+
+Result rows ({len(rows_for_viz)} of {len(rows)}):
+{result_json}
+"""
+
+        viz_kwargs = {}
+        # Try to force strict JSON where supported
+        try:
+            viz_resp = client.chat.completions.create(
+                model=MODEL_NAME_EXPLAIN,
+                messages=[
+                    {"role": "system", "content": VIZ_FORMAT_PROMPT},
+                    {"role": "user", "content": viz_prompt},
+                ],
+                max_completion_tokens=EXPLAIN_MAX_TOKENS,
+                response_format={"type": "json_object"},
+                **viz_kwargs,
+            )
+        except Exception as format_err:
+            # Some gateways don't support response_format — retry without it.
+            if DEBUG_MODE:
+                print(f"[AskAI] response_format unsupported, retrying without: {format_err}")
+            viz_resp = client.chat.completions.create(
+                model=MODEL_NAME_EXPLAIN,
+                messages=[
+                    {"role": "system", "content": VIZ_FORMAT_PROMPT},
+                    {"role": "user", "content": viz_prompt},
+                ],
+                max_completion_tokens=EXPLAIN_MAX_TOKENS,
+                **viz_kwargs,
+            )
+
+        viz_msg = viz_resp.choices[0].message
+        log_llm_response("VIZ", viz_resp, viz_msg)
+
+        viz_text = extract_message_text(viz_msg).strip()
+        viz_text = clean_sql(viz_text)  # reuse fence stripper
+
+        if not viz_text:
+            raise ValueError("Empty viz response from LLM")
+
+        viz_payload = json.loads(viz_text)
+
+        answer_text = viz_payload.get("answer") or "Here are your results."
+        viz = viz_payload.get("viz")
+
+        if not viz or not isinstance(viz, dict) or "type" not in viz:
+            raise ValueError(f"Malformed viz payload: {viz_payload!r}")
+
+        return answer_text, viz
+
+    except Exception as e:
+        print("VIZ FALLBACK USED:", str(e))
+        answer_text = fallback_format(rows)
+        viz = build_fallback_viz(rows)
+        return answer_text, viz
 
 
 # -------------------------------
@@ -793,60 +969,22 @@ class AskAI(Resource):
                 }, 200
 
             # ------------------------
-            # STEP 3: Human-readable answer
+            # STEP 3: Build structured UI payload
             # ------------------------
             if not raw_rows:
-                answer_text = "No records found in the system."
-            else:
-                try:
-                    rows_for_explanation = raw_rows[:EXPLANATION_ROW_LIMIT]
-                    result_json = json.dumps(rows_for_explanation, default=str)
+                return {
+                    "success": True,
+                    "question": question,
+                    "answer": "No records found in the system.",
+                    "sql": sql if DEBUG_MODE else None,
+                    "viz": {
+                        "type": "text",
+                        "title": "No results",
+                        "body": "No records matched your question.",
+                    },
+                }, 200
 
-                    if DEBUG_MODE and len(raw_rows) > EXPLANATION_ROW_LIMIT:
-                        print(
-                            f"[AskAI] explanation truncated to {EXPLANATION_ROW_LIMIT} "
-                            f"of {len(raw_rows)} rows"
-                        )
-
-                    explanation_prompt = f"""
-Convert this database result into human-readable business English.
-
-User Question: {question}
-
-Data (showing {len(rows_for_explanation)} of {len(raw_rows)} total rows):
-{result_json}
-
-Rules:
-- NEVER say "no data available" if data exists
-- Always summarize ALL results shown
-- If list → rank items
-- Use KSh for currency
-- Be clear and structured
-"""
-
-                    explain_resp = client.chat.completions.create(
-                        model=MODEL_NAME_EXPLAIN,
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": "You convert structured data into clean business insights."
-                            },
-                            {"role": "user", "content": explanation_prompt}
-                        ],
-                        max_completion_tokens=EXPLAIN_MAX_TOKENS
-                    )
-
-                    explain_msg = explain_resp.choices[0].message
-                    log_llm_response("EXPLAIN", explain_resp, explain_msg)
-
-                    answer_text = extract_message_text(explain_msg).strip()
-
-                    if not answer_text:
-                        raise Exception("Empty response from explanation LLM")
-
-                except Exception as e:
-                    print("FALLBACK USED:", str(e))
-                    answer_text = fallback_format(raw_rows)
+            answer_text, viz = generate_viz(client, question, sql, raw_rows)
 
             # ------------------------
             # FINAL RESPONSE
@@ -854,7 +992,8 @@ Rules:
             response = {
                 "success": True,
                 "question": question,
-                "answer": answer_text
+                "answer": answer_text,
+                "viz": viz,
             }
 
             if DEBUG_MODE:

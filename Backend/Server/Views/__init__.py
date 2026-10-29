@@ -213,6 +213,11 @@ from Server.Views.SasaPayStatementSales import (
     AddSaleFromStatement,
 )
 
+from Server.Views.WhatsappNotifications import (
+    ShopsNotOpenedToday,
+    NotifyShopsNotOpenedToday,
+)
+
 # -------------------------------
 # Blueprint + API setup
 # -------------------------------
@@ -734,3 +739,7 @@ api.add_resource(GetETimsSaleReceiptResource, '/etims-sales/<int:sale_id>/receip
 #statement  reconciliation
 api.add_resource(SasaPayUnclaimedStatement, '/sasapay/statement/unclaimed')
 api.add_resource(AddSaleFromStatement, '/sasapay/statement/sale')
+
+#
+api.add_resource(ShopsNotOpenedToday,"/not-opened-today",)
+api.add_resource(NotifyShopsNotOpenedToday,"/notify-not-opened-today",)
