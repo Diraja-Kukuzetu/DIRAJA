@@ -3,13 +3,18 @@ import os
 from datetime import datetime, timedelta
 
 import requests
-from flask import current_app
+from flask import current_app, logging
 from flask_restful import Resource
 from sqlalchemy import exists
 
 from app import db
 from Server.Models.ShopReport import ShopReport
 from Server.Models.Shops import Shops
+
+import logging
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 def now_eat():
@@ -185,3 +190,44 @@ class NotifyShopsNotOpenedToday(Resource):
                 "success": False,
                 "message": "Failed to generate or send the report",
             }, 500
+
+
+
+API_URL = os.getenv("DAILY_SALES_API_URL")
+ACCESS_TOKEN = os.getenv("DAILY_SALES_ACCESS_TOKEN")
+
+logging.basicConfig(level=logging.INFO)
+
+def run_daily_sales_notification():
+
+    if not API_URL or not ACCESS_TOKEN:
+        raise RuntimeError("Daily sales API configuration missing")
+
+    response = requests.get(
+        API_URL,
+        params={
+            "period": "today",
+            "notification": "manager_daily"
+        },
+        headers={
+            "Authorization": f"Bearer {ACCESS_TOKEN}"
+        },
+        timeout=120
+    )
+
+    response.raise_for_status()
+
+    result = response.json()
+
+    logging.info(
+        "Daily sales notification endpoint executed successfully"
+    )
+
+    return result
+
+
+if __name__ == "__main__":
+    try:
+        run_daily_sales_notification()
+    except Exception:
+        logging.exception("Daily sales notification failed")

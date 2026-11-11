@@ -77,7 +77,7 @@ from Server.Views.ManagerDashbordViews import (
     CountShops, TotalAmountPaidAllSales, TotalAmountPaidPerShop,
     TotalAmountPaidPurchases, StockAlert, TotalSalesByShop,
     TotalUnpaidAmountAllSales, TotalAmountPaidForMabanda,
-    TotalAmountPaidPurchasesInventory, SalesSummary, TotalFinancialSummary,
+    TotalAmountPaidPurchasesInventory, SalesSummary, TotalFinancialSummary, DailyProfitReport,
     TotalUnpaidAmountPerClerk, TotalExpensesForMabanda, StockMovement, GetInventoryStock, MonthlyIncome, SendNotification
 )
 
@@ -420,6 +420,7 @@ api.add_resource(SalesSummary, '/Sale-Summery')
 api.add_resource(TotalFinancialSummary, '/summery')
 api.add_resource(TotalUnpaidAmountPerClerk, "/unpaidsales/totalperclerk")
 api.add_resource(TotalAmountPaidPerShop, "/totalsalespershop")
+api.add_resource(DailyProfitReport,"/managerdailyprofitreport")
 api.add_resource(TotalSalesByShop, "/totalsalesbyshop/<int:shop_id>")
 api.add_resource(StockMovement, '/stock-movement')
 api.add_resource(GetInventoryStock, '/inventory-stock-level')

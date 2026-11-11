@@ -2,6 +2,9 @@ from  flask_restful import Resource,reqparse
 from app import db
 from Server.Models.Inventory import Inventory
 from Server.Models.InventoryV2 import InventoryV2
+from Server.Models.ChartOfAccounts import ChartOfAccounts
+from Server.Models.Accounting.SalesLedger import SalesLedger
+from Server.Models.Accounting.CostOfSalesLedger import CostOfSaleLedger
 from Server.Models.TransferV2 import  TransfersV2
 from Server.Models.Transfer import Transfer
 from Server.Models.Users import Users
@@ -13,6 +16,7 @@ from Server.Models.Sales import Sales
 from Server.Models.Stock import Stock
 from Server.Models.SoldItems import SoldItem
 from Server.Models.Employees import Employees
+from Server.Models.Shopstock import ShopStock
 from Server.Models.Expenses import Expenses
 from Server.Models.Transfer import Transfer
 from Server.Models.SpoiltStock import SpoiltStock
@@ -30,6 +34,11 @@ from datetime import datetime, timedelta
 from sqlalchemy.exc import SQLAlchemyError
 from collections import defaultdict
 from flask import current_app
+from sqlalchemy import func
+from sqlalchemy import and_
+import os
+import logging
+from integrations.wapenda import send_whatsapp_message
 import traceback
 from pywebpush import webpush, WebPushException
 from sqlalchemy import func
@@ -480,156 +489,236 @@ class TotalAmountPaidPerShop(Resource):
         today = datetime.utcnow()
 
         try:
-            # Date filtering logic (same as before)
-            start_date_str, end_date_str = request.args.get('start_date'), request.args.get('end_date')
-            date_str, period = request.args.get('date'), request.args.get('period', 'today')
+            start_date_str = request.args.get('start_date')
+            end_date_str = request.args.get('end_date')
+            date_str = request.args.get('date')
+            period = request.args.get('period', 'today')
 
             if start_date_str and end_date_str:
-                start_date = datetime.strptime(start_date_str, '%Y-%m-%d').replace(hour=0, minute=0, second=0, microsecond=0)
-                end_date = datetime.strptime(end_date_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59, microsecond=999999)
+                start_date = datetime.strptime(
+                    start_date_str, '%Y-%m-%d'
+                ).replace(hour=0, minute=0, second=0, microsecond=0)
+
+                end_date = datetime.strptime(
+                    end_date_str, '%Y-%m-%d'
+                ).replace(hour=23, minute=59, second=59, microsecond=999999)
+
                 period = "custom"
 
             elif date_str:
-                start_date = datetime.strptime(date_str, '%Y-%m-%d').replace(hour=0, minute=0, second=0, microsecond=0)
-                end_date = start_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                start_date = datetime.strptime(
+                    date_str, '%Y-%m-%d'
+                ).replace(hour=0, minute=0, second=0, microsecond=0)
+
+                end_date = start_date.replace(
+                    hour=23, minute=59, second=59, microsecond=999999
+                )
+
                 period = "custom"
 
             else:
-                days_map = {"today": 0, "yesterday": 1, "week": 6, "month": 29}
+                days_map = {
+                    "today": 0,
+                    "yesterday": 1,
+                    "week": 6,
+                    "month": 29
+                }
+
                 if period not in days_map:
                     return {"message": "Invalid period"}, 400
 
-                base_date = today if period != "yesterday" else today - timedelta(days=1)
-                start_date = (base_date - timedelta(days=days_map[period])).replace(hour=0, minute=0, second=0, microsecond=0)
-                end_date = base_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                base_date = (
+                    today if period != "yesterday"
+                    else today - timedelta(days=1)
+                )
+
+                start_date = (
+                    base_date - timedelta(days=days_map[period])
+                ).replace(hour=0, minute=0, second=0, microsecond=0)
+
+                end_date = base_date.replace(
+                    hour=23, minute=59, second=59, microsecond=999999
+                )
 
             shops = Shops.query.filter_by(shopstatus="active").all()
 
             results = []
-            overall_paid = overall_unpaid = overall_delivery_sales = overall_transaction_count = 0
-            overall_payment_totals = {"sasapay": 0, "cash": 0, "not_payed": 0}
+
+            overall_paid = 0
+            overall_unpaid = 0
+            overall_delivery_sales = 0
+            overall_transaction_count = 0
+
+            overall_payment_totals = {
+                "sasapay": 0,
+                "cash": 0,
+                "not_payed": 0
+            }
+
             overall_category_totals = {}
 
             for shop in shops:
                 shop_id = shop.shops_id
 
-                # Get ALL sales for this shop in the date range
                 sales_query = Sales.query.filter(
                     Sales.shop_id == shop_id,
                     Sales.created_at.between(start_date, end_date)
                 ).all()
 
-                # Initialize totals
                 total_paid = 0
                 total_unpaid = 0
                 total_sales_value = 0
                 delivery_sales = 0
                 transaction_count = 0
-                payment_summary = {"sasapay": 0, "cash": 0, "not_payed": 0}
+
+                payment_summary = {
+                    "sasapay": 0,
+                    "cash": 0,
+                    "not_payed": 0
+                }
+
                 category_summary = {}
 
-                # Process each sale individually
                 for sale in sales_query:
-                    # Get all payments for this sale
+
                     payments = SalesPaymentMethods.query.filter(
                         SalesPaymentMethods.sale_id == sale.sales_id
                     ).all()
 
-                    # Calculate total paid for this sale
-                    sale_paid = sum(p.amount_paid for p in payments)
+                    sale_paid = sum(
+                        p.amount_paid for p in payments
+                    )
+
                     total_paid += sale_paid
-                    
-                    # Get sale total value (from items)
-                    sale_total = db.session.query(func.sum(SoldItem.total_price))\
-                        .filter(SoldItem.sales_id == sale.sales_id)\
+
+                    sale_total = (
+                        db.session.query(func.sum(SoldItem.total_price))
+                        .filter(SoldItem.sales_id == sale.sales_id)
                         .scalar() or 0
+                    )
+
                     total_sales_value += sale_total
 
-                    # Calculate unpaid (sale value - amount paid)
                     sale_unpaid = max(0, sale_total - sale_paid)
                     total_unpaid += sale_unpaid
 
-                    # Count transactions (one per payment)
                     transaction_count += len(payments)
 
-                    # Payment method breakdown
                     for payment in payments:
                         method = payment.payment_method
                         amount = payment.amount_paid
+
                         if method in payment_summary:
                             payment_summary[method] += amount
                             overall_payment_totals[method] += amount
-                        
-                        # Delivery sales
+
                         if sale.delivery:
                             delivery_sales += amount
 
-                    # Category breakdown for this sale
                     sale_items = SoldItem.query.filter(
                         SoldItem.sales_id == sale.sales_id
                     ).all()
-                    
+
                     for item in sale_items:
-                        # Get category from stock item
+
                         stock_item = StockItems.query.get(item.item_id)
-                        category_name = stock_item.category if stock_item and stock_item.category else "uncategorized"
-                        
-                        # Calculate what portion of this item's price was paid
-                        # (proportion based on sale_paid / sale_total)
+
+                        category_name = (
+                            stock_item.category
+                            if stock_item and stock_item.category
+                            else "uncategorized"
+                        )
+
                         if sale_total > 0:
                             paid_portion = sale_paid / sale_total
-                            item_paid_amount = item.total_price * paid_portion
+                            item_paid_amount = (
+                                item.total_price * paid_portion
+                            )
                         else:
                             item_paid_amount = 0
-                        
-                        if category_name in category_summary:
-                            category_summary[category_name] += item_paid_amount
-                        else:
-                            category_summary[category_name] = item_paid_amount
 
-                # Add unpaid to payment summary as "not_payed"
+                        category_summary[category_name] = (
+                            category_summary.get(category_name, 0)
+                            + item_paid_amount
+                        )
+
                 payment_summary["not_payed"] = total_unpaid
+
                 overall_payment_totals["not_payed"] += total_unpaid
 
-                # Format category summary
                 formatted_category_summary = {}
+
                 for category, amount in category_summary.items():
-                    formatted_category_summary[category] = f"Ksh {amount:,.2f}"
-                    if category in overall_category_totals:
-                        overall_category_totals[category] += amount
-                    else:
-                        overall_category_totals[category] = amount
+
+                    formatted_category_summary[category] = (
+                        f"Ksh {amount:,.2f}"
+                    )
+
+                    overall_category_totals[category] = (
+                        overall_category_totals.get(category, 0)
+                        + amount
+                    )
 
                 total_sales = total_paid + total_unpaid
 
-                # Comparison (same logic as before)
                 comparison = 0
-                if period != "custom":
-                    compare_days = {"today": 1, "yesterday": 1, "week": 7, "month": 30}
-                    shift = compare_days.get(period, 0)
-                    prev_start = start_date - timedelta(days=shift)
-                    prev_end = (start_date - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
 
-                    # Get previous period totals
+                if period != "custom":
+
+                    compare_days = {
+                        "today": 1,
+                        "yesterday": 1,
+                        "week": 7,
+                        "month": 30
+                    }
+
+                    shift = compare_days.get(period, 0)
+
+                    prev_start = start_date - timedelta(days=shift)
+
+                    prev_end = (
+                        start_date - timedelta(days=1)
+                    ).replace(
+                        hour=23,
+                        minute=59,
+                        second=59,
+                        microsecond=999999
+                    )
+
                     prev_sales = Sales.query.filter(
                         Sales.shop_id == shop_id,
                         Sales.created_at.between(prev_start, prev_end)
                     ).all()
-                    
+
                     prev_paid = 0
                     prev_unpaid = 0
+
                     for prev_sale in prev_sales:
+
                         prev_payments = SalesPaymentMethods.query.filter(
                             SalesPaymentMethods.sale_id == prev_sale.sales_id
                         ).all()
-                        prev_sale_paid = sum(p.amount_paid for p in prev_payments)
-                        prev_sale_total = db.session.query(func.sum(SoldItem.total_price))\
-                            .filter(SoldItem.sales_id == prev_sale.sales_id)\
+
+                        prev_sale_paid = sum(
+                            p.amount_paid for p in prev_payments
+                        )
+
+                        prev_sale_total = (
+                            db.session.query(func.sum(SoldItem.total_price))
+                            .filter(SoldItem.sales_id == prev_sale.sales_id)
                             .scalar() or 0
+                        )
+
                         prev_paid += prev_sale_paid
-                        prev_unpaid += max(0, prev_sale_total - prev_sale_paid)
-                    
-                    comparison = total_sales - (prev_paid + prev_unpaid)
+
+                        prev_unpaid += max(
+                            0,
+                            prev_sale_total - prev_sale_paid
+                        )
+
+                    comparison = total_sales - (
+                        prev_paid + prev_unpaid
+                    )
 
                 overall_paid += total_paid
                 overall_unpaid += total_unpaid
@@ -651,32 +740,374 @@ class TotalAmountPaidPerShop(Resource):
 
             overall_total_sales = overall_paid + overall_unpaid
 
-            # Format overall category totals
             formatted_category_totals = {}
+
             for category, total in overall_category_totals.items():
-                formatted_category_totals[category] = f"Ksh {total:,.2f}"
+                formatted_category_totals[category] = (
+                    f"Ksh {total:,.2f}"
+                )
 
             summary = {
                 "overall_total_sales": f"Ksh {overall_total_sales:,.2f}",
                 "overall_total_paid": f"Ksh {overall_paid:,.2f}",
                 "overall_total_unpaid": f"Ksh {overall_unpaid:,.2f}",
                 "overall_delivery_sales": f"Ksh {overall_delivery_sales:,.2f}",
-                "average_per_shop": f"Ksh {(overall_total_sales / len(shops) if shops else 0):,.2f}",
-                "average_sale_per_transaction": f"Ksh {(overall_total_sales / overall_transaction_count if overall_transaction_count else 0):,.2f}",
+
+                "average_per_shop": (
+                    f"Ksh {(overall_total_sales / len(shops) if shops else 0):,.2f}"
+                ),
+
+                "average_sale_per_transaction": (
+                    f"Ksh {(overall_total_sales / overall_transaction_count if overall_transaction_count else 0):,.2f}"
+                ),
+
                 "overall_payment_breakdown": {
                     "sasapay": f"Ksh {overall_payment_totals['sasapay']:,.2f}",
                     "cash": f"Ksh {overall_payment_totals['cash']:,.2f}",
                     "not_payed": f"Ksh {overall_payment_totals['not_payed']:,.2f}"
                 },
+
                 "overall_category_breakdown": formatted_category_totals,
                 "transaction_count": overall_transaction_count
             }
 
-            return {"total_sales_per_shop": results, "summary": summary}, 200
+            # ==========================================
+            # MANAGER WHATSAPP DAILY SALES NOTIFICATION
+            # ==========================================
+
+            if request.args.get("notification") == "manager_daily":
+
+                manager_numbers = os.getenv(
+                    "WAPENDA_NOTIFICATION_NUMBERS_MANAGERS", ""
+                )
+
+                recipients = [
+                    number.strip()
+                    for number in manager_numbers.split(",")
+                    if number.strip()
+                ]
+
+                message_lines = [
+                    "*System Notification*\n\n"
+                    "DAILY SALES REPORT",
+                    "",
+                    f"Date: {end_date.strftime('%d %B %Y')}",
+                    "",
+                    "SHOP SALES:"
+                ]
+
+                for shop_data in results:
+                    message_lines.append(
+                        f"{shop_data['shop_name']}: "
+                        f"{shop_data['total_sales']}"
+                    )
+
+                message_lines.extend([
+                    "",
+                    "--------------------------------",
+                    f"OVERALL TOTAL SALES: "
+                    f"{summary['overall_total_sales']}"
+                ])
+
+                message = "\n".join(message_lines)
+
+                whatsapp_sent = 0
+
+                for number in recipients:
+                    try:
+                        send_whatsapp_message(
+                            to=number,
+                            text=message
+                        )
+
+                        whatsapp_sent += 1
+
+                    except Exception:
+                        logging.exception(
+                            "Failed to send manager daily sales "
+                            "notification to %s",
+                            number
+                        )
+
+                logging.info(
+                    "Manager daily sales notification completed. "
+                    "Sent: %s/%s",
+                    whatsapp_sent,
+                    len(recipients)
+                )
+                
+
+            return {
+                "total_sales_per_shop": results,
+                "summary": summary
+            }, 200
 
         except (ValueError, SQLAlchemyError) as e:
             db.session.rollback()
             return {"error": str(e)}, 500
+        
+
+
+
+
+
+class DailyProfitReport(Resource):
+
+    @jwt_required()
+    @check_role('manager')
+    def get(self):
+
+        try:
+            # ==========================================
+            # YESTERDAY'S DATE (EAST AFRICAN TIME)
+            # ==========================================
+
+            now_eat = datetime.utcnow() + timedelta(hours=3)
+            yesterday = (now_eat - timedelta(days=1)).date()
+
+            # Convert EAT boundaries to UTC.
+            # Assumes ledger timestamps are stored in UTC.
+
+            start_date = (
+                datetime.combine(yesterday, datetime.min.time())
+                - timedelta(hours=3)
+            )
+
+            end_date = start_date + timedelta(days=1)
+
+            # ==========================================
+            # GET ACTIVE SHOPS
+            # ==========================================
+
+            shops = Shops.query.filter_by(
+                shopstatus="active"
+            ).all()
+
+            shop_ids = [shop.shops_id for shop in shops]
+
+            # ==========================================
+            # REVENUE ACCOUNTS
+            # ==========================================
+
+            revenue_accounts = ChartOfAccounts.query.filter_by(
+                type="Revenue"
+            ).all()
+
+            revenue_account_ids = [
+                acc.id for acc in revenue_accounts
+            ]
+
+            revenue_by_shop = {}
+
+            if revenue_account_ids:
+
+                revenue_query = db.session.query(
+                    SalesLedger.shop_id,
+                    func.sum(SalesLedger.amount).label("total_amount")
+                ).filter(
+                    SalesLedger.created_at >= start_date,
+                    SalesLedger.created_at < end_date,
+                    SalesLedger.credit_account_id.in_(
+                        revenue_account_ids
+                    ),
+                    SalesLedger.shop_id.in_(shop_ids)
+                ).group_by(
+                    SalesLedger.shop_id
+                ).all()
+
+                revenue_by_shop = {
+                    row.shop_id: float(row.total_amount or 0)
+                    for row in revenue_query
+                }
+
+            # ==========================================
+            # COST OF GOODS SOLD ACCOUNTS
+            # ==========================================
+
+            cogs_accounts = ChartOfAccounts.query.filter(
+                ChartOfAccounts.name.ilike(
+                    '%cost of goods sold%'
+                )
+            ).all()
+
+            cogs_account_ids = [
+                acc.id for acc in cogs_accounts
+            ]
+
+            cogs_by_shop = {}
+
+            if cogs_account_ids:
+
+                cogs_query = db.session.query(
+                    CostOfSaleLedger.shop_id,
+                    func.sum(
+                        CostOfSaleLedger.amount
+                    ).label("total_amount")
+                ).filter(
+                    CostOfSaleLedger.created_at >= start_date,
+                    CostOfSaleLedger.created_at < end_date,
+                    CostOfSaleLedger.debit_account_id.in_(
+                        cogs_account_ids
+                    ),
+                    CostOfSaleLedger.shop_id.in_(shop_ids)
+                ).group_by(
+                    CostOfSaleLedger.shop_id
+                ).all()
+
+                cogs_by_shop = {
+                    row.shop_id: float(row.total_amount or 0)
+                    for row in cogs_query
+                }
+
+            # ==========================================
+            # CALCULATE PROFIT PER SHOP
+            # ==========================================
+
+            results = []
+
+            overall_revenue = 0
+            overall_cogs = 0
+            overall_gross_profit = 0
+
+            for shop in shops:
+
+                shop_id = shop.shops_id
+
+                total_revenue = round(
+                    revenue_by_shop.get(shop_id, 0), 2
+                )
+
+                total_cogs = round(
+                    cogs_by_shop.get(shop_id, 0), 2
+                )
+
+                gross_profit = round(
+                    total_revenue - total_cogs, 2
+                )
+
+                overall_revenue += total_revenue
+                overall_cogs += total_cogs
+                overall_gross_profit += gross_profit
+
+                results.append({
+                    "shop_id": shop_id,
+                    "shop_name": shop.shopname,
+                    "total_revenue": total_revenue,
+                    "total_cogs": total_cogs,
+                    "gross_profit": gross_profit
+                })
+
+            # ==========================================
+            # OVERALL TOTALS
+            # ==========================================
+
+            overall_revenue = round(overall_revenue, 2)
+            overall_cogs = round(overall_cogs, 2)
+            overall_gross_profit = round(
+                overall_revenue - overall_cogs, 2
+            )
+
+            # ==========================================
+            # MANAGER WHATSAPP NOTIFICATION
+            # ==========================================
+
+            manager_numbers = os.getenv(
+                "WAPENDA_NOTIFICATION_NUMBERS_MANAGERS", ""
+            )
+
+            recipients = [
+                number.strip()
+                for number in manager_numbers.split(",")
+                if number.strip()
+            ]
+
+            message_lines = [
+                "*System Notification*\n\n"
+                "SALES & PROFIT REPORT",
+                "",
+                f"Date: {yesterday.strftime('%d %B %Y')}",
+                "",
+                "SHOP PERFORMANCE:"
+            ]
+
+            for shop_data in results:
+
+                message_lines.extend([
+                    "",
+                    f"*{shop_data['shop_name']}*",
+                    f"Revenue: Ksh {shop_data['total_revenue']:,.2f}",
+                    f"COGS: Ksh {shop_data['total_cogs']:,.2f}",
+                    f"Gross Profit: Ksh {shop_data['gross_profit']:,.2f}"
+                ])
+
+            message_lines.extend([
+                "",
+                "------------------------------",
+                "OVERALL PERFORMANCE",
+                "",
+                f"Total Revenue: Ksh {overall_revenue:,.2f}",
+                f"Total COGS: Ksh {overall_cogs:,.2f}",
+                f"OVERALL GROSS PROFIT: "
+                f"Ksh {overall_gross_profit:,.2f}",
+                "",
+                # "Note: Gross profit excludes spoilt stock."
+            ])
+
+            message = "\n".join(message_lines)
+
+            whatsapp_sent = 0
+
+            for number in recipients:
+
+                try:
+                    send_whatsapp_message(
+                        to=number,
+                        text=message
+                    )
+
+                    whatsapp_sent += 1
+
+                except Exception:
+
+                    logging.exception(
+                        "Failed to send daily profit report "
+                        "to manager number %s",
+                        number
+                    )
+
+            # ==========================================
+            # API RESPONSE
+            # ==========================================
+
+            return {
+                "message": "Daily profit report generated successfully",
+                "date": yesterday.strftime("%Y-%m-%d"),
+
+                "shops": results,
+
+                "summary": {
+                    "overall_revenue": overall_revenue,
+                    "overall_cogs": overall_cogs,
+                    "overall_gross_profit": overall_gross_profit
+                },
+
+                "whatsapp_notifications_sent": whatsapp_sent,
+                "whatsapp_notifications_total": len(recipients)
+
+            }, 200
+
+        except SQLAlchemyError as e:
+
+            db.session.rollback()
+
+            logging.exception(
+                "Error generating manager daily profit report"
+            )
+
+            return {
+                "error": str(e)
+            }, 500
+
 
 
 

@@ -2,12 +2,15 @@ import os
 import uuid
 from datetime import datetime, timedelta
 from functools import wraps
+import logging
+
 
 from flask import request, current_app, jsonify, make_response
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from flask_restful import Resource
 from sqlalchemy import func
 from werkzeug.utils import secure_filename
+from integrations.wapenda import send_whatsapp_message
 
 from app import db
 from Server.Models.Employees import Employees
@@ -367,6 +370,12 @@ class PostShopReport(Resource):
         if not user:
             return {"message": "User not found"}, 404
 
+        # Retrieve shop name
+        shop = Shops.query.get(shop_id)
+
+        if not shop:
+            return {"message": "Shop not found"}, 404
+
         now_utc = datetime.utcnow()
         today_utc = now_utc.date()
 
@@ -389,17 +398,59 @@ class PostShopReport(Resource):
             longitude=longitude,
             location=location,
             note=note,
-            reported_at=datetime.utcnow(),
+            reported_at=now_utc,
         )
 
         db.session.add(report)
         db.session.commit()
 
+        # Manager WhatsApp notifications
+        whatsapp_sent = 0
+
+        manager_numbers = os.getenv(
+            "WAPENDA_NOTIFICATION_NUMBERS_MANAGERS", ""
+        )
+
+        recipients = [
+            number.strip()
+            for number in manager_numbers.split(",")
+            if number.strip()
+        ]
+
+        opening_time = report.reported_at.strftime(
+            "%d %B %Y at %I:%M %p"
+        )
+
+        message = (
+            "*System Notification*\n\n"
+            "SHOP OPENING NOTIFICATION\n\n"
+            f"Shop: {shop.shopname}\n"
+            f"Reported by: {user.username}\n"
+            f"Opening time: {opening_time}\n\n"
+        )
+
+        for number in recipients:
+            try:
+                send_whatsapp_message(
+                    to=number,
+                    text=message
+                )
+                whatsapp_sent += 1
+
+            except Exception:
+                logging.exception(
+                    "Failed to send manager notification to %s",
+                    number
+                )
+
         return {
             "message": "Shop report submitted successfully",
+            "whatsapp_notifications_sent": whatsapp_sent,
+            "whatsapp_notifications_total": len(recipients),
             "report": {
                 "id": report.id,
                 "shop_id": report.shop_id,
+                "shopname": shop.shopname,
                 "user_id": report.user_id,
                 "username": report.username,
                 "reported_at": report.reported_at.isoformat(),
