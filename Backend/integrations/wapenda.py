@@ -14,6 +14,7 @@ BASE_URL = os.getenv(
 API_KEY = os.getenv("WAPENDA_API_KEY")
 
 
+
 def send_whatsapp_message(to: str, text: str) -> dict:
     """Send a WhatsApp text message through WApenda."""
 
@@ -36,12 +37,28 @@ def send_whatsapp_message(to: str, text: str) -> dict:
         timeout=20,
     )
 
-    response.raise_for_status()
-    result = response.json()
+    # Log WApenda's actual response
+    if not response.ok:
+        raise RuntimeError(
+            f"WApenda HTTP {response.status_code}: {response.text}"
+        )
+
+    try:
+        result = response.json()
+    except ValueError:
+        raise RuntimeError(
+            f"WApenda returned an invalid JSON response: {response.text}"
+        )
 
     if not result.get("success"):
         raise RuntimeError(
             result.get("message", "WApenda request failed")
         )
 
+    logging.info(
+        "WApenda message successfully sent to %s",
+        to
+    )
+
     return result["data"]
+
