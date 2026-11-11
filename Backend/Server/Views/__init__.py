@@ -217,6 +217,10 @@ from Server.Views.WhatsappNotifications import (
     ShopsNotOpenedToday,
     NotifyShopsNotOpenedToday,
 )
+from Server.Views.WhatsAppDira import WhatsAppDiraWebhook
+
+
+
 
 # -------------------------------
 # Blueprint + API setup
@@ -743,3 +747,6 @@ api.add_resource(AddSaleFromStatement, '/sasapay/statement/sale')
 #
 api.add_resource(ShopsNotOpenedToday,"/not-opened-today",)
 api.add_resource(NotifyShopsNotOpenedToday,"/notify-not-opened-today",)
+
+#whataspp AI 
+api.add_resource( WhatsAppDiraWebhook,"/dira/whatsapp/webhook")
