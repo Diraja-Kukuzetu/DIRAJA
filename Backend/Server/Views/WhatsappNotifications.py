@@ -1,13 +1,14 @@
-
 import os
+import re
 from datetime import datetime, timedelta
 
 import requests
-from flask import current_app, logging
+from flask import current_app
 from flask_restful import Resource
 from sqlalchemy import exists
 
 from app import db
+from Server.Models.Users import Users
 from Server.Models.ShopReport import ShopReport
 from Server.Models.Shops import Shops
 
@@ -20,6 +21,67 @@ load_dotenv()
 def now_eat():
     """Current East Africa Time (UTC+3), naive."""
     return datetime.utcnow() + timedelta(hours=3)
+
+
+def normalize_phone(phone, default_country_code="+254"):
+    """
+    Normalize a phone number to E.164.
+
+    Handles:
+      0712345678      -> +254712345678
+      712345678       -> +254712345678
+      +254712345678   -> +254712345678
+      254712345678    -> +254712345678
+      +254 712 345 678 -> +254712345678
+    """
+    if not phone:
+        return ""
+
+    raw = str(phone).strip()
+    digits = re.sub(r"\D", "", raw)
+
+    if not digits:
+        return ""
+
+    if raw.startswith("+"):
+        return "+" + digits
+
+    if digits.startswith(default_country_code.lstrip("+")):
+        return "+" + digits
+
+    if digits.startswith("0"):
+        return default_country_code + digits[1:]
+
+    return default_country_code + digits
+
+
+def get_manager_recipients(exclude_phones=None):
+    """
+    Return a deduplicated list of E.164 phone numbers for all
+    active managers with a phone_number set.
+
+    Optionally excludes specific normalized phone strings
+    (e.g. the legacy WAPENDA_ALERT_PHONE so we don't send twice).
+    """
+    exclude = set(exclude_phones or [])
+
+    rows = Users.query.filter(
+        Users.role == "manager",
+        Users.status == "active",
+        Users.phone_number.isnot(None),
+        Users.phone_number != "",
+    ).all()
+
+    recipients = []
+    seen = set(exclude)
+
+    for user in rows:
+        normalized = normalize_phone(user.phone_number)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            recipients.append(normalized)
+
+    return recipients
 
 
 def get_shops_not_opened_today():
@@ -60,9 +122,7 @@ def send_wapenda_message(phone, message):
     )
 
     if not api_key:
-        raise RuntimeError(
-            "WAPENDA_API_KEY is not configured"
-        )
+        raise RuntimeError("WAPENDA_API_KEY is not configured")
 
     response = requests.post(
         f"{base_url.rstrip('/')}/send-message",
@@ -121,23 +181,18 @@ class ShopsNotOpenedToday(Resource):
 
 
 class NotifyShopsNotOpenedToday(Resource):
-    """Send today's unopened-shop report via WhatsApp."""
+    """
+    Send today's unopened-shop report via WhatsApp to:
+      - WAPENDA_ALERT_PHONE (legacy, if configured)
+      - All active managers with a phone_number in Users
+    """
 
     def post(self):
         try:
-            phone = os.getenv("WAPENDA_ALERT_PHONE")
-
-            if not phone:
-                return {
-                    "success": False,
-                    "message": (
-                        "WAPENDA_ALERT_PHONE is not configured"
-                    ),
-                }, 500
-
             today = now_eat().date()
             shops = get_shops_not_opened_today()
 
+            # ── Build the message (same as before) ──
             if not shops:
                 message = (
                     f"DIRAJA SHOP OPENING REPORT - "
@@ -161,20 +216,76 @@ class NotifyShopsNotOpenedToday(Resource):
                     "responsible clerks."
                 )
 
-            result = send_wapenda_message(phone, message)
+            # ── Build the recipient list ──
+            # Start with the legacy alert phone (if set), then add
+            # all active managers from Users, deduplicating numbers.
+            recipients = []
+
+            legacy_phone_raw = os.getenv("WAPENDA_ALERT_PHONE")
+            legacy_phone = normalize_phone(legacy_phone_raw) if legacy_phone_raw else ""
+
+            if legacy_phone:
+                recipients.append(legacy_phone)
+
+            manager_recipients = get_manager_recipients(
+                exclude_phones=[legacy_phone] if legacy_phone else None
+            )
+            recipients.extend(manager_recipients)
+
+            # ── No recipients at all? ──
+            if not recipients:
+                return {
+                    "success": False,
+                    "message": (
+                        "No recipients available: "
+                        "WAPENDA_ALERT_PHONE is not set and no "
+                        "active manager has a phone_number."
+                    ),
+                }, 500
+
+            # ── Send to each recipient ──
+            results = []
+            sent_count = 0
+            failed_count = 0
+
+            for phone in recipients:
+                try:
+                    result = send_wapenda_message(phone, message)
+                    sent_count += 1
+                    results.append({
+                        "phone": phone,
+                        "status": "sent",
+                        "data": result,
+                    })
+                except Exception as exc:
+                    failed_count += 1
+                    current_app.logger.exception(
+                        "Failed to send unopened-shop report to %s",
+                        phone,
+                    )
+                    results.append({
+                        "phone": phone,
+                        "status": "failed",
+                        "error": str(exc),
+                    })
 
             return {
-                "success": True,
-                "message": "WhatsApp notification queued",
+                "success": sent_count > 0,
+                "message": (
+                    f"WhatsApp notification sent to "
+                    f"{sent_count} recipient(s)"
+                    + (f", {failed_count} failed" if failed_count else "")
+                ),
                 "date": today.isoformat(),
                 "shops_not_reported": len(shops),
-                "whatsapp": result,
-            }, 200
+                "recipients_total": len(recipients),
+                "recipients_sent": sent_count,
+                "recipients_failed": failed_count,
+                "results": results,
+            }, 200 if sent_count > 0 else 502
 
         except requests.RequestException:
-            current_app.logger.exception(
-                "WApenda request failed"
-            )
+            current_app.logger.exception("WApenda request failed")
 
             return {
                 "success": False,
@@ -192,11 +303,15 @@ class NotifyShopsNotOpenedToday(Resource):
             }, 500
 
 
+# ─────────────────────────────────────────────────────────────
+# Daily sales notification (unchanged)
+# ─────────────────────────────────────────────────────────────
 
 API_URL = os.getenv("DAILY_SALES_API_URL")
 ACCESS_TOKEN = os.getenv("DAILY_SALES_ACCESS_TOKEN")
 
 logging.basicConfig(level=logging.INFO)
+
 
 def run_daily_sales_notification():
 
@@ -207,12 +322,12 @@ def run_daily_sales_notification():
         API_URL,
         params={
             "period": "today",
-            "notification": "manager_daily"
+            "notification": "manager_daily",
         },
         headers={
-            "Authorization": f"Bearer {ACCESS_TOKEN}"
+            "Authorization": f"Bearer {ACCESS_TOKEN}",
         },
-        timeout=120
+        timeout=120,
     )
 
     response.raise_for_status()

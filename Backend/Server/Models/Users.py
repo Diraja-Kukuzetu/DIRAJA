@@ -25,6 +25,7 @@ class Users(db.Model):
     employee_id = db.Column(db.Integer, db.ForeignKey('employees.employee_id'))
     created_at = db.Column(db.DateTime, server_default=db.func.now())
     status = db.Column(db.String(10), default="inactive", nullable=False)
+    phone_number = db.Column(db.String(20) , nullable=True)
     
     # 2FA Fields - NEW
     two_factor_enabled = db.Column(db.Boolean, default=False, nullable=False)

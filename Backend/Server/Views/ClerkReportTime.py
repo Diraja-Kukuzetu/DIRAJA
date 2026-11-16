@@ -404,18 +404,27 @@ class PostShopReport(Resource):
         db.session.add(report)
         db.session.commit()
 
+        # ─────────────────────────────────────────────
         # Manager WhatsApp notifications
+        # Pull recipients from the Users table (role='manager')
+        # ─────────────────────────────────────────────
         whatsapp_sent = 0
 
-        manager_numbers = os.getenv(
-            "WAPENDA_NOTIFICATION_NUMBERS_MANAGERS", ""
-        )
+        manager_users = Users.query.filter(
+            Users.role == "manager",
+            Users.status == "active",
+            Users.phone_number.isnot(None),
+            Users.phone_number != ""
+        ).all()
 
-        recipients = [
-            number.strip()
-            for number in manager_numbers.split(",")
-            if number.strip()
-        ]
+        # Deduplicate and normalise phone numbers
+        recipients = []
+        seen = set()
+        for manager in manager_users:
+            number = (manager.phone_number or "").strip()
+            if number and number not in seen:
+                seen.add(number)
+                recipients.append(number)
 
         opening_time = report.reported_at.strftime(
             "%d %B %Y at %I:%M %p"

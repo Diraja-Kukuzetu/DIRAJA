@@ -57,12 +57,24 @@ class Addusers(Resource):
         role = data.get('role')
         password = data.get('password')
         status = data.get('status')
+        phone_number = data.get('phone_number')
 
         # Check if user already exists
         if Users.query.filter_by(email=email).first():
             return {'message': 'User already exists'}, 400
 
-        user = Users(username=username, email=email, password=password, role=role, status=status)
+        # Check phone number uniqueness if provided
+        if phone_number and Users.query.filter_by(phone_number=phone_number).first():
+            return {'message': 'Phone number already in use'}, 400
+
+        user = Users(
+            username=username,
+            email=email,
+            password=password,
+            role=role,
+            status=status,
+            phone_number=phone_number
+        )
         db.session.add(user)
         db.session.commit()
 
@@ -71,18 +83,28 @@ class Addusers(Resource):
 
 class UserLogin(Resource):
     def post(self):
-        email = request.json.get("email", None)
-        password = request.json.get("password", None)
+        data = request.get_json() or {}
 
-        # Validate input
-        if not email or not password:
-            return make_response(jsonify({"error": "Email and password are required"}), 400)
+        email = data.get("email")
+        phone_number = data.get("phone_number")
+        password = data.get("password")
 
-        # Fetch the user based on email
-        user = Users.query.filter_by(email=email).one_or_none()
+        # Validate input: must provide identifier (email or phone) + password
+        if not (email or phone_number) or not password:
+            return make_response(jsonify({
+                "error": "Email (or phone number) and password are required"
+            }), 400)
+
+        # Fetch the user by email OR phone_number
+        if email:
+            user = Users.query.filter_by(email=email).one_or_none()
+        else:
+            user = Users.query.filter_by(phone_number=phone_number).one_or_none()
 
         if not user:
-            return make_response(jsonify({"error": "User not found. Please check your email."}), 404)
+            return make_response(jsonify({
+                "error": "User not found. Please check your email or phone number."
+            }), 404)
 
         # Check if user is active
         if user.status != "active":
@@ -92,41 +114,37 @@ class UserLogin(Resource):
             }), 403)
 
         # Validate the password
-        # if not bcrypt.checkpw(password.encode('utf-8'), user.password.encode('utf-8')):
-        #     return make_response(jsonify({"error": "Wrong password"}), 401)
-        
         if not user.verify_password(password, user.password):
             return make_response(jsonify({"error": "Wrong password"}), 401)
-        
-        
 
         # Check if 2FA is enabled for this user
         if user.two_factor_enabled:
             # Generate and send 2FA code
             two_factor = TwoFactorAuth.create_for_user(user.users_id)
-            
-            # Send email with code (you'll need to implement this)
+
+            # Send email with code
             from Server.Views.Services.email_utils import send_2fa_code_email
             email_sent = send_2fa_code_email(
                 user_email=user.email,
                 full_name=user.username,
                 code=two_factor.code
             )
-            
+
             if not email_sent:
                 return make_response(jsonify({
                     "error": "Failed to send verification code. Please try again."
                 }), 500)
-            
+
             # Return user info and require 2FA
             return make_response(jsonify({
                 "requires_2fa": True,
                 "user_id": user.users_id,
                 "email": user.email,
                 "username": user.username,
+                "phone_number": user.phone_number,
                 "message": "2FA code sent to your email"
             }), 200)
-        
+
         # If 2FA is not enabled, proceed with normal login
         return self._generate_login_response(user)
 
@@ -158,6 +176,7 @@ class UserLogin(Resource):
             "username": username,
             "users_id": user.users_id,
             "email": user.email,
+            "phone_number": user.phone_number,
             "role": user_role,
             "status": user.status,
             "two_factor_enabled": user.two_factor_enabled
@@ -389,14 +408,18 @@ class VerifyBackupCode(Resource):
         try:
             data = request.get_json()
             email = data.get('email')
+            phone_number = data.get('phone_number')
             backup_code = data.get('backup_code')
 
-            if not email or not backup_code:
+            if not (email or phone_number) or not backup_code:
                 return make_response(jsonify({
-                    "error": "Email and backup code are required"
+                    "error": "Email (or phone number) and backup code are required"
                 }), 400)
 
-            user = Users.query.filter_by(email=email).first()
+            if email:
+                user = Users.query.filter_by(email=email).first()
+            else:
+                user = Users.query.filter_by(phone_number=phone_number).first()
 
             if not user:
                 return make_response(jsonify({
@@ -431,6 +454,7 @@ class UsersResourceById(Resource):
                 "users_id": user.users_id,
                 "username": user.username,
                 "email": user.email,
+                "phone_number": user.phone_number,
                 "role": user.role,
                 "status": user.status,
                 "two_factor_enabled": user.two_factor_enabled,
@@ -468,6 +492,7 @@ class UsersResourceById(Resource):
         password = data.get("password")
         role = data.get("role")
         status = data.get("status")
+        phone_number = data.get("phone_number")
 
         # Validate status if provided
         if status:
@@ -485,6 +510,12 @@ class UsersResourceById(Resource):
                     "error": f"Invalid role. Must be one of: {', '.join(valid_roles)}"
                 }, 400
 
+        # Check phone number uniqueness if being changed
+        if phone_number is not None and phone_number != user.phone_number:
+            existing = Users.query.filter_by(phone_number=phone_number).first()
+            if existing and existing.users_id != user.users_id:
+                return {"error": "Phone number already in use"}, 400
+
         # Update fields if provided
         if username:
             user.username = username
@@ -497,6 +528,8 @@ class UsersResourceById(Resource):
             user.role = role
         if status:
             user.status = status
+        if phone_number is not None:
+            user.phone_number = phone_number
         if password:
             # Let the model's validate_password method handle hashing
             user.password = password
@@ -517,6 +550,7 @@ class UsersResourceById(Resource):
                 "users_id": user.users_id,
                 "username": user.username,
                 "email": user.email,
+                "phone_number": user.phone_number,
                 "role": user.role,
                 "status": user.status,
                 "two_factor_enabled": user.two_factor_enabled
@@ -533,6 +567,7 @@ class GetAllUsers(Resource):
             "user_id": user.users_id,
             "username": user.username,
             "email": user.email,
+            "phone_number": user.phone_number,
             "password": user.password,
             "role": user.role,
             "status": user.status,

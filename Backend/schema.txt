@@ -12,6 +12,7 @@ Columns:
 - employee_id (INTEGER)
 - created_at (DATETIME)
 - status (VARCHAR(10))
+- phone_number (VARCHAR(20))
 - two_factor_enabled (BOOLEAN)
 - two_factor_secret (VARCHAR(255))
 - two_factor_verified (BOOLEAN)

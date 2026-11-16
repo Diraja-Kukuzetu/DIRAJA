@@ -57,6 +57,88 @@ def check_role(required_role):
     return wrapper
 
 
+# ─────────────────────────────────────────────────────────────
+# Shared WhatsApp Notification Helper
+# ─────────────────────────────────────────────────────────────
+def _normalize_phone(number: str, default_country_code: str = "+254") -> str:
+    """
+    Convert a locally-entered phone number to E.164 format.
+
+    Handles:
+      0712345678      -> +254712345678
+      712345678       -> +254712345678
+      +254712345678   -> +254712345678
+      254712345678    -> +254712345678
+      +254 712 345 678 -> +254712345678
+      (020) 123-4567  -> +254201234567  (fallback: assume +254)
+    """
+    if not number:
+        return ""
+
+    digits = "".join(c for c in str(number) if c.isdigit())
+    if not digits:
+        return ""
+
+    stripped = str(number).strip()
+
+    # Already international
+    if stripped.startswith("+"):
+        return "+" + digits
+
+    # Starts with country code digits (e.g. 254712345678)
+    if digits.startswith(default_country_code.lstrip("+")):
+        return "+" + digits
+
+    # Leading zero -> drop it, prepend country code
+    if digits.startswith("0"):
+        return default_country_code + digits[1:]
+
+    # Bare local number -> assume country code
+    return default_country_code + digits
+
+
+def _get_manager_whatsapp_recipients(exclude_user_id=None):
+    """
+    Return a deduplicated list of active manager phone numbers
+    from the Users table, normalized to E.164 and ready for
+    send_whatsapp_message().
+
+    Only managers with:
+      - role == 'manager'
+      - status == 'active'
+      - a non-empty phone_number
+    are included.
+
+    Optionally excludes a specific user (e.g. the person who
+    triggered the notification) via exclude_user_id.
+    """
+    query = Users.query.filter(
+        Users.role == "manager",
+        Users.status == "active",
+        Users.phone_number.isnot(None),
+        Users.phone_number != "",
+    )
+
+    if exclude_user_id is not None:
+        query = query.filter(Users.users_id != exclude_user_id)
+
+    recipients = []
+    seen = set()
+
+    for manager in query.all():
+        number = _normalize_phone(manager.phone_number or "")
+        if number and number not in seen:
+            seen.add(number)
+            recipients.append(number)
+
+    if not recipients:
+        logging.warning(
+            "No active managers with valid phone numbers found — "
+            "WhatsApp notification will be skipped"
+        )
+
+    return recipients
+
 class CountEmployees(Resource):
     @jwt_required()
     @check_role('manager')
@@ -482,6 +564,11 @@ class CountShops(Resource):
      
 
 
+
+   
+# ─────────────────────────────────────────────────────────────
+# TotalAmountPaidPerShop
+# ─────────────────────────────────────────────────────────────
 class TotalAmountPaidPerShop(Resource):
     @jwt_required()
     @check_role('manager')
@@ -777,15 +864,7 @@ class TotalAmountPaidPerShop(Resource):
 
             if request.args.get("notification") == "manager_daily":
 
-                manager_numbers = os.getenv(
-                    "WAPENDA_NOTIFICATION_NUMBERS_MANAGERS", ""
-                )
-
-                recipients = [
-                    number.strip()
-                    for number in manager_numbers.split(",")
-                    if number.strip()
-                ]
+                recipients = _get_manager_whatsapp_recipients()
 
                 message_lines = [
                     "*System Notification*\n\n"
@@ -835,7 +914,6 @@ class TotalAmountPaidPerShop(Resource):
                     whatsapp_sent,
                     len(recipients)
                 )
-                
 
             return {
                 "total_sales_per_shop": results,
@@ -845,12 +923,11 @@ class TotalAmountPaidPerShop(Resource):
         except (ValueError, SQLAlchemyError) as e:
             db.session.rollback()
             return {"error": str(e)}, 500
-        
 
 
-
-
-
+# ─────────────────────────────────────────────────────────────
+# DailyProfitReport
+# ─────────────────────────────────────────────────────────────
 class DailyProfitReport(Resource):
 
     @jwt_required()
@@ -1011,15 +1088,7 @@ class DailyProfitReport(Resource):
             # MANAGER WHATSAPP NOTIFICATION
             # ==========================================
 
-            manager_numbers = os.getenv(
-                "WAPENDA_NOTIFICATION_NUMBERS_MANAGERS", ""
-            )
-
-            recipients = [
-                number.strip()
-                for number in manager_numbers.split(",")
-                if number.strip()
-            ]
+            recipients = _get_manager_whatsapp_recipients()
 
             message_lines = [
                 "*System Notification*\n\n"
@@ -1049,8 +1118,6 @@ class DailyProfitReport(Resource):
                 f"Total COGS: Ksh {overall_cogs:,.2f}",
                 f"OVERALL GROSS PROFIT: "
                 f"Ksh {overall_gross_profit:,.2f}",
-                "",
-                # "Note: Gross profit excludes spoilt stock."
             ])
 
             message = "\n".join(message_lines)
@@ -1106,9 +1173,7 @@ class DailyProfitReport(Resource):
 
             return {
                 "error": str(e)
-            }, 500
-
-
+            }, 500     
 
 
 

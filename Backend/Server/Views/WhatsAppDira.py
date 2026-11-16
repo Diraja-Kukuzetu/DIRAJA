@@ -3,36 +3,16 @@ import re
 import requests
 import logging
 
-from datetime import timedelta
-
-from flask import request, current_app
+from flask import request
 from flask_restful import Resource
 
 from app import db
 from Server.Models.Users import Users
-from Server.Models.WhatsAppChat import (
-    WhatsAppUserLink,
-    WhatsAppChatSession,
-    WhatsAppWebhookEvent,
-    now_eat,
-)
+from Server.Models.WhatsAppChat import WhatsAppWebhookEvent
 from Server.AI.whatsapp_dira_service import ask_dira_question
 
 
 logger = logging.getLogger(__name__)
-
-SESSION_TIMEOUT_MINUTES = 5
-
-ACTIVATION_PHRASES = {
-    "hello dira",
-    "hi dira",
-}
-
-END_PHRASES = {
-    "end chat",
-    "end conversation",
-    "stop chat",
-}
 
 
 def normalize_phone(phone):
@@ -49,6 +29,25 @@ def normalize_phone(phone):
         phone = "254" + phone
 
     return phone
+
+
+def _phone_variants(phone):
+    """
+    Return the likely ways a normalized phone may be stored in
+    Users.phone_number, so we can match regardless of format:
+      - 254712345678
+      - +254712345678
+      - 0712345678
+    """
+    if not phone:
+        return []
+
+    variants = {phone, f"+{phone}"}
+
+    if phone.startswith("254"):
+        variants.add("0" + phone[3:])
+
+    return list(variants)
 
 
 def send_wapenda_message(phone, message):
@@ -79,34 +78,6 @@ def send_wapenda_message(phone, message):
     return response.json() if response.content else {}
 
 
-def get_linked_user(phone):
-    link = WhatsAppUserLink.query.filter_by(
-        phone=phone,
-        is_active=True
-    ).first()
-
-    if not link:
-        return None
-
-    user = Users.query.filter_by(
-        users_id=link.user_id
-    ).first()
-
-    if not user or user.status != "active":
-        return None
-
-    return user
-
-
-def get_active_session(phone):
-    return WhatsAppChatSession.query.filter_by(
-        phone=phone,
-        status="active"
-    ).order_by(
-        WhatsAppChatSession.started_at.desc()
-    ).first()
-
-
 def send_message_safely(phone, message):
     try:
         return send_wapenda_message(phone, message)
@@ -115,15 +86,31 @@ def send_message_safely(phone, message):
         return None
 
 
+def get_manager_by_phone(phone):
+    """
+    Return the Users record whose phone_number matches the
+    given normalized phone, restricted to active managers.
+    """
+    variants = _phone_variants(phone)
+
+    if not variants:
+        return None
+
+    user = Users.query.filter(
+        Users.phone_number.in_(variants),
+        Users.role == "manager",
+        Users.status == "active",
+    ).first()
+
+    return user
+
+
 class WhatsAppDiraWebhook(Resource):
 
     def post(self):
         # Webhook signature verification is disabled.
-        # Incoming requests are processed without validating a provider signature.
         data = request.get_json(silent=True) or {}
 
-        # Adapt these fields to the exact WApenda webhook event format.
-        # Do not assume the provider sends all these fields.
         event_id = (
             data.get("id")
             or data.get("event_id")
@@ -153,7 +140,6 @@ class WhatsAppDiraWebhook(Resource):
 
         phone = normalize_phone(sender)
         message = str(message).strip()
-        command = message.lower()
 
         if not phone or not message:
             return {"success": False, "message": "Invalid message"}, 400
@@ -173,170 +159,50 @@ class WhatsAppDiraWebhook(Resource):
                 )
                 db.session.flush()
 
-            user = get_linked_user(phone)
+            user = get_manager_by_phone(phone)
 
-            if command in ACTIVATION_PHRASES:
-                if not user:
-                    db.session.commit()
-                    send_message_safely(
-                        phone,
-                        "Your WhatsApp number is not linked to an active "
-                        "Diraja account. Please contact your administrator."
-                    )
-                    return {"success": True}, 200
-
-                if user.role not in ("admin", "super_admin"):
-                    db.session.commit()
-                    send_message_safely(
-                        phone,
-                        "Your account is not yet authorized to use Dira AI "
-                        "through WhatsApp. Please contact your administrator."
-                    )
-                    return {"success": True}, 200
-
-                # Close any previous active session.
-                old_session = get_active_session(phone)
-
-                if old_session:
-                    old_session.status = "ended"
-                    old_session.ended_at = now_eat()
-
-                session = WhatsAppChatSession(
-                    phone=phone,
-                    user_id=user.users_id,
-                    status="active",
-                    conversation_history=[],
-                    started_at=now_eat(),
-                    last_activity_at=now_eat(),
-                )
-
-                db.session.add(session)
+            # ── Unauthorized ──
+            if not user:
                 db.session.commit()
 
                 send_message_safely(
                     phone,
-                    "Hello! 👋 I'm Dira, your Diraja AI assistant.\n\n"
-                    "You can ask me about your business reports, sales, "
-                    "inventory and other available business data.\n\n"
-                    "Your chat will automatically end after 5 minutes "
-                    "of inactivity.\n\n"
-                    "Send *End chat* whenever you want to close the session."
+                    "Your WhatsApp number is not linked to an active "
+                    "manager account. Please contact your administrator."
                 )
 
-                return {"success": True, "session_started": True}, 200
+                return {
+                    "success": True,
+                    "authorized": False
+                }, 200
 
-            session = get_active_session(phone)
-
-            if command in END_PHRASES:
-                if session:
-                    session.status = "ended"
-                    session.ended_at = now_eat()
-                    session.conversation_history = []
-
-                db.session.commit()
-
-                send_message_safely(
-                    phone,
-                    "Your Dira chat has ended. 👋\n"
-                    "Send *Hello Dira* whenever you want to start again."
-                )
-
-                return {"success": True, "session_ended": True}, 200
-
-            if not session:
-                db.session.commit()
-
-                send_message_safely(
-                    phone,
-                    "Your Dira session is not active.\n\n"
-                    "Send *Hello Dira* to start a new conversation."
-                )
-
-                return {"success": True, "session_inactive": True}, 200
-
-            now = now_eat()
-
-            if now - session.last_activity_at > timedelta(
-                minutes=SESSION_TIMEOUT_MINUTES
-            ):
-                session.status = "expired"
-                session.ended_at = now
-                session.conversation_history = []
-                db.session.commit()
-
-                send_message_safely(
-                    phone,
-                    "Your Dira session expired because of 5 minutes "
-                    "of inactivity.\n\nSend *Hello Dira* to start again."
-                )
-
-                return {"success": True, "session_expired": True}, 200
-
-            # Revalidate the linked user on every message.
-            user = get_linked_user(phone)
-
-            if not user or user.users_id != session.user_id:
-                session.status = "ended"
-                session.ended_at = now
-                db.session.commit()
-
-                send_message_safely(
-                    phone,
-                    "Your Diraja account is no longer authorized. "
-                    "Please contact your administrator."
-                )
-
-                return {"success": True}, 200
-
-            if user.role not in ("admin", "super_admin"):
-                session.status = "ended"
-                session.ended_at = now
-                db.session.commit()
-
-                send_message_safely(
-                    phone,
-                    "Your account is not authorized to use Dira AI."
-                )
-
-                return {"success": True}, 200
-
-            session.last_activity_at = now
-
-            history = session.conversation_history or []
-
+            # ── Authorized ──
             user_context = {
                 "user_id": user.users_id,
                 "username": user.username,
                 "role": user.role,
             }
 
-            # Save the user's message before asking the AI.
-            history.append({
-                "role": "user",
-                "content": message
-            })
-
             answer = ask_dira_question(
                 question=message,
-                conversation_history=history[:-1],
+                conversation_history=[],
                 user_context=user_context,
             )
-
-            history.append({
-                "role": "assistant",
-                "content": answer
-            })
-
-            # Retain only the most recent messages.
-            session.conversation_history = history[-12:]
 
             db.session.commit()
 
             send_message_safely(phone, answer)
 
-            return {"success": True, "message_processed": True}, 200
+            return {
+                "success": True,
+                "authorized": True,
+                "message_processed": True
+            }, 200
 
         except Exception:
             db.session.rollback()
             logger.exception("WhatsApp Dira webhook processing failed")
-            return {"success": False, "message": "Webhook processing failed"}, 500
+            return {
+                "success": False,
+                "message": "Webhook processing failed"
+            }, 500
