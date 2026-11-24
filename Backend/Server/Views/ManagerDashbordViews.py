@@ -925,12 +925,13 @@ class TotalAmountPaidPerShop(Resource):
             return {"error": str(e)}, 500
 
 
+
 # ─────────────────────────────────────────────────────────────
 # DailyProfitReport
 # ─────────────────────────────────────────────────────────────
 class DailyProfitReport(Resource):
 
-    @jwt_required()
+
     @check_role('manager')
     def get(self):
 
@@ -1086,9 +1087,25 @@ class DailyProfitReport(Resource):
 
             # ==========================================
             # MANAGER WHATSAPP NOTIFICATION
+            # Recipients pulled from the Users table
+            # (role='manager', active, phone_number set)
             # ==========================================
 
-            recipients = _get_manager_whatsapp_recipients()
+            manager_users = Users.query.filter(
+                Users.role == "manager",
+                Users.status == "active",
+                Users.phone_number.isnot(None),
+                Users.phone_number != ""
+            ).all()
+
+            # Deduplicate and normalise phone numbers
+            recipients = []
+            seen = set()
+            for manager in manager_users:
+                number = (manager.phone_number or "").strip()
+                if number and number not in seen:
+                    seen.add(number)
+                    recipients.append(number)
 
             message_lines = [
                 "*System Notification*\n\n"
@@ -1123,6 +1140,7 @@ class DailyProfitReport(Resource):
             message = "\n".join(message_lines)
 
             whatsapp_sent = 0
+            whatsapp_failed = 0
 
             for number in recipients:
 
@@ -1135,6 +1153,8 @@ class DailyProfitReport(Resource):
                     whatsapp_sent += 1
 
                 except Exception:
+
+                    whatsapp_failed += 1
 
                     logging.exception(
                         "Failed to send daily profit report "
@@ -1159,6 +1179,7 @@ class DailyProfitReport(Resource):
                 },
 
                 "whatsapp_notifications_sent": whatsapp_sent,
+                "whatsapp_notifications_failed": whatsapp_failed,
                 "whatsapp_notifications_total": len(recipients)
 
             }, 200
@@ -1173,7 +1194,8 @@ class DailyProfitReport(Resource):
 
             return {
                 "error": str(e)
-            }, 500     
+            }, 500
+
 
 
 

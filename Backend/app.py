@@ -71,6 +71,7 @@ def initialize_models():
     from Server.Models.Creditors import Creditors
     from Server.Models.Accounting.SalesLedger import SalesLedger
     from Server.Models.StockItems import StockItems
+    from Server.Models.DirajaAIConversation import DirajaAIConversation, DirajaAIMessage
 
 
 # ---------- Views Import ----------

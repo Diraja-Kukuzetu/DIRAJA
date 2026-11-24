@@ -608,6 +608,37 @@ Columns:
 - created_at (DATETIME)
 - updated_at (DATETIME)
 
+Table: diraja_ai_conversations
+Columns:
+- conversation_id (INTEGER)
+- user_id (INTEGER)
+- shop_id (INTEGER)
+- title (VARCHAR(255))
+- channel (VARCHAR(30))
+- status (VARCHAR(30))
+- created_at (DATETIME)
+- updated_at (DATETIME)
+- last_message_at (DATETIME)
+
+Table: diraja_ai_messages
+Columns:
+- message_id (INTEGER)
+- conversation_id (INTEGER)
+- turn_id (VARCHAR(36))
+- message_type (VARCHAR(20))
+- content (TEXT)
+- sql_query (TEXT)
+- result_data (JSON)
+- model_name (VARCHAR(100))
+- execution_status (VARCHAR(30))
+- execution_time_ms (INTEGER)
+- error_message (TEXT)
+- answer_score (FLOAT)
+- score_feedback (TEXT)
+- scored_by_user_id (INTEGER)
+- scored_at (DATETIME)
+- created_at (DATETIME)
+
 
 
 Relationships:
@@ -680,6 +711,10 @@ Relationships:
 - sales_ledger.credit_account_id → chart_of_accounts.id
 - sales_ledger.shop_id → shops.shops_id
 - etims_items.local_item_id → stock_item.id
+- diraja_ai_conversations.user_id → users.users_id
+- diraja_ai_conversations.shop_id → shops.shops_id
+- diraja_ai_messages.conversation_id → diraja_ai_conversations.conversation_id
+- diraja_ai_messages.scored_by_user_id → users.users_id
 
 
 

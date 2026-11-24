@@ -65,7 +65,7 @@ from Server.Views.employeeloanview import (
 
 from Server.Views.Sales import (
     AddSale, SasaPaySaleResource, GetSales, GetSalesByShop, SalesResources, GetPaymentTotals, GetSalesGraphData, SasaPayReconciliationResource,
-    SalesBalanceResource, TotalBalanceSummary, SasaPayPaymentStatusResource,
+    SalesBalanceResource, TotalBalanceSummary, SasaPayPaymentStatusResource,WhatsappPrompt,
     UpdateSalePayment, GetUnpaidSales, PaymentMethodsResource,
     CapturePaymentResource, CreditHistoryResource, GetSingleSaleByShop,
     SalesByEmployeeResource, GetSale, GetUnpaidSalesByClerk,
@@ -218,6 +218,8 @@ from Server.Views.WhatsappNotifications import (
     NotifyShopsNotOpenedToday,
 )
 from Server.Views.WhatsAppDira import WhatsAppDiraWebhook
+
+from Server.Views.AITraining import DirajaAIMessagesResource
 
 
 
@@ -387,6 +389,7 @@ api.add_resource(DeliverySalesSummary, '/delivery-sales-summary', '/delivery-sal
 api.add_resource(ProductEarningsSummary, '/shops/<int:shop_id>/product-earnings', '/product-earnings')
 api.add_resource(CategoryEarningsSummary, "/category-earnings-summary", "/category-earnings-summary/<int:shop_id>")
 api.add_resource(SasaPayReconciliationResource, '/reconciliation/sasapay')
+api.add_resource(WhatsappPrompt,'/api/reconciliation/sasapay/whatsapp-prompt')
 
 
 #Distribution
@@ -751,3 +754,6 @@ api.add_resource(NotifyShopsNotOpenedToday,"/notify-not-opened-today",)
 
 #whataspp AI 
 api.add_resource( WhatsAppDiraWebhook,"/dira/whatsapp/webhook")
+
+
+api.add_resource(DirajaAIMessagesResource, "/messages")
