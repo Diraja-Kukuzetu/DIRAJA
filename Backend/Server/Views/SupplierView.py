@@ -6,12 +6,13 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime
 from sqlalchemy.exc import SQLAlchemyError
 
+VALID_SUPPLIER_TYPES = ("expenses", "inventory")
+
 
 class AddSupplier(Resource):
    
     def post(self):
         data = request.get_json()
-       
 
         required_fields = [
             'supplier_name',
@@ -31,6 +32,13 @@ class AddSupplier(Resource):
         phone_number = data.get('phone_number')
         credit_amount = data.get('credit_amount', 0.0)
         kra_pin = data.get('kra_pin')
+        supplier_type = data.get('supplier_type', 'inventory')
+
+        # Validate supplier_type
+        if supplier_type not in VALID_SUPPLIER_TYPES:
+            return {
+                'message': f"Invalid supplier_type. Must be one of: {', '.join(VALID_SUPPLIER_TYPES)}"
+            }, 400
         
         # Payment details
         payment_method = data.get('payment_method')
@@ -50,6 +58,7 @@ class AddSupplier(Resource):
             phone_number=phone_number,
             credit_amount=float(credit_amount),
             kra_pin=kra_pin,
+            supplier_type=supplier_type,
             payment_method=payment_method,
             mobile_number=mobile_number,
             till_number=till_number,
@@ -66,6 +75,7 @@ class AddSupplier(Resource):
             return {
                 'message': 'Supplier added successfully',
                 'supplier_id': new_supplier.supplier_id,
+                'supplier_type': new_supplier.supplier_type,
                 'credit_amount': new_supplier.credit_amount
             }, 201
         except SQLAlchemyError as e:
@@ -80,7 +90,18 @@ class GetAllSuppliers(Resource):
 
     def get(self):
         try:
-            suppliers = Suppliers.query.all()
+            # Optional filter: /suppliers?supplier_type=expenses
+            supplier_type_filter = request.args.get('supplier_type')
+
+            query = Suppliers.query
+            if supplier_type_filter:
+                if supplier_type_filter not in VALID_SUPPLIER_TYPES:
+                    return {
+                        'message': f"Invalid supplier_type filter. Must be one of: {', '.join(VALID_SUPPLIER_TYPES)}"
+                    }, 400
+                query = query.filter_by(supplier_type=supplier_type_filter)
+
+            suppliers = query.all()
             supplier_list = []
 
             for supplier in suppliers:
@@ -88,6 +109,7 @@ class GetAllSuppliers(Resource):
                     'supplier_id': supplier.supplier_id,
                     'supplier_name': supplier.supplier_name,
                     'supplier_location': supplier.supplier_location,
+                    'supplier_type': supplier.supplier_type,
                     'total_amount_received': supplier.total_amount_received,
                     'credit_amount': supplier.credit_amount,
                     'email': supplier.email,
@@ -140,6 +162,7 @@ class GetSingleSupplier(Resource):
                 'supplier_id': supplier.supplier_id,
                 'supplier_name': supplier.supplier_name,
                 'supplier_location': supplier.supplier_location,
+                'supplier_type': supplier.supplier_type,
                 'total_amount_received': supplier.total_amount_received,
                 'credit_amount': supplier.credit_amount,
                 'email': supplier.email,
@@ -189,6 +212,12 @@ class UpdateSupplier(Resource):
                 supplier.credit_amount = float(data['credit_amount'])
             if 'kra_pin' in data:
                 supplier.kra_pin = data['kra_pin']
+            if 'supplier_type' in data:
+                if data['supplier_type'] not in VALID_SUPPLIER_TYPES:
+                    return {
+                        'message': f"Invalid supplier_type. Must be one of: {', '.join(VALID_SUPPLIER_TYPES)}"
+                    }, 400
+                supplier.supplier_type = data['supplier_type']
             
             # Update payment details
             if 'payment_method' in data:
@@ -219,6 +248,7 @@ class UpdateSupplier(Resource):
                     'supplier_id': supplier.supplier_id,
                     'supplier_name': supplier.supplier_name,
                     'supplier_location': supplier.supplier_location,
+                    'supplier_type': supplier.supplier_type,
                     'total_amount_received': supplier.total_amount_received,
                     'credit_amount': supplier.credit_amount,
                     'email': supplier.email,
@@ -329,6 +359,7 @@ class AddSupplierHistory(Resource):
                 'history_id': new_history.history_id,
                 'supplier': {
                     'supplier_id': supplier.supplier_id,
+                    'supplier_type': supplier.supplier_type,
                     'total_amount_received': supplier.total_amount_received,
                     'credit_amount': supplier.credit_amount
                 }
@@ -372,6 +403,7 @@ class GetSupplierHistory(Resource):
             return {
                 'supplier_id': supplier_id,
                 'supplier_name': supplier.supplier_name,
+                'supplier_type': supplier.supplier_type,
                 'total_amount_received': supplier.total_amount_received,
                 'credit_amount': supplier.credit_amount,
                 'history': history_list
@@ -423,6 +455,7 @@ class GetSupplierByPhone(Resource):
                     'supplier_id': supplier.supplier_id,
                     'supplier_name': supplier.supplier_name,
                     'supplier_location': supplier.supplier_location,
+                    'supplier_type': supplier.supplier_type,
                     'total_amount_received': supplier.total_amount_received,
                     'credit_amount': supplier.credit_amount,
                     'email': supplier.email,

@@ -1390,7 +1390,8 @@ class AddInventoryV2(Resource):
             # Step 1: Check or create supplier
             supplier = Suppliers.query.filter_by(
                 supplier_name=Suppliername,
-                supplier_location=Supplier_location
+                supplier_location=Supplier_location,
+                supplier_type='inventory'
             ).first()
 
             if not supplier:
@@ -1401,6 +1402,7 @@ class AddInventoryV2(Resource):
                     credit_amount=credit_amount,  # Set initial credit amount
                     email=email,
                     phone_number=phone_number,
+                    supplier_type='inventory',
                     items_sold=json.dumps([itemname])
                 )
                 db.session.add(supplier)

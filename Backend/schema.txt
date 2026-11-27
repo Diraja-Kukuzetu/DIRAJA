@@ -137,7 +137,7 @@ Columns:
 - expense_id (INTEGER)
 - user_id (INTEGER)
 - shop_id (INTEGER)
-- creditor_id (INTEGER)
+- supplier_id (INTEGER)
 - item (VARCHAR(50))
 - description (VARCHAR(50))
 - category (VARCHAR(50))
@@ -364,6 +364,7 @@ Columns:
 - supplier_location (VARCHAR(255))
 - total_amount_received (FLOAT)
 - credit_amount (FLOAT)
+- supplier_type (VARCHAR(20))
 - email (VARCHAR(255))
 - phone_number (VARCHAR(50))
 - kra_pin (VARCHAR(50))
@@ -655,7 +656,7 @@ Relationships:
 - stock.shop_id → shops.shops_id
 - expenses.user_id → users.users_id
 - expenses.shop_id → shops.shops_id
-- expenses.creditor_id → expense_creditors.creditor_id
+- expenses.supplier_id → suppliers.supplier_id
 - expense_distributions.original_expense_id → expenses.expense_id
 - expense_distributions.distributed_to_shop_id → shops.shops_id
 - expense_distributions.distributed_by → users.users_id

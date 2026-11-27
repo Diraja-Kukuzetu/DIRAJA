@@ -12,6 +12,9 @@ class Suppliers(db.Model):
     total_amount_received = db.Column(db.Float, default=0.0)
     credit_amount = db.Column(db.Float, default=0.0)  # New field for supplier credit
 
+    # Supplier type: 'expenses' or 'inventory'
+    supplier_type = db.Column(db.String(20), nullable=False, default="inventory")
+
     # Optional contact details
     email = db.Column(db.String(255), nullable=True)
     phone_number = db.Column(db.String(50), nullable=False)
@@ -37,7 +40,7 @@ class Suppliers(db.Model):
     def __repr__(self):
         return (f"Supplier(supplier_id={self.supplier_id}, name='{self.supplier_name}', "
                 f"location='{self.supplier_location}', total_amount_received={self.total_amount_received}, "
-                f"credit_amount={self.credit_amount}, "
+                f"credit_amount={self.credit_amount}, supplier_type='{self.supplier_type}', "
                 f"email='{self.email}', phone_number='{self.phone_number}', "
                 f"bank_name='{self.bank_name}', bank_code='{self.bank_code}', "
                 f"items_sold={self.items_sold})")

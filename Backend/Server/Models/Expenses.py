@@ -9,7 +9,7 @@ class Expenses(db.Model):
     expense_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.users_id'))
     shop_id = db.Column(db.Integer, db.ForeignKey('shops.shops_id'))
-    creditor_id = db.Column(db.Integer, db.ForeignKey('expense_creditors.creditor_id'), nullable=True)  # ✅ FIXED
+    supplier_id = db.Column(db.Integer, db.ForeignKey('suppliers.supplier_id'), nullable=True)  # ✅ replaced creditor_id
     item = db.Column(db.String(50), nullable=False)
     description = db.Column(db.String(50), nullable=False) 
     category = db.Column(db.String(50), nullable=False) 
@@ -27,7 +27,7 @@ class Expenses(db.Model):
     # Relationships
     users = db.relationship('Users', backref='expenses', lazy=True)
     shops = db.relationship('Shops', backref='expenses', lazy=True)
-    creditor = db.relationship('Creditor', backref='expenses', lazy=True)  # ✅ now valid
+    supplier = db.relationship('Suppliers', backref='expenses', lazy=True)  # ✅ now points to Suppliers
     credit_payments = db.relationship('CreditPayments', backref='expense', lazy=True, cascade="all, delete-orphan")
     
     @property
@@ -48,7 +48,7 @@ class Expenses(db.Model):
     
     def __repr__(self):
         return (f"Expense (expense_id={self.expense_id}, user_id='{self.user_id}', "
-                f"shop_id='{self.shop_id}', category='{self.category}', item='{self.item}', "
+                f"shop_id='{self.shop_id}', supplier_id='{self.supplier_id}', category='{self.category}', item='{self.item}', "
                 f"description='{self.description}', quantity='{self.quantity}', "
                 f"paidTo='{self.paidTo}', totalPrice='{self.totalPrice}', "
                 f"amountPaid='{self.amountPaid}', payment_status='{self.payment_status}', "
@@ -100,6 +100,13 @@ class CreditPayments(db.Model):
     
 
 class Creditor(db.Model):
+    """
+    DEPRECATED: This class is retained for backward compatibility/migration only.
+    New code should use the Suppliers model (Server.Models.Supplier.Suppliers)
+    with supplier_type='expenses' instead.
+
+    The Expenses model no longer references this table.
+    """
     __tablename__ = "expense_creditors"
     
     creditor_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -135,11 +142,11 @@ class Creditor(db.Model):
         from sqlalchemy import func
         
         total_owed = db.session.query(func.sum(Expenses.totalPrice)).filter(
-            Expenses.creditor_id == self.creditor_id
+            Expenses.supplier_id == self.creditor_id
         ).scalar() or 0.0
         
         total_paid = db.session.query(func.sum(Expenses.amountPaid)).filter(
-            Expenses.creditor_id == self.creditor_id
+            Expenses.supplier_id == self.creditor_id
         ).scalar() or 0.0
         
         self.total_amount_owed = total_owed

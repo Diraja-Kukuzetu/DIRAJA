@@ -46,8 +46,10 @@ from Server.Views.Bankviews import (
 
 from Server.Views.Expenses import (
     AllExpenses, AddExpense, GetShopExpenses, ExpensesResources, TotalBalance,
-    CreditPaymentResource, GetCreditorDetails, GetCreditors, DeleteCreditor, CreateExpenseCreditor,
-    UpdateCreditor, DistributeExpense
+    CreditPaymentResource, DistributeExpense,
+    GetExpenseSuppliers, GetExpenseSupplierDetails, CreateExpenseSupplier,
+    UpdateExpenseSupplier, DeleteExpenseSupplier,
+    SasaPayProcessExpensePayment,
 )
 
 from Server.Views.Customersviews import (
@@ -337,20 +339,24 @@ api.add_resource(InventoryResourceById, '/inventory/<int:inventory_id>')
 api.add_resource(DeleteShopStock, '/deleteshopstock/<int:shop_stock_id>')
 api.add_resource(GetInventoryByBatch, '/inventory-by-batch')
 
-# expenses endpoint 
-# API Resource Registrations
-api.add_resource(AddExpense, '/newexpense')
-api.add_resource(AllExpenses, '/allexpenses')
-api.add_resource(GetShopExpenses, '/expense/shop/<int:shop_id>')
-api.add_resource(ExpensesResources, '/expense/<int:expense_id>')
-api.add_resource(TotalBalance, '/accountsreceivable')
-api.add_resource(CreditPaymentResource, '/expense/<int:expense_id>/payments') 
-api.add_resource(GetCreditors, '/expense-creditors')
-api.add_resource(GetCreditorDetails, '/expense-creditors/<int:creditor_id>')
-api.add_resource(CreateExpenseCreditor, '/expense-creditors/create')
-api.add_resource(UpdateCreditor, '/expense-creditors/update/<int:creditor_id>')
-api.add_resource(DeleteCreditor, '/expense-creditors/delete/<int:creditor_id>')
-api.add_resource(DistributeExpense, '/expenses/<expense_id>/distribute')
+
+
+#expense 
+api.add_resource(AddExpense,           '/newexpense')
+api.add_resource(AllExpenses,          '/allexpenses')
+api.add_resource(GetShopExpenses,      '/expense/shop/<int:shop_id>')
+api.add_resource(ExpensesResources,    '/expense/<int:expense_id>')
+api.add_resource(TotalBalance,         '/accountsreceivable')
+api.add_resource(CreditPaymentResource,'/expense/<int:expense_id>/payments')
+api.add_resource(DistributeExpense,    '/expenses/<int:expense_id>/distribute')
+
+# Expense suppliers — replaces old /expense-creditors routes
+api.add_resource(GetExpenseSuppliers,       '/expense-suppliers')
+api.add_resource(GetExpenseSupplierDetails, '/expense-suppliers/<int:supplier_id>')
+api.add_resource(CreateExpenseSupplier,     '/expense-suppliers/create')
+api.add_resource(UpdateExpenseSupplier,     '/expense-suppliers/update/<int:supplier_id>')
+api.add_resource(DeleteExpenseSupplier,     '/expense-suppliers/delete/<int:supplier_id>')
+api.add_resource(SasaPayProcessExpensePayment, '/sasapay/pay-expense')
 
 # banks endpoint
 api.add_resource(AddBank, '/newbank')
