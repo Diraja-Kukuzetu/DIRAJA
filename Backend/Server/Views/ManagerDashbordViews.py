@@ -4,6 +4,8 @@ from Server.Models.Inventory import Inventory
 from Server.Models.InventoryV2 import InventoryV2
 from Server.Models.ChartOfAccounts import ChartOfAccounts
 from Server.Models.Accounting.SalesLedger import SalesLedger
+from Server.Models.Accounting.ExpensesLedger import ExpensesLedger
+from Server.Models.ExpenseCategory import ExpenseCategory
 from Server.Models.Accounting.CostOfSalesLedger import CostOfSaleLedger
 from Server.Models.TransferV2 import  TransfersV2
 from Server.Models.Transfer import Transfer
@@ -851,29 +853,49 @@ class TotalAmountPaidPerShop(Resource):
 
 
 
+
+
+
 class DailyProfitReport(Resource):
 
-    @jwt_required()
-    @check_role('manager')
     def get(self):
 
         try:
             # ==========================================
-            # YESTERDAY'S DATE (EAST AFRICAN TIME)
+            # DATE RANGE (EAST AFRICAN TIME)
             # ==========================================
 
             now_eat = datetime.utcnow() + timedelta(hours=3)
             yesterday = (now_eat - timedelta(days=1)).date()
 
+            month_start = datetime(
+                yesterday.year,
+                yesterday.month,
+                1
+            ).date()
+
             # Convert EAT boundaries to UTC.
-            # Assumes ledger timestamps are stored in UTC.
+            # Assumes database timestamps are stored in UTC.
 
             start_date = (
+                datetime.combine(month_start, datetime.min.time())
+                - timedelta(hours=3)
+            )
+
+            end_date = (
+                datetime.combine(
+                    yesterday + timedelta(days=1),
+                    datetime.min.time()
+                ) - timedelta(hours=3)
+            )
+
+            # Yesterday's UTC boundaries
+            yesterday_start = (
                 datetime.combine(yesterday, datetime.min.time())
                 - timedelta(hours=3)
             )
 
-            end_date = start_date + timedelta(days=1)
+            yesterday_end = yesterday_start + timedelta(days=1)
 
             # ==========================================
             # GET ACTIVE SHOPS
@@ -884,6 +906,39 @@ class DailyProfitReport(Resource):
             ).all()
 
             shop_ids = [shop.shops_id for shop in shops]
+
+            # ==========================================
+            # YESTERDAY'S SALES PER SHOP
+            # ==========================================
+
+            yesterday_sales_by_shop = {}
+
+            if shop_ids:
+
+                yesterday_sales_query = db.session.query(
+                    Sales.shop_id,
+                    func.sum(
+                        SoldItem.total_price
+                    ).label("total_sales")
+                ).join(
+                    SoldItem,
+                    SoldItem.sales_id == Sales.sales_id
+                ).filter(
+                    Sales.created_at >= yesterday_start,
+                    Sales.created_at < yesterday_end,
+                    Sales.shop_id.in_(shop_ids)
+                ).group_by(
+                    Sales.shop_id
+                ).all()
+
+                yesterday_sales_by_shop = {
+                    row.shop_id: float(row.total_sales or 0)
+                    for row in yesterday_sales_query
+                }
+
+            overall_yesterday_sales = round(
+                sum(yesterday_sales_by_shop.values()), 2
+            )
 
             # ==========================================
             # REVENUE ACCOUNTS
@@ -899,11 +954,13 @@ class DailyProfitReport(Resource):
 
             revenue_by_shop = {}
 
-            if revenue_account_ids:
+            if revenue_account_ids and shop_ids:
 
                 revenue_query = db.session.query(
                     SalesLedger.shop_id,
-                    func.sum(SalesLedger.amount).label("total_amount")
+                    func.sum(
+                        SalesLedger.amount
+                    ).label("total_amount")
                 ).filter(
                     SalesLedger.created_at >= start_date,
                     SalesLedger.created_at < end_date,
@@ -921,7 +978,7 @@ class DailyProfitReport(Resource):
                 }
 
             # ==========================================
-            # COST OF GOODS SOLD ACCOUNTS
+            # COST OF GOODS SOLD
             # ==========================================
 
             cogs_accounts = ChartOfAccounts.query.filter(
@@ -936,7 +993,7 @@ class DailyProfitReport(Resource):
 
             cogs_by_shop = {}
 
-            if cogs_account_ids:
+            if cogs_account_ids and shop_ids:
 
                 cogs_query = db.session.query(
                     CostOfSaleLedger.shop_id,
@@ -960,7 +1017,38 @@ class DailyProfitReport(Resource):
                 }
 
             # ==========================================
-            # CALCULATE PROFIT PER SHOP
+            # EXPENSES PER SHOP
+            # ==========================================
+
+            expenses_by_shop = {}
+
+            if shop_ids:
+
+                expense_query = db.session.query(
+                    ExpensesLedger.shop_id,
+                    func.sum(
+                        ExpensesLedger.amount
+                    ).label("total_amount")
+                ).join(
+                    ExpenseCategory,
+                    ExpenseCategory.id == ExpensesLedger.category_id
+                ).filter(
+                    ExpensesLedger.created_at >= start_date,
+                    ExpensesLedger.created_at < end_date,
+                    ExpensesLedger.debit_account_id.isnot(None),
+                    ExpensesLedger.credit_account_id.is_(None),
+                    ExpensesLedger.shop_id.in_(shop_ids)
+                ).group_by(
+                    ExpensesLedger.shop_id
+                ).all()
+
+                expenses_by_shop = {
+                    row.shop_id: float(row.total_amount or 0)
+                    for row in expense_query
+                }
+
+            # ==========================================
+            # CALCULATE MONTH-TO-DATE PROFIT PER SHOP
             # ==========================================
 
             results = []
@@ -968,6 +1056,8 @@ class DailyProfitReport(Resource):
             overall_revenue = 0
             overall_cogs = 0
             overall_gross_profit = 0
+            overall_expenses = 0
+            overall_net_profit = 0
 
             for shop in shops:
 
@@ -981,30 +1071,49 @@ class DailyProfitReport(Resource):
                     cogs_by_shop.get(shop_id, 0), 2
                 )
 
+                total_expenses = round(
+                    expenses_by_shop.get(shop_id, 0), 2
+                )
+
                 gross_profit = round(
                     total_revenue - total_cogs, 2
+                )
+
+                net_profit = round(
+                    gross_profit - total_expenses, 2
                 )
 
                 overall_revenue += total_revenue
                 overall_cogs += total_cogs
                 overall_gross_profit += gross_profit
+                overall_expenses += total_expenses
+                overall_net_profit += net_profit
 
                 results.append({
                     "shop_id": shop_id,
                     "shop_name": shop.shopname,
                     "total_revenue": total_revenue,
                     "total_cogs": total_cogs,
-                    "gross_profit": gross_profit
+                    "gross_profit": gross_profit,
+                    "total_expenses": total_expenses,
+                    "net_profit": net_profit
                 })
 
             # ==========================================
-            # OVERALL TOTALS
+            # OVERALL MONTH-TO-DATE TOTALS
             # ==========================================
 
             overall_revenue = round(overall_revenue, 2)
             overall_cogs = round(overall_cogs, 2)
+
             overall_gross_profit = round(
                 overall_revenue - overall_cogs, 2
+            )
+
+            overall_expenses = round(overall_expenses, 2)
+
+            overall_net_profit = round(
+                overall_gross_profit - overall_expenses, 2
             )
 
             # ==========================================
@@ -1025,41 +1134,78 @@ class DailyProfitReport(Resource):
                 "*System Notification*\n\n"
                 "SALES & PROFIT REPORT",
                 "",
-                f"Date: {yesterday.strftime('%d %B %Y')}",
+                f"Yesterday: {yesterday.strftime('%d %B %Y')}",
                 "",
-                "SHOP PERFORMANCE:"
+                "*YESTERDAY'S SALES*",
+                ""
             ]
 
+            # Yesterday's sales for each shop
+            for shop in shops:
+
+                shop_sales = round(
+                    yesterday_sales_by_shop.get(
+                        shop.shops_id, 0
+                    ), 2
+                )
+
+                message_lines.append(
+                    f"{shop.shopname}: Ksh {shop_sales:,.2f}"
+                )
+
+            message_lines.extend([
+                "",
+                f"*TOTAL YESTERDAY'S SALES: "
+                f"Ksh {overall_yesterday_sales:,.2f}*",
+                "",
+                "--------------------------------",
+                "*SHOP PERFORMANCE*",
+                "",
+                f"Period: {month_start.strftime('%d %B %Y')} "
+                f"to {yesterday.strftime('%d %B %Y')}",
+                ""
+            ])
+
+            # Month-to-date performance per shop
             for shop_data in results:
 
                 message_lines.extend([
                     "",
                     f"*{shop_data['shop_name']}*",
                     f"Revenue: Ksh {shop_data['total_revenue']:,.2f}",
-                    f"COGS: Ksh {shop_data['total_cogs']:,.2f}",
-                    f"Gross Profit: Ksh {shop_data['gross_profit']:,.2f}"
+                    f"Cost of Goods Sold: Ksh {shop_data['total_cogs']:,.2f}",
+                    f"Gross Profit: Ksh {shop_data['gross_profit']:,.2f}",
+                    f"Expenses: Ksh {shop_data['total_expenses']:,.2f}",
+                    f"*Net Profit: Ksh {shop_data['net_profit']:,.2f}*"
                 ])
 
+            # Overall month-to-date performance
             message_lines.extend([
                 "",
-                "------------------------------",
-                "OVERALL PERFORMANCE",
+                "--------------------------------",
+                "*OVERALL MONTH-TO-DATE PERFORMANCE*",
                 "",
                 f"Total Revenue: Ksh {overall_revenue:,.2f}",
-                f"Total COGS: Ksh {overall_cogs:,.2f}",
-                f"OVERALL GROSS PROFIT: "
-                f"Ksh {overall_gross_profit:,.2f}",
-                "",
-                # "Note: Gross profit excludes spoilt stock."
+                f"Total Cost of Goods Sold: Ksh {overall_cogs:,.2f}",
+                f"Gross Profit: Ksh {overall_gross_profit:,.2f}",
+                f"Total Expenses: Ksh {overall_expenses:,.2f}",
+                f"*OVERALL NET PROFIT: Ksh {overall_net_profit:,.2f}*",
+                ""
             ])
 
             message = "\n".join(message_lines)
 
+            # ==========================================
+            # SEND WHATSAPP NOTIFICATIONS
+            # ==========================================
+
             whatsapp_sent = 0
+            whatsapp_failed = 0
 
             for number in recipients:
 
                 try:
+
                     send_whatsapp_message(
                         to=number,
                         text=message
@@ -1069,29 +1215,64 @@ class DailyProfitReport(Resource):
 
                 except Exception:
 
+                    whatsapp_failed += 1
+
                     logging.exception(
-                        "Failed to send daily profit report "
+                        "Failed to send month-to-date profit report "
                         "to manager number %s",
                         number
                     )
+
+            logging.info(
+                "Manager sales and profit notification completed. "
+                "Sent: %s/%s",
+                whatsapp_sent,
+                len(recipients)
+            )
 
             # ==========================================
             # API RESPONSE
             # ==========================================
 
             return {
-                "message": "Daily profit report generated successfully",
-                "date": yesterday.strftime("%Y-%m-%d"),
+                "message": "Sales and month-to-date profit report generated successfully",
+
+                "yesterday_sales": {
+                    "date": yesterday.strftime("%Y-%m-%d"),
+
+                    "shops": [
+                        {
+                            "shop_id": shop.shops_id,
+                            "shop_name": shop.shopname,
+                            "total_sales": round(
+                                yesterday_sales_by_shop.get(
+                                    shop.shops_id, 0
+                                ), 2
+                            )
+                        }
+                        for shop in shops
+                    ],
+
+                    "overall_total_sales": overall_yesterday_sales
+                },
+
+                "period": {
+                    "start_date": month_start.strftime("%Y-%m-%d"),
+                    "end_date": yesterday.strftime("%Y-%m-%d")
+                },
 
                 "shops": results,
 
                 "summary": {
                     "overall_revenue": overall_revenue,
                     "overall_cogs": overall_cogs,
-                    "overall_gross_profit": overall_gross_profit
+                    "overall_gross_profit": overall_gross_profit,
+                    "overall_expenses": overall_expenses,
+                    "overall_net_profit": overall_net_profit
                 },
 
                 "whatsapp_notifications_sent": whatsapp_sent,
+                "whatsapp_notifications_failed": whatsapp_failed,
                 "whatsapp_notifications_total": len(recipients)
 
             }, 200
@@ -1101,12 +1282,15 @@ class DailyProfitReport(Resource):
             db.session.rollback()
 
             logging.exception(
-                "Error generating manager daily profit report"
+                "Error generating manager month-to-date profit report"
             )
 
             return {
                 "error": str(e)
             }, 500
+
+
+
 
 
 

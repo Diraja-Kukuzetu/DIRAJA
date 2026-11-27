@@ -346,6 +346,7 @@ class GetShopReportStats(Resource):
 # ─────────────────────────────────────────────────────────────
 # PostShopReport (opening report)
 # ─────────────────────────────────────────────────────────────
+
 class PostShopReport(Resource):
     @jwt_required()
     def post(self):
@@ -376,8 +377,7 @@ class PostShopReport(Resource):
         if not shop:
             return {"message": "Shop not found"}, 404
 
-        now_utc = datetime.utcnow()
-        today_utc = now_utc.date()
+        today_utc = datetime.utcnow().date()
 
         existing_report = ShopReport.query.filter(
             ShopReport.shop_id == shop_id,
@@ -397,12 +397,12 @@ class PostShopReport(Resource):
             latitude=latitude,
             longitude=longitude,
             location=location,
-            note=note,
-            reported_at=now_utc,
+            note=note
         )
 
         db.session.add(report)
         db.session.commit()
+
 
         # Manager WhatsApp notifications
         whatsapp_sent = 0

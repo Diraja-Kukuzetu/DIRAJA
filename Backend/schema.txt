@@ -17,6 +17,7 @@ Columns:
 - two_factor_verified (BOOLEAN)
 - two_factor_setup_date (DATETIME)
 - backup_codes (JSON)
+- wallet_balance (FLOAT)
 
 Table: shops
 Columns:

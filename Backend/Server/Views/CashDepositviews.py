@@ -4,6 +4,7 @@ from Server.Models.CashDeposit import CashDeposits
 from Server.Models.Users import Users
 from Server.Models.Shops import Shops
 from app import db
+import logging
 from flask_jwt_extended import jwt_required,get_jwt_identity
 from flask import jsonify,request,make_response
 from functools import wraps
@@ -11,6 +12,8 @@ from datetime import datetime  # This is likely what you want
 from sqlalchemy.exc import SQLAlchemyError
 from Server.Models.Transactions import TranscationType
 from Server.Models.BankAccounts import BankAccount
+
+logger = logging.getLogger(__name__)
 
 def check_role(required_role):
     def wrapper(fn):
@@ -23,6 +26,7 @@ def check_role(required_role):
             return fn(*args, **kwargs)
         return decorator
     return wrapper
+
 
 class AddCashDeposit(Resource):
     @jwt_required()
@@ -51,8 +55,12 @@ class AddCashDeposit(Resource):
 
         if amount <= 0:
             return {"message": "Amount must be greater than 0."}, 400
+
         if deductions < 0:
             return {"message": "Deductions cannot be negative."}, 400
+
+        if deductions > amount:
+            return {"message": "Deductions cannot exceed the deposit amount."}, 400
 
         if created_at:
             try:
@@ -62,18 +70,24 @@ class AddCashDeposit(Resource):
         else:
             created_at = datetime.utcnow()
 
-        deposit = CashDeposits(
-            user_id=current_user_id,
-            shop_id=shop_id,
-            amount=amount,
-            deductions=deductions,
-            reason=reason,
-            transaction_code=transaction_code,
-            created_at=created_at
-        )
-
         try:
-            db.session.add(deposit)
+            # ===== GET USER AND CHECK WALLET BALANCE =====
+            user = Users.query.filter_by(
+                users_id=current_user_id
+            ).with_for_update().first()
+
+            if not user:
+                return {"message": "User not found."}, 404
+
+            current_wallet_balance = float(user.wallet_balance or 0)
+
+            if current_wallet_balance < amount:
+                return {
+                    "message": "Insufficient wallet balance.",
+                    "wallet_balance": current_wallet_balance,
+                    "deposit_amount": amount,
+                    "shortfall": amount - current_wallet_balance
+                }, 400
 
             # ===== BANK MAPPING =====
             shop_to_bank_mapping = {
@@ -86,19 +100,45 @@ class AddCashDeposit(Resource):
 
             # Get corresponding bank ID
             bank_id = shop_to_bank_mapping.get(shop_id)
+
             if not bank_id:
-                return {"message": f"No bank mapping found for shop ID {shop_id}"}, 400
+                return {
+                    "message": f"No bank mapping found for shop ID {shop_id}"
+                }, 400
 
-            # Update the bank account balance
+            # ===== GET BANK ACCOUNT =====
             bank_account = BankAccount.query.get(bank_id)
-            if not bank_account:
-                return {"message": f"No bank account found with ID {bank_id}"}, 400
 
+            if not bank_account:
+                return {
+                    "message": f"No bank account found with ID {bank_id}"
+                }, 400
+
+            # ===== DEDUCT FROM USER WALLET =====
+            user.wallet_balance = current_wallet_balance - amount
+            db.session.add(user)
+
+            # ===== CREATE CASH DEPOSIT =====
+            deposit = CashDeposits(
+                user_id=current_user_id,
+                shop_id=shop_id,
+                amount=amount,
+                deductions=deductions,
+                reason=reason,
+                transaction_code=transaction_code,
+                created_at=created_at
+            )
+
+            db.session.add(deposit)
+            db.session.flush()
+
+            # ===== UPDATE BANK ACCOUNT =====
             previous_balance = bank_account.Account_Balance
             bank_account.Account_Balance += net_amount
+
             db.session.add(bank_account)
 
-            # Log transaction
+            # ===== LOG TRANSACTION =====
             transaction = TranscationType(
                 Transaction_type="Debit",
                 Transaction_amount=net_amount,
@@ -106,13 +146,37 @@ class AddCashDeposit(Resource):
                 To_account=bank_account.Account_name,
                 created_at=created_at
             )
+
             db.session.add(transaction)
 
+            # ===== COMMIT ALL TRANSACTIONS =====
             db.session.commit()
+
+            logger.info(
+                f"Cash deposit {deposit.deposit_id}: "
+                f"User {current_user_id}, "
+                f"Wallet deducted: {amount}, "
+                f"New wallet balance: {user.wallet_balance}, "
+                f"Bank credited: {net_amount}"
+            )
 
         except SQLAlchemyError as e:
             db.session.rollback()
-            return {"message": "Database error", "details": str(e)}, 500
+            logger.error(f"Cash deposit database error: {str(e)}")
+
+            return {
+                "message": "Database error",
+                "details": str(e)
+            }, 500
+
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Cash deposit failed: {str(e)}")
+
+            return {
+                "message": "Cash deposit failed",
+                "details": str(e)
+            }, 500
 
         return {
             "message": "Cash deposit recorded successfully",
@@ -120,8 +184,14 @@ class AddCashDeposit(Resource):
             "net_deposited": net_amount,
             "bank_account": bank_account.Account_name,
             "previous_balance": previous_balance,
-            "new_balance": bank_account.Account_Balance
+            "new_balance": bank_account.Account_Balance,
+            "wallet": {
+                "previous_balance": current_wallet_balance,
+                "deducted": amount,
+                "new_balance": user.wallet_balance
+            }
         }, 201
+
 
 
 

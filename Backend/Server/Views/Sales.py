@@ -859,6 +859,28 @@ class AddSale(Resource):
                     is_service=item.get('is_service', False)
                 )
                 db.session.add(sold_item)
+                
+            # ===== CREDIT USER WALLET FOR CASH SALES =====
+                user = Users.query.filter_by(users_id=current_user_id).with_for_update().first()
+
+                if not user:
+                    raise Exception(f"User with ID {current_user_id} not found")
+
+                cash_amount = sum(
+                    float(payment['amount'])
+                    for payment in payment_methods
+                    if payment['method'].strip().lower() == 'cash'
+                )
+
+                if cash_amount > 0:
+                    user.wallet_balance = (user.wallet_balance or 0) + cash_amount
+                    db.session.add(user)
+
+                    logger.info(
+                        f"Wallet credited: User {current_user_id}, "
+                        f"Amount: {cash_amount}, "
+                        f"New Balance: {user.wallet_balance}"
+                    )
 
             # ===== PAYMENT METHODS =====
             for payment in payment_methods:
@@ -3367,16 +3389,11 @@ class CashSalesByUser(Resource):
 
         return jsonify(results)
   
+
 class CashAtHandByUser(Resource):
     @jwt_required()
     def get(self):
         try:
-            # Starting point for cash tracking
-            start_datetime = datetime(2026, 4, 22, 0, 0, 0)
-
-            # Current date and time
-            now = datetime.now()
-
             users = Users.query.all()
 
             results = []
@@ -3390,64 +3407,17 @@ class CashAtHandByUser(Resource):
                     else None
                 )
 
-                # Total cash sales up to this moment
-                total_cash_sales = (
-                    db.session.query(
-                        func.coalesce(
-                            func.sum(SalesPaymentMethods.amount_paid), 0
-                        )
-                    )
-                    .join(
-                        Sales,
-                        Sales.sales_id == SalesPaymentMethods.sale_id
-                    )
-                    .filter(
-                        Sales.user_id == user.users_id
-                    )
-                    .filter(
-                        SalesPaymentMethods.payment_method == "cash"
-                    )
-                    .filter(
-                        Sales.created_at >= start_datetime
-                    )
-                    .filter(
-                        Sales.created_at <= now
-                    )
-                    .scalar()
-                )
-
-                # Total deposits up to this moment
-                total_deposits = (
-                    db.session.query(
-                        func.coalesce(
-                            func.sum(CashDeposits.amount), 0
-                        )
-                    )
-                    .filter(
-                        CashDeposits.user_id == user.users_id
-                    )
-                    .filter(
-                        CashDeposits.created_at >= start_datetime
-                    )
-                    .filter(
-                        CashDeposits.created_at <= now
-                    )
-                    .scalar()
-                )
-
-                # Current cash at hand
-                cash_at_hand = max(
-                    0,
-                    float(total_cash_sales) - float(total_deposits)
-                )
+                # Get current wallet balance
+                cash_at_hand = float(user.wallet_balance or 0)
 
                 results.append({
                     "user_id": user.users_id,
                     "username": user.username,
                     "shop_name": shop_name,
-                    "cash_sales": float(total_cash_sales),
-                    "deposits": float(total_deposits),
-                    "cash_at_hand": cash_at_hand
+                    "cash_sales": cash_at_hand,
+                    "deposits": 0.0,
+                    "cash_at_hand": cash_at_hand,
+                    "wallet_balance": cash_at_hand
                 })
 
             # Sort by highest cash at hand
@@ -3462,8 +3432,7 @@ class CashAtHandByUser(Resource):
             )
 
             return {
-                "generated_at": now.isoformat(),
-                "tracking_from": start_datetime.isoformat(),
+                "generated_at": datetime.now().isoformat(),
                 "total_cash_at_hand": round(total_cash_at_hand, 2),
                 "users": results
             }, 200
@@ -3472,7 +3441,7 @@ class CashAtHandByUser(Resource):
             db.session.rollback()
 
             return {
-                "error": "Failed to calculate cash at hand",
+                "error": "Failed to fetch cash at hand",
                 "details": str(e)
             }, 500
 
@@ -3484,74 +3453,43 @@ class CashAtHandByUser(Resource):
 
 
   
+
+
 class TotalCashSalesByUser(Resource):
     @jwt_required()
     def get(self, username, shop_id):
         try:
             # ===============================
-            # 1. Fixed start date (16/02/2026)
-            # ===============================
-            start_date = datetime.strptime("2026-04-22", "%Y-%m-%d").date()
-            today = datetime.now().date()
-
-            # ===============================
-            # 2. Get user
+            # 1. Get user
             # ===============================
             user = Users.query.filter_by(username=username).first()
+
             if not user:
                 return {"message": f"User '{username}' not found"}, 404
 
             # ===============================
-            # 3. Total CASH sales from 31/01/2026
+            # 2. Get wallet balance
             # ===============================
-            total_cash_sales = (
-                db.session.query(
-                    func.coalesce(func.sum(SalesPaymentMethods.amount_paid), 0)
-                )
-                .join(Sales, Sales.sales_id == SalesPaymentMethods.sale_id)
-                .filter(Sales.user_id == user.users_id)
-                .filter(Sales.shop_id == shop_id)
-                .filter(SalesPaymentMethods.payment_method == "cash")
-                .filter(func.date(Sales.created_at) >= start_date)
-                .filter(func.date(Sales.created_at) <= today)
-                .scalar()
-            )
+            wallet_balance = float(user.wallet_balance or 0)
 
             # ===============================
-            # 4. Total CASH deposits from 31/01/2026
+            # 3. Return cash at hand
             # ===============================
-            total_deposits = (
-                db.session.query(
-                    func.coalesce(func.sum(CashDeposits.amount), 0)
-                )
-                .filter(CashDeposits.user_id == user.users_id)
-                .filter(CashDeposits.shop_id == shop_id)
-                .filter(func.date(CashDeposits.created_at) >= start_date)
-                .filter(func.date(CashDeposits.created_at) <= today)
-                .scalar()
-            )
-
-            # ===============================
-            # 5. Net cash (cash - deposits)
-            # ===============================
-            net_cash = total_cash_sales - total_deposits
-            net_cash = max(0, net_cash)
-
             return {
-                "net_cash": f"Ksh {net_cash:,.2f}",
-                "raw_net_cash": float(net_cash),
-                "cash_sales": float(total_cash_sales),
-                "deposits": float(total_deposits),
-                "from_date": start_date.isoformat(),
-                "to_date": today.isoformat()
+                "net_cash": f"Ksh {wallet_balance:,.2f}",
+                "raw_net_cash": wallet_balance,
+                "cash_sales": wallet_balance,
+                "deposits": 0.0
             }, 200
 
         except SQLAlchemyError as e:
             db.session.rollback()
             return {
-                "error": "Failed to calculate net cash",
+                "error": "Failed to fetch cash at hand",
                 "details": str(e)
             }, 500
+
+
 
 
 

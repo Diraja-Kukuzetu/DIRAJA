@@ -32,6 +32,7 @@ class Users(db.Model):
     two_factor_verified = db.Column(db.Boolean, default=False, nullable=False)
     two_factor_setup_date = db.Column(db.DateTime, nullable=True)
     backup_codes = db.Column(db.JSON, nullable=True)  # Store backup codes as JSON array
+    wallet_balance = db.Column(db.Float, nullable=True)
 
     #users relationship
     employees = db.relationship('Employees', backref='users', lazy=True)
